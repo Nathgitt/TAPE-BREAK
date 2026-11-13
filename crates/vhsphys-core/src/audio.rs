@@ -14,30 +14,36 @@
 //! playback equaliser (high-pass, low-pass at a corner proportional to the tape speed),
 //! with hiss entering before the equaliser -> hum (one supply for all channels) -> clip.
 //!
-//! With `hifi` on and the head following its track (the lock is decided once, from the
-//! tracking offset, slope and bow, see `hifi_tracking_threshold_um`) the sound comes instead
-//! from the frequency-modulated carriers on the helical tracks: recorded at constant level
-//! (no level control or saturation), not limited by the tape speed, mostly freed of the
-//! capstan's speed error by the drum servo, with only a small share of the hiss and hum, and
-//! without the audio head, its spacing loss and the tape-edge dropouts. What the rotating
-//! heads add is the head-switch buzz at the field rate. A head that is off its track falls
-//! back to the linear track.
+//! With `hifi` on and the deck holding lock on the FM carriers (1.3 / 1.7 MHz at 525 lines,
+//! 1.4 / 1.8 MHz at 625 lines), the sound comes instead from the helical tracks: recorded at
+//! constant level (no level control or saturation), not limited by the tape speed, mostly
+//! freed of the capstan's speed error by the drum servo, with FM noise set by the carrier
+//! level, a small share of the hum, and without the audio head, its spacing loss and the
+//! tape-edge dropouts. What the rotating heads add is the head-switch buzz at the field
+//! rate. On each field, the carrier level follows the head's share over its own track, the
+//! tape's magnetisation, and Wallace's spacing loss at the carrier wavelength; a brief dip
+//! below the threshold holds the last sample, while a dip longer than 2 ms on two
+//! consecutive fields crossfades to the linear track until 30 fields pass without a pair of
+//! lost fields.
 //!
 //! Every time-dependent quantity is a pure function of the absolute sample index, so a
 //! processor can start anywhere in the programme and any split of the input gives the
 //! same output.
 
 use crate::dsp::{lagrange3, Biquad};
-use super::consts::{FRAME_RATE, TRACK_PITCH_UM};
-use super::head::HeadParams;
-use super::interference::{audio_add, audio_gain};
 use crate::interference_params::InterferenceParams;
+use crate::rng::Rng;
+use crate::standard::TvStandard;
+use super::consts::{switch_time, FIELD_RF, FRAME_RATE, HEAD_SPEED, STANDARD, TRACK_PITCH_UM};
+use super::head::{Controls, HeadParams};
+use super::interference::{audio_add, audio_gain};
 use super::mech::Mech;
 use super::pipeline::Params;
-use crate::rng::Rng;
 use super::tape::{Kind, Tape};
-use super::tracking::TrackingParams;
+use super::tracking::{self, TrackingParams};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::f64::consts::PI;
 
 /// Frames processed per internal step (bounds the scratch memory of one call).
@@ -65,8 +71,23 @@ const MEDIA_REF: f64 = 0.02;
 /// Share of the capstan's delay deviation that reaches the Hi-Fi carriers: the drum servo
 /// follows the capstan, so only what it leaves over is heard.
 const HIFI_DELAY_SHARE: f64 = 0.05;
-/// Share of the linear track's hiss in the Hi-Fi output (the carriers are far above the tape noise).
-const HIFI_HISS_SHARE: f64 = 0.05;
+/// Hi-Fi FM carrier frequencies (left, right) in Hz: 1.3 / 1.7 MHz at 525 lines,
+/// 1.4 / 1.8 MHz at 625 lines (even channels = L, odd = R, mono = L).
+const HIFI_CARRIER_HZ: [f64; 2] = match STANDARD {
+    TvStandard::Pal => [1.4e6, 1.8e6],
+    TvStandard::Ntsc | TvStandard::Pal60 => [1.3e6, 1.7e6],
+};
+/// Hi-Fi FM noise rms at full carrier level (-80 dBFS, before the 2:1 compander). [est]
+const HIFI_NOISE_RMS: f64 = 1.0e-4;
+/// Longest carrier dip (`A < A_th`) bridged by the dropout hold before a field is called lost, s. [est]
+const HIFI_HOLD_MAX_S: f64 = 0.002;
+/// Consecutive-field recovery window: `plays_hifi(n)` is false when any pair `(m - 1, m)` in
+/// `n - HIFI_RECOVER_FIELDS ..= n` is lost. [est]
+const HIFI_RECOVER_FIELDS: i64 = 30;
+/// Linear crossfade duration when `plays_hifi` changes, s. [est]
+const HIFI_XFADE_S: f64 = 0.005;
+/// Number of per-field carrier entries cached by `AudioProcessor`.
+const HIFI_CACHE_CAP: usize = 64;
 /// Share of the supply hum in the Hi-Fi output (the carriers are frequency modulated, so ripple barely reaches them).
 const HIFI_HUM_SHARE: f64 = 0.1;
 /// Decay time of the head-switch transient, seconds.
@@ -135,10 +156,10 @@ pub struct AudioParams {
     pub hifi: bool,
     /// Amplitude of the 59.94/50 Hz head-switch transient buzz (nominal 0.002 = -54 dB).
     pub head_switch_buzz: f64,
-    /// Tracking threshold in micrometres above which the Hi-Fi carrier unlocks and falls back to linear
-    /// audio. It is compared with the worst displacement of the head from the track centre along the
-    /// track (from the tracking offset, slope and bow). The figure is in micrometres at the SP track
-    /// pitch and scales with the narrower track pitch at LP and EP.
+    /// Tracking offset in micrometres at the SP track pitch that sets the Hi-Fi carrier detector
+    /// threshold `A_th = 1 - hifi_tracking_threshold_um / TRACK_PITCH_UM` (same fraction at LP
+    /// and EP). When the carrier stays below `A_th` for longer than the 2 ms dropout hold on
+    /// two consecutive fields, the deck switches back to the linear track.
     pub hifi_tracking_threshold_um: f64,
 }
 
@@ -399,22 +420,6 @@ fn track_band(c: usize, channels: usize) -> (f64, f64) {
     }
 }
 
-/// Largest distance (um) of the head from the centre of its track along one track. The head
-/// follows the law of `tracking::lateral_weights` without the random per-track wander:
-/// `y(s) = offset + slope (s - 1/2) + 4 bow s (1 - s)` for `s` in [0, 1] from the start to the
-/// end of the track. `|y|` peaks at an end of the track or at the stationary point of the bow.
-fn worst_lateral_um(t: &TrackingParams) -> f64 {
-    let y = |s: f64| t.offset_um + t.slope_um * (s - 0.5) + 4.0 * t.bow_um * s * (1.0 - s);
-    let mut worst = y(0.0).abs().max(y(1.0).abs());
-    if t.bow_um != 0.0 {
-        let s = 0.5 + t.slope_um / (8.0 * t.bow_um);
-        if s > 0.0 && s < 1.0 {
-            worst = worst.max(y(s).abs());
-        }
-    }
-    worst
-}
-
 // ---------------------------------------------------------------- processor
 
 /// Per-channel state.
@@ -424,10 +429,23 @@ struct Chan {
     hist_rec: Vec<f32>,
     /// Signal before the spacing-loss FIR.
     hist_z: Vec<f32>,
+    /// Hi-Fi recorded signal before the variable delay.
+    hifi_hist_rec: Vec<f32>,
+    /// Hi-Fi signal before the `FIR_HALF` alignment delay.
+    hifi_hist_z: Vec<f32>,
+    /// Last Hi-Fi output sample before a carrier dip (dropout hold).
+    hifi_hold: f64,
     hp: Biquad,
     lp: Biquad,
     shelf: Biquad,
     noise: NoiseGen,
+}
+
+/// Cached Hi-Fi carrier levels and loss state for one field.
+struct FieldEntry {
+    field: i64,
+    levels: [Option<Vec<f32>>; 2],
+    lost: bool,
 }
 
 /// The audio path of the deck and tape described by a `Params`.
@@ -435,9 +453,9 @@ pub struct AudioProcessor {
     a: AudioParams,
     rate: f64,
     channels: usize,
-    /// The Hi-Fi carriers are read (decided once from the tracking and the track pitch).
-    hifi_locked: bool,
-    /// Samples per field, the period of the head-switch buzz.
+    seed: u64,
+    tracking: TrackingParams,
+    /// Samples per field, the period of the head-switch buzz and the Hi-Fi tracks.
     field_period: f64,
     mech: Mech,
     tape: Tape,
@@ -446,6 +464,7 @@ pub struct AudioProcessor {
     /// Fields and signals from outside the circuit that reach the audio path.
     itf: InterferenceParams,
     chan: Vec<Chan>,
+    hifi_cache: RefCell<VecDeque<FieldEntry>>,
     /// Tape speed (m/s) and the tape position of programme time zero (um).
     speed: f64,
     pos_um: f64,
@@ -493,10 +512,8 @@ impl AudioProcessor {
         // The head's output voltage is proportional to the tape speed, the hiss is not.
         let sigma = (s_head * s_head + s_tape * s_tape).sqrt() / ratio;
 
-        // The Hi-Fi tracks are as wide as the recording speed's track pitch, so the same threshold
-        // (given at the SP pitch) is a smaller distance at LP and EP.
-        let limit = a.hifi_tracking_threshold_um * p.speed.track_pitch_um() / TRACK_PITCH_UM;
-        let hifi_locked = a.hifi && worst_lateral_um(&p.tracking) < limit;
+        let mut tape_p = p.tape.clone();
+        tape_p.speed = p.speed;
 
         let max_dev = a.max_delay_ms.max(0.0) * 1e-3;
         let chan = (0..channels)
@@ -504,6 +521,9 @@ impl AudioProcessor {
                 alc: Alc::new(&a, rate),
                 hist_rec: vec![],
                 hist_z: vec![],
+                hifi_hist_rec: vec![],
+                hifi_hist_z: vec![],
+                hifi_hold: 0.0,
                 hp: Biquad::highpass(a.low_cut_hz, Q_BUTTER, rate),
                 lp: Biquad::lowpass(corner, Q_BUTTER, rate),
                 shelf,
@@ -513,14 +533,16 @@ impl AudioProcessor {
         let mut s = Self {
             rate,
             channels,
-            hifi_locked,
+            seed: p.seed,
+            tracking: p.tracking.clone(),
             field_period: rate / (2.0 * FRAME_RATE),
             mech: Mech::new(p.mech.clone(), p.seed),
-            tape: Tape::new(p.tape.clone(), p.seed),
+            tape: Tape::new(tape_p, p.seed),
             loss,
             hum: Hum::new(p, rate),
             itf: p.interference.clone(),
             chan,
+            hifi_cache: RefCell::new(VecDeque::with_capacity(HIFI_CACHE_CAP)),
             speed: v,
             pos_um: p.tape.position_m * 1e6,
             base_delay: (max_dev * rate).ceil() as usize + 2,
@@ -552,10 +574,142 @@ impl AudioProcessor {
             c.alc.env = 0.0;
             c.hist_rec = vec![0.0; hist_rec];
             c.hist_z = vec![0.0; 2 * FIR_HALF];
+            c.hifi_hist_rec = vec![0.0; hist_rec];
+            c.hifi_hist_z = vec![0.0; 2 * FIR_HALF];
+            c.hifi_hold = 0.0;
             c.hp.reset();
             c.lp.reset();
             c.shelf.reset();
         }
+    }
+
+    /// Detector threshold `A_th` below which the Hi-Fi carrier triggers the dropout hold.
+    fn hifi_threshold(&self) -> f32 {
+        (1.0 - self.a.hifi_tracking_threshold_um / TRACK_PITCH_UM) as f32
+    }
+
+    /// Sample bounds `[k0, k1)` belonging to field `n`.
+    fn field_bounds(&self, n: i64) -> (i64, i64) {
+        let k0 = (n as f64 * self.field_period).ceil() as i64;
+        let k1 = ((n + 1) as f64 * self.field_period).ceil() as i64;
+        (k0, k1)
+    }
+
+    /// Field `n` containing absolute sample `k` (`floor(k / P)`), adjusted at boundaries so
+    /// `k` always falls inside `field_bounds(n)`.
+    fn field_of_sample(&self, k: i64) -> i64 {
+        let mut n = (k as f64 / self.field_period).floor() as i64;
+        while k < (n as f64 * self.field_period).ceil() as i64 {
+            n -= 1;
+        }
+        while k >= ((n + 1) as f64 * self.field_period).ceil() as i64 {
+            n += 1;
+        }
+        n
+    }
+
+    /// Compute the carrier level(s) and loss flag for field `n`.
+    fn compute_field(&self, n: i64, need_right: bool) -> FieldEntry {
+        let (k0, k1) = self.field_bounds(n);
+        let nf = (k1 - k0).max(0) as usize;
+        let width = self.tape.p.speed.track_pitch_um();
+        let w = tracking::lateral_weights(&self.tracking, self.tape.p.speed, width, self.seed, n, FIELD_RF, switch_time(n));
+        let mut ctl = Controls::new(FIELD_RF);
+        self.tape.paint(n, switch_time(n), width, &mut ctl);
+
+        let build_car = |f_c: f64| -> Vec<f32> {
+            let k_scale = -2.0 * PI * 1.0e-6 * f_c / HEAD_SPEED;
+            (0..nf)
+                .map(|j| {
+                    let k = k0 + j as i64;
+                    let s = ((k as f64 - n as f64 * self.field_period) / self.field_period).clamp(0.0, 1.0);
+                    let t_rf = s * FIELD_RF as f64;
+                    let w0 = Controls::at(&w[2], t_rf) as f64;
+                    let mag = Controls::at(&ctl.mag, t_rf) as f64;
+                    let dd = Controls::at(&ctl.dd, t_rf) as f64;
+                    (w0 * mag * (k_scale * dd).exp()) as f32
+                })
+                .collect()
+        };
+
+        let car_l = build_car(HIFI_CARRIER_HZ[0]);
+        let car_r = if need_right || self.channels >= 2 {
+            Some(build_car(HIFI_CARRIER_HZ[1]))
+        } else {
+            None
+        };
+
+        let a_th = self.hifi_threshold();
+        let hold_limit = HIFI_HOLD_MAX_S * self.rate;
+        let is_lost = |car: &[f32]| -> bool {
+            let mut run = 0usize;
+            for &a in car {
+                if a < a_th {
+                    run += 1;
+                    if run as f64 > hold_limit {
+                        return true;
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+            false
+        };
+        let lost = is_lost(&car_l) || (self.channels >= 2 && car_r.as_deref().is_some_and(is_lost));
+
+        FieldEntry { field: n, levels: [Some(car_l), car_r], lost }
+    }
+
+    /// Read a cached field entry, computing it on miss (or when the right channel is requested
+    /// for a mono-cached entry). `f` must not touch `self.hifi_cache`.
+    fn with_field<R>(&self, n: i64, need_right: bool, f: impl FnOnce(&FieldEntry) -> R) -> R {
+        {
+            let cache = self.hifi_cache.borrow();
+            if let Some(e) = cache.iter().find(|e| e.field == n) {
+                if !need_right || e.levels[1].is_some() {
+                    return f(e);
+                }
+            }
+        }
+        let entry = self.compute_field(n, need_right);
+        let mut cache = self.hifi_cache.borrow_mut();
+        if let Some(pos) = cache.iter().position(|e| e.field == n) {
+            cache.remove(pos);
+        }
+        if cache.len() >= HIFI_CACHE_CAP {
+            cache.pop_front();
+        }
+        cache.push_back(entry);
+        f(cache.back().unwrap())
+    }
+
+    fn field_lost(&self, n: i64) -> bool {
+        self.with_field(n, false, |e| e.lost)
+    }
+
+    /// Hi-Fi carrier level `A` at every sample of `field` for `channel` (even = L, odd = R),
+    /// relative to a clean tape with a centred head (1.0).
+    pub fn hifi_carrier(&self, field: i64, channel: usize) -> Vec<f32> {
+        let parity = channel % 2;
+        self.with_field(field, parity == 1, |e| e.levels[parity].as_ref().unwrap().clone())
+    }
+
+    /// True when the deck plays the Hi-Fi track on `field`: false when `hifi` is off, or when
+    /// any two consecutive fields `m - 1` and `m` in `field - HIFI_RECOVER_FIELDS ..= field` are
+    /// lost.
+    pub fn plays_hifi(&self, field: i64) -> bool {
+        if !self.a.hifi {
+            return false;
+        }
+        let mut prev_lost = self.field_lost(field - HIFI_RECOVER_FIELDS - 1);
+        for m in (field - HIFI_RECOVER_FIELDS)..=field {
+            let cur_lost = self.field_lost(m);
+            if prev_lost && cur_lost {
+                return false;
+            }
+            prev_lost = cur_lost;
+        }
+        true
     }
 
     /// Process `interleaved` (frames x channels), whose first frame is absolute sample
@@ -675,20 +829,68 @@ impl AudioProcessor {
             audio_add(&self.itf, n0, self.rate, &mut pre_eq, &mut post_eq);
             tape_gain = audio_gain(&self.itf, (n0 + (len / 2) as i64) as f64 / self.rate);
         }
+        let hifi = self.a.hifi;
+        let a_th = self.hifi_threshold();
+        let mut g_xfade = Vec::new();
+        let mut hifi_playing = Vec::new();
+        let mut car_l = Vec::new();
+        let mut car_r = Vec::new();
+        if hifi {
+            g_xfade.resize(len, 0.0f64);
+            hifi_playing.resize(len, false);
+            car_l.resize(len, 1.0f32);
+            if ch >= 2 {
+                car_r.resize(len, 1.0f32);
+            }
+            let xfade_samples = HIFI_XFADE_S * self.rate;
+            let mut pos = 0;
+            while pos < len {
+                let k = n0 + pos as i64;
+                let n = self.field_of_sample(k);
+                let cur = self.plays_hifi(n);
+                let prev = self.plays_hifi(n - 1);
+                let (k0, k1) = self.field_bounds(n);
+                let take = ((k1 - k) as usize).min(len - pos);
+                let j0 = (k - k0) as usize;
+                self.with_field(n, ch >= 2, |e| {
+                    let l = e.levels[0].as_ref().unwrap();
+                    car_l[pos..pos + take].copy_from_slice(&l[j0..j0 + take]);
+                    if ch >= 2 {
+                        let r = e.levels[1].as_ref().unwrap();
+                        car_r[pos..pos + take].copy_from_slice(&r[j0..j0 + take]);
+                    }
+                });
+                for m in 0..take {
+                    let km = k + m as i64;
+                    hifi_playing[pos + m] = cur;
+                    g_xfade[pos + m] = if cur == prev {
+                        if cur { 1.0 } else { 0.0 }
+                    } else {
+                        let ramp = ((km - k0) as f64 / xfade_samples).clamp(0.0, 1.0);
+                        if cur { ramp } else { 1.0 - ramp }
+                    };
+                }
+                pos += take;
+            }
+        }
         let mut chans = std::mem::take(&mut self.chan);
         let (drive, bias) = (self.a.sat_drive.max(1e-3), self.bias);
-        let hifi_locked = self.hifi_locked;
         let mut rec = vec![0.0f32; len];
         let mut z = vec![0.0f32; len];
         let mut w = vec![0.0f32; len];
         let mut hiss = vec![0.0f32; len];
+        let mut rec_hifi = if hifi { vec![0.0f32; len] } else { Vec::new() };
+        let mut z_hifi = if hifi { vec![0.0f32; len] } else { Vec::new() };
         for (c, st) in chans.iter_mut().enumerate() {
-            // 1. record: level control and tape saturation; the Hi-Fi carrier is frequency
-            //    modulated and recorded at constant amplitude, so neither applies to it
+            // 1. record: level control and tape saturation for the linear track; the Hi-Fi
+            //    carrier is frequency modulated and recorded at constant amplitude
             for i in 0..len {
                 let v = x[i * ch + c];
                 let v = if v.is_finite() { v as f64 } else { 0.0 };
-                rec[i] = if hifi_locked { v as f32 } else { saturate(st.alc.tick(v), drive, bias) as f32 };
+                rec[i] = saturate(st.alc.tick(v), drive, bias) as f32;
+                if hifi {
+                    rec_hifi[i] = v as f32;
+                }
             }
             // 2. the capstan's speed error: a variable delay, shared by all channels
             let h = st.hist_rec.len();
@@ -696,43 +898,77 @@ impl AudioProcessor {
             buf_rec.extend_from_slice(&st.hist_rec);
             buf_rec.extend_from_slice(&rec);
             for i in 0..len {
-                let d = if hifi_locked {
-                    let d_dev = delays[i] - self.base_delay as f64;
-                    self.base_delay as f64 + d_dev * HIFI_DELAY_SHARE
-                } else {
-                    delays[i]
-                };
-                z[i] = read_delayed(&buf_rec, h + i, d);
+                z[i] = read_delayed(&buf_rec, h + i, delays[i]);
             }
             st.hist_rec.copy_from_slice(&buf_rec[len..]);
+
+            if hifi {
+                let mut buf_rec_hifi = Vec::with_capacity(h + len);
+                buf_rec_hifi.extend_from_slice(&st.hifi_hist_rec);
+                buf_rec_hifi.extend_from_slice(&rec_hifi);
+                for i in 0..len {
+                    let d_dev = delays[i] - self.base_delay as f64;
+                    let d = self.base_delay as f64 + d_dev * HIFI_DELAY_SHARE;
+                    z_hifi[i] = read_delayed(&buf_rec_hifi, h + i, d);
+                }
+                st.hifi_hist_rec.copy_from_slice(&buf_rec_hifi[len..]);
+            }
+
             // 3. spacing loss and dropouts, centred on the sample `FIR_HALF` back. The Hi-Fi
             //    carriers are on the helical tracks, so the audio band's defects and the audio
             //    head's spacing do not touch them; they only keep the same delay.
             let mut buf = Vec::with_capacity(2 * FIR_HALF + len);
             buf.extend_from_slice(&st.hist_z);
             buf.extend_from_slice(&z);
-            if !hifi_locked {
-                let fields = self.defect_fields(c, n0 - FIR_HALF as i64, len);
-                self.loss.apply(&buf, fields.as_ref().map(|f| (&f.0[..], &f.1[..])), &mut w);
-                if let Some((_, _, mag)) = &fields {
-                    w.iter_mut().zip(mag).for_each(|(a, m)| *a *= m);
-                }
+            let fields = self.defect_fields(c, n0 - FIR_HALF as i64, len);
+            self.loss.apply(&buf, fields.as_ref().map(|f| (&f.0[..], &f.1[..])), &mut w);
+            if let Some((_, _, mag)) = &fields {
+                w.iter_mut().zip(mag).for_each(|(a, m)| *a *= m);
             }
             let keep = buf.len() - 2 * FIR_HALF;
             st.hist_z.copy_from_slice(&buf[keep..]);
+
+            let mut buf_hifi = Vec::new();
+            if hifi {
+                buf_hifi.reserve_exact(2 * FIR_HALF + len);
+                buf_hifi.extend_from_slice(&st.hifi_hist_z);
+                buf_hifi.extend_from_slice(&z_hifi);
+                st.hifi_hist_z.copy_from_slice(&buf_hifi[keep..]);
+            }
+
             // 4. head response and playback equaliser; the hiss and the pick-up at the head enter
             //    before the equaliser, the hum and what enters after the filters follow it
             st.noise.fill(n0, &mut hiss);
-            if hifi_locked {
+            if hifi {
+                let car = if c % 2 == 0 { &car_l } else { &car_r };
                 // The audio head and its preamplifier are not in the Hi-Fi path: no `pre_eq`.
                 for i in 0..len {
+                    let s = st.hp.tick(w[i] as f64 * tape_gain) + st.shelf.tick(hiss[i] as f64 * self.sigma + pre_eq[i]);
+                    let y_lin = (st.lp.tick(s) + hum[i] + post_eq[i]).clamp(-1.0, 1.0);
+
                     let k = n0 + i as i64;
                     let phase = (k as f64).rem_euclid(self.field_period);
                     let buzz = (-(phase / (HEAD_SWITCH_DECAY_S * self.rate))).exp() * self.a.head_switch_buzz;
+                    let a = car[i];
+                    let hifi_hiss = hiss[i] as f64 * HIFI_NOISE_RMS / (a.max(a_th)) as f64;
+                    let field_plays_hifi = hifi_playing[i];
+                    let y_hifi = if a < a_th && field_plays_hifi {
+                        st.hifi_hold
+                    } else {
+                        let sig = buf_hifi[FIR_HALF + i] as f64 * tape_gain;
+                        let y = (sig + hifi_hiss + hum[i] * HIFI_HUM_SHARE + post_eq[i] + buzz).clamp(-1.0, 1.0);
+                        st.hifi_hold = y;
+                        y
+                    };
 
-                    let sig = buf[FIR_HALF + i] as f64 * tape_gain;
-                    let hifi_hiss = hiss[i] as f64 * self.sigma * HIFI_HISS_SHARE;
-                    let y = sig + hifi_hiss + hum[i] * HIFI_HUM_SHARE + post_eq[i] + buzz;
+                    let g = g_xfade[i];
+                    let y = if g == 1.0 {
+                        y_hifi
+                    } else if g == 0.0 {
+                        y_lin
+                    } else {
+                        g * y_hifi + (1.0 - g) * y_lin
+                    };
                     out[i * ch + c] = y.clamp(-1.0, 1.0) as f32;
                 }
             } else {
@@ -913,33 +1149,6 @@ mod tests {
     }
 
     #[test]
-    fn the_worst_lateral_distance_is_at_an_end_or_at_the_peak_of_the_bow() {
-        let t = |offset_um: f64, slope_um: f64, bow_um: f64| TrackingParams { offset_um, slope_um, bow_um, wander_um: 0.0 };
-        for (tp, want) in [
-            (t(5.0, 0.0, 0.0), 5.0),
-            (t(0.0, 10.0, 0.0), 5.0),
-            // 12 um at both ends, 20 um in the middle
-            (t(12.0, 0.0, 8.0), 20.0),
-            (t(-3.0, 0.0, 8.0), 5.0),
-            (t(0.0, 0.0, -8.0), 8.0),
-            // the peak of the bow is beyond the end of the track: the end decides
-            (t(0.0, 20.0, 4.0), 10.0),
-            // the peak is inside the track but off its middle
-            (t(0.0, 8.0, 8.0), 8.5),
-        ] {
-            let got = worst_lateral_um(&tp);
-            assert!((got - want).abs() < 1e-9, "{tp:?}: {got} vs {want}");
-        }
-        // the same law as `tracking::lateral_weights`, scanned along the track
-        for (offset, slope, bow) in [(1.0, -30.0, 6.0), (-7.0, 15.0, -9.0), (3.0, 2.0, 12.0), (0.0, 0.0, 0.0), (-20.0, 4.0, 1.0)] {
-            let tp = t(offset, slope, bow);
-            let scanned = (0..=10_000).map(|i| i as f64 / 10_000.0).map(|s| (offset + slope * (s - 0.5) + 4.0 * bow * s * (1.0 - s)).abs()).fold(0.0, f64::max);
-            let got = worst_lateral_um(&tp);
-            assert!(got >= scanned - 1e-9 && got - scanned < 1e-3, "{tp:?}: {got} vs {scanned}");
-        }
-    }
-
-    #[test]
     fn the_hifi_lock_follows_the_track_pitch_of_the_recording_speed() {
         use super::super::format::TapeSpeed;
         let mut p = params("pristine", 1);
@@ -949,26 +1158,35 @@ mod tests {
             p.speed = speed;
             let limit = p.audio.hifi_tracking_threshold_um * speed.track_pitch_um() / TRACK_PITCH_UM;
             p.tracking.offset_um = 0.9 * limit;
-            assert!(AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, "{speed:?}: inside the track");
+            assert!(AudioProcessor::new(&p, 48_000.0, 1).plays_hifi(0), "{speed:?}: inside the track");
             p.tracking.offset_um = -1.1 * limit;
-            assert!(!AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, "{speed:?}: on the neighbouring track");
+            assert!(!AudioProcessor::new(&p, 48_000.0, 1).plays_hifi(0), "{speed:?}: on the neighbouring track");
             p.audio.hifi = false;
             p.tracking.offset_um = 0.0;
-            assert!(!AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, "{speed:?}: Hi-Fi is off");
+            assert!(!AudioProcessor::new(&p, 48_000.0, 1).plays_hifi(0), "{speed:?}: Hi-Fi is off");
             p.audio.hifi = true;
         }
     }
 
     #[test]
-    fn a_bad_tape_keeps_its_hifi_sound_and_a_ruined_one_loses_it() {
-        // the sign of the stretch slope is drawn from the seed, so try a few
+    fn a_worn_tape_keeps_its_hifi_sound_a_bad_one_drops_in_and_out_and_a_ruined_one_loses_it() {
+        // the sign of the stretch slope is drawn from the seed, so try a few; the share of fields
+        // on Hi-Fi over 10 s, at least and at most. A bad tape may lose Hi-Fi for a whole 10 s on
+        // one seed, but over all of them it still plays it on some fields.
+        let mut bad_total = 0.0;
         for seed in 1..9 {
-            for (preset, locked) in [("worn", true), ("bad", true), ("ruined", false)] {
+            for (preset, lo, hi) in [("worn", 0.99, 1.0), ("bad", 0.0, 0.5), ("ruined", 0.0, 0.1)] {
                 let mut p = params(preset, seed);
                 p.audio.hifi = true;
-                assert_eq!(AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, locked, "{preset}, seed {seed}");
+                let a = AudioProcessor::new(&p, 48_000.0, 1);
+                let f = (0..600).filter(|n| a.plays_hifi(*n)).count() as f64 / 600.0;
+                assert!(f >= lo && f <= hi, "{preset}, seed {seed}: Hi-Fi on {f:.3} of the fields");
+                if preset == "bad" {
+                    bad_total += f / 8.0;
+                }
             }
         }
+        assert!(bad_total > 0.01, "a bad tape should still play Hi-Fi on some fields: {bad_total:.3}");
     }
 
     #[test]

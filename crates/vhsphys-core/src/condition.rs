@@ -229,8 +229,9 @@ impl Condition {
                 tape_age_years: 25.0, tape_storage: 0.5, tape_quality: 0.5, tape_passes: 6.0, tape_stretch: 0.2, head_wear: 0.4, head_clog: 0.15,
                 drum_wear: 0.3, deck_age_years: 28.0, deck_temp_c: 60.0, deck_humidity: 0.5, tracking_error_um: 6.0, rec_deck_age_years: 25.0, ..d
             },
-            // tracking offset and stretch keep the head's worst excursion at 17 um, inside the 18 um
-            // the Hi-Fi carrier needs, so a bad tape still plays Hi-Fi sound; `ruined` loses it
+            // the 7 um offset, the stretch slope (+/-10 um at the track ends) and the bow put the head's
+            // worst excursion at 17 um, and the per-track wander carries it past the 18 um the Hi-Fi
+            // carrier needs on most tracks: a bad tape drops in and out of Hi-Fi; `ruined` loses it
             "bad" => Self {
                 tape_age_years: 32.0, tape_storage: 0.75, tape_quality: 0.35, tape_passes: 3.0, tape_stretch: 0.4, head_wear: 0.5, head_clog: 0.3,
                 drum_wear: 0.5, deck_age_years: 34.0, deck_temp_c: 66.0, deck_humidity: 0.7, mains_sag: 0.05, tracking_error_um: 7.0,

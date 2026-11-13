@@ -93,13 +93,19 @@ specified around 0.1 to 0.2 %).
 
 ## Hi-Fi
 
-Hi-Fi audio is modelled as an option, off by default: `--set audio.hifi=true` (config: `[audio]` / `hifi = true`). It is a simplified model, not a carrier model: with Hi-Fi on, the sound takes 5 % of the capstan's wow and flutter (the drum servo follows the capstan), 5 % of the linear track's hiss and 10 % of the supply hum; a head-switch buzz at the field rate (59.94 or 50 Hz) is added, amplitude `audio.head_switch_buzz` (default 0.002, -54 dB), decaying in 0.4 ms; when the worst displacement of the head from the track centre exceeds `audio.hifi_tracking_threshold_um` (default 18 um at SP, scaled with the track pitch at LP and EP) the deck falls back to the linear track. The carrier level per field from the tracking weights and the tape's defects is not modelled yet.
+Hi-Fi audio is modelled as an option, off by default: `--set audio.hifi=true` (config: `[audio]` / `hifi = true`). The carriers are 1.3 MHz (left) and 1.7 MHz (right) in the 525-line format, and 1.4 MHz and 1.8 MHz in the 625-line format (even channels use L, odd use R, mono uses L).
+
+With field period `P = rate / (2 * FRAME_RATE)` samples, field `n` holds samples `ceil(n P) .. ceil((n + 1) P) - 1`, at normalised position `s = (k - n P) / P` along the track. Relative to a clean tape with a centred head, the carrier level at `s` is `A(s) = w0(s) * mag(s) * exp(-2 pi dd(s) f_c / HEAD_SPEED)`, where `w0` is the head's lateral share over its own track from `tracking::lateral_weights` (using the recording speed's track pitch as the Hi-Fi head width and the same random wander stream as the picture), and `dd` (in metres) and `mag` come from `Tape::paint` on the same track. Video head clog and wear do not apply because the Hi-Fi heads are separate.
+
+The detector threshold is `A_th = 1 - hifi_tracking_threshold_um / TRACK_PITCH_UM` (the level of a head 18 um off an SP track, and the same fraction of the track pitch at LP and EP). Where `A < A_th` inside a field that plays Hi-Fi, the deck holds the last output sample from before the dip (dropout hold). A field is lost when `A < A_th` continuously for longer than 2 ms (`[est]`) anywhere in it on either channel. A single lost field never switches; `plays_hifi(n)` is false when any pair of consecutive fields `m - 1` and `m` in `n - 30 ..= n` (30-field recovery, `[est]`) is lost. Both the Hi-Fi and linear paths run on every chunk and mix as `g * hifi + (1 - g) * linear`, where `g` ramps linearly over 5 ms (`[est]`) starting at the first sample of any field where `plays_hifi` changes.
+
+While Hi-Fi plays, there is no level control or tape saturation; the path takes 5 % of the capstan's wow and flutter (the drum servo follows the capstan), 10 % of the supply hum, a head-switch buzz at the field rate (59.94 or 50 Hz) with amplitude `audio.head_switch_buzz` (default 0.002, -54 dB) decaying in 0.4 ms, and FM noise `hiss * 1e-4 / max(A, A_th)` (-80 dBFS rms at `A = 1`, `[est]`, before the 2:1 compander, which is not modelled).
 
 | parameter | default | meaning |
 |---|---|---|
-| `audio.hifi` | `false` | Enable the simplified Hi-Fi audio model |
+| `audio.hifi` | `false` | Enable the depth-multiplex Hi-Fi audio model |
 | `audio.head_switch_buzz` | `0.002` | Amplitude of the field-rate head-switch buzz (-54 dB, decays in 0.4 ms) |
-| `audio.hifi_tracking_threshold_um` | `18.0` | Mistracking displacement threshold to fall back to the linear track (SP, scaled at LP/EP) |
+| `audio.hifi_tracking_threshold_um` | `18.0` | Equivalent SP tracking offset setting the Hi-Fi carrier threshold (same fraction at LP/EP) |
 
 ## Limits
 
