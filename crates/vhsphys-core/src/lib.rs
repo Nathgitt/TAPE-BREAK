@@ -73,6 +73,8 @@ macro_rules! engine {
         pub mod pipeline;
         #[path = "record.rs"]
         pub mod record;
+        #[path = "stripe.rs"]
+        pub mod stripe;
         #[path = "tape.rs"]
         pub mod tape;
         #[path = "tracking.rs"]
