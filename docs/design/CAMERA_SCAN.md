@@ -55,7 +55,7 @@ after the recorder, as for everything else in the project.
   the cathode potential, then `exp(-q'/K) = exp(-q/K) + left/K` below it, with the share of beam
   charge as `left`.
 - The ACT gun, when fitted, clips each sub-element at the stabilisable charge during the flyback
-  before the line's pass (as now; refined by a later card).
+  before the line's pass (as now; refined by a later stage).
 - Beam charge is in the same target-equivalent units as the stored charge. With `g` the Gaussian
   and `S_k` the sum of `g` over every pass of a frame (both fields) at sub-row `k`, the pass of row
   `r` offers sub-row `k` the beam charge `I_b * T_frame * g(y_k - c_r) / S_k`.
@@ -132,16 +132,111 @@ impl UniformColumn {
 In `tube.rs`, `TubeChannel` carries `capacitance_f` (F) and `v_t` (V), with `k_nas` and `plate_nas`
 derived from them, and `TubeKind::channels(beam_ratio)` no longer takes a scan time.
 
-## Cards
+## Camera electronics
 
-| Card | Content |
+The head amplifier and the processing amplifier act on the line signal, as the camera's circuits
+did: after the tube's read and before the encoder. Source: `docs/CAMERA_RESEARCH.md`, "Head-amplifier
+noise and processing lie mostly above 2.5 MHz". Order (US 4032974): head amplifier (noise, band),
+clamp, gain to peak white per channel, knee, gamma, aperture correction, clip. The colour matrix
+waits for the spectral taking characteristics of the target materials, and flare and shading with their corrections
+go with the optics and geometry: without the error they correct, they would only add a fault.
+
+- **Head amplifier.** The tube is a current source into the input capacitance `C_in` of tube, coil,
+  FET and strays. The amplifier adds a noise current of one-sided density
+  `S(f) = 2 q I + 4 k T / R_f + (2 pi f C_in)^2 4 k T R_n` (A^2/Hz): the shot noise of the signal
+  current `I` (the sample's own current, so it follows the picture), the feedback resistor's thermal
+  noise, and the FET's voltage noise across `C_in`, which rises in amplitude with frequency (the
+  "triangular" spectrum). Signal and noise then pass the amplifier's band: the magnitude of an analog
+  second-order Butterworth low-pass, `|H(f)| = 1 / sqrt(1 + (f / band_hz)^4)`, with its delay
+  compensated (the camera matches the delays of its channels), realised as a short linear-phase FIR on
+  the line signal whose ends repeat their end sample. A bilinear-transform biquad is not used: with its
+  corner at 0.38 of the sample rate its poles sit at radius 0.6 and a highlight rings about three times
+  longer than through the analog amplifier. The noise is generated along the line signal, independent from
+  row to row, channel to channel and frame to frame, and fixed by `(seed, frame, row, channel)` through
+  `rng::Rng` stream `STREAM_CAMERA = 61`. Its measured density must follow `S(f) |H(f)|^2`.
+- **Clamp.** The dark reading of the settled target (`black`, as now) is subtracted: a capped camera
+  reads 0 on average.
+- **Gain.** Each channel is divided by its peak-white current, so peak white is 1.0 (white balance on
+  a white scene).
+- **Knee.** On the linear signal, per channel. With a knee range `R` (the 1984 practice: linear to
+  100 % of rated light, 230 % reaching the white clip, US 4470067), `L <= 1` is unchanged and above it
+  `1 + (L - 1) s`, `s = (gamma_inverse(WHITE_CLIP) - 1) / (R - 1)`. Without a knee the signal goes to the
+  gamma corrector as it is and clips there.
+- **Gamma.** `gamma_correct(L)`: `4.5 L` below `0.018` (negative values included), `1.099 L^0.45 - 0.099`
+  above, with no clamp (the clip comes last). Equal to `tube::oetf` on `[0, 1]`.
+- **Aperture correction.** From the gamma-corrected green signal, added equally to all three channels,
+  so edges get no coloured fringe from the corrector. Horizontal: `d_h(t) = s(t) - (s(t - T) + s(t + T)) / 2`
+  with the delay `T` in seconds (fractional delays interpolated on the line signal; the line ends
+  repeat their end sample). Vertical: `d_v(r) = s(r) - (s(r - 2) + s(r + 2)) / 2` over frame rows, that
+  is the lines one line period before and after in the same field (1H delays); rows without such a
+  neighbour use their own value. Coring removes small detail, `core(d) = sign(d) max(|d| - c, 0)`.
+  The detail added is `k_h core(d_h) + k_v core(d_v)`, so the horizontal response is
+  `1 + k_h (1 - cos 2 pi f T)` and the vertical one `1 + k_v (1 - cos 2 pi nu)` for `nu` in cycles per
+  field line. The horizontal gain restores the green channel's response at `1 / (2T)`:
+  `k_h = (1 / (M(f_p) |H(f_p)|) - 1) / 2` with `M(f) = exp(-2 pi^2 sigma_h^2 f^2)` the spot's response,
+  `H` the head amplifier's and `f_p = 1 / (2T)`.
+- **Clip.** `[BLACK_CLIP, WHITE_CLIP] = [-0.03, 1.05]` of peak white, after the detail is added (so a
+  highlight's overshoot is clipped and its dark undershoot stays).
+
+Profiles (`CameraParams::processing`, config key `processing`, default `studio`):
+
+| | studio (three-tube broadcast camera) | consumer (home camera) |
+|---|---|---|
+| `C_in`, `R_n`, `R_f`, `T` | 20 pF, 75 ohm, 1 Mohm, 300 K (ranges 15 to 30 pF, 50 to 100 ohm, 0.3 to 1 Mohm) | 30 pF, 100 ohm, 470 kohm, 300 K (the poor end of the ranges: about 45 dB at 300 nA, as the PK-958's "> 45 dB") |
+| band (-3 dB) | 5.5 MHz (flat to about 5 MHz, US 3743766) | 5.5 MHz |
+| knee range | 2.3 | none [est] |
+| aperture `T`, `k_v`, `c` | 150 ns (BBC), 0.5 (`g` = 0.25, BBC Monograph 47), 0.008 [est] | 200 ns (0.2 us line, Panasonic), 0, 0.015 [est] |
+
+Interfaces, in a new engine module `camera_processing.rs`:
+
+```rust
+pub const STREAM_CAMERA: u64 = 61;
+pub const WHITE_CLIP: f64 = 1.05;
+pub const BLACK_CLIP: f64 = -0.03;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Processing { #[default] Studio, Consumer }
+pub struct HeadAmpSpec { pub input_c_f: f64, pub r_n_ohm: f64, pub r_f_ohm: f64, pub temp_k: f64, pub band_hz: f64 }
+pub struct ApertureSpec { pub delay_s: f64, pub vertical: f64, pub coring: f64 }
+pub struct ProcessingSpec { pub head_amp: HeadAmpSpec, pub knee_range: Option<f64>, pub aperture: ApertureSpec }
+impl Processing { pub fn spec(self) -> ProcessingSpec; }
+pub fn gamma_correct(l: f64) -> f64;
+pub fn gamma_inverse(v: f64) -> f64;
+/// `k_h` of the restoration rule.
+pub fn horizontal_gain(delay_s: f64, sigma_h_s: f64, band_hz: f64) -> f64;
+/// Gamma-corrected video of one frame: per active row, per channel, per sample; 1.0 = peak white.
+pub struct CameraVideo { pub rows: Vec<[Vec<f32>; 3]> }
+pub struct HeadAmplifier { .. }
+impl HeadAmplifier {
+    pub fn new(spec: &HeadAmpSpec, seed: u64) -> Self;
+    /// Noise and band on every row of `sig` (nA in, nA out), for frame `n`.
+    pub fn amplify(&self, sig: &mut TargetSignal, n: i64);
+}
+pub struct VideoProcessor { .. }
+impl VideoProcessor {
+    /// `black` is the clamp level per channel, nA; `k_h` from the green channel's spot.
+    pub fn new(processing: Processing, channels: &[TubeChannel; 3], black: [f64; 3]) -> Self;
+    pub fn horizontal_gain(&self) -> f64;
+    /// Clamp, gain, knee, gamma, aperture correction, clip.
+    pub fn process(&self, sig: &TargetSignal) -> CameraVideo;
+}
+```
+
+In `camera.rs`: `CameraParams` gains `processing: Processing`; `CameraTube::seeded(params, seed)`
+(`new(params)` is `seeded(params, 0)`; `Session` passes its seed); `CameraTube::black() -> [f64; 3]`;
+`CameraTube::video(f0, f1) -> CameraVideo` (read, amplify with the frame index of the read, process).
+`encode_fields` encodes `video`; `process_frame` writes `video(f, f)` as `(255.0f32 * v).round().clamp(0.0, 255.0) as u8`.
+
+## Stages
+
+| Stage | Content |
 |---|---|
-| cam-03-scan-engine | Target grid, beam passes, read times, held pictures, signal normalisation, horizontal spot; the existing tube parameters converted to `K`. |
-| cam-04-tube-in-seconds | Tube parameters in seconds: physical `V_T` per gun, `C` fitted per channel to the handbook curves (decay against bias, build-up at 40 to 80 ms, high key) on the scanned model; the lag measurement re-run on the engine; 50 and 60 Hz from the same constants. |
-| cam-05-electronics | Head amplifier noise (amplitude rising with frequency), clamp, flare, shading correction, matrix, knee, gamma, aperture correction from line delays with coring, clip; studio and consumer profiles. |
-| cam-06-materials | Sb2S3, Newvicon, Saticon, Chalnicon targets: transfer exponent, dark current against temperature, capacitance, trap populations, spectral weighting of the channels. |
-| cam-07-stripe-camera | Single-tube colour: stripe filter on the target behind an optical low-pass, carrier from scan speed, decoder (trap, band-pass, 1H separation, detection, 2.8 MHz Y and 0.5 MHz colour). |
-| cam-08-highlights | ACT flyback spanning several lines, dynamic beam control, beam bending from element potential, trail colour. |
-| cam-09-geometry | Deflection distortion, three-tube registration, black and white shading, corner focus. |
-| cam-10-retention | Trap memory and burn-in, recovery, warm-up and temperature. |
-| cam-11-front-ends | Command line, configuration, GUI choices and `docs/CAMERA.md`. |
+| Scan engine | Target grid, beam passes, read times, held pictures, signal normalisation, horizontal spot; the existing tube parameters converted to `K`. |
+| Tube in seconds | Tube parameters in seconds: physical `V_T` per gun, `C` fitted per channel to the handbook curves (decay against bias, build-up at 40 to 80 ms, high key) on the scanned model; the lag measurement re-run on the engine; 50 and 60 Hz from the same constants. |
+| Electronics | Head amplifier noise (amplitude rising with frequency) and band, clamp, knee, gamma, aperture correction from line delays with coring, clip; studio and consumer profiles. |
+| Materials | Sb2S3, Newvicon, Saticon, Chalnicon targets: transfer exponent, dark current against temperature, capacitance, trap populations, spectral weighting of the channels and the colour matrix that goes with it. |
+| Stripe camera | Single-tube colour: stripe filter on the target behind an optical low-pass, carrier from scan speed, decoder (trap, band-pass, 1H separation, detection, 2.8 MHz Y and 0.5 MHz colour). |
+| Highlights | ACT flyback spanning several lines, dynamic beam control, beam bending from element potential, trail colour. |
+| Geometry | Deflection distortion, three-tube registration, black and white shading and its correction, lens flare and its correction, corner focus. |
+| Retention | Trap memory and burn-in, recovery, warm-up and temperature. |
+| Front ends | Command line, configuration, GUI choices and `docs/CAMERA.md`. |

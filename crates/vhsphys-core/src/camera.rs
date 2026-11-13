@@ -1,18 +1,22 @@
 //! The camera stage: the video that goes into the recorder is what a three-tube Plumbicon
 //! camera made of the scene, with the lag, comet tails and finite beam aperture of its pickup
-//! tubes (`tube`).
+//! tubes (`tube`) followed by its head amplifier and processing amplifier (`camera_processing`).
 //!
 //! Each channel's target is simulated on a sub-row grid (`SUB_ROWS = 4` per active line)
 //! charged continuously in time by the held input pictures and read line by line, field by
 //! field, at each element's own read time (`read_time_s`). The beam has a vertical Gaussian
 //! profile across sub-rows and a horizontal Gaussian spot along the line signal, producing
-//! the continuous signal current in nA before gamma correction and baseband encoding.
+//! the continuous signal current in nA. That line signal then passes through the head
+//! amplifier (shot, feedback and rising FET noise, Butterworth band) and processing amplifier
+//! (clamp, gain, knee, gamma, aperture correction from delay lines with coring, clip) before
+//! baseband encoding.
 //!
 //! The stage is off by default and then costs nothing: the session does not even build it.
 
+use super::camera_processing::{CameraVideo, HeadAmplifier, Processing, VideoProcessor};
 use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, FH, FRAME_RATE, FS_BB};
 use super::video::{encode_from_rgb, row_to_line, Baseband, Frame};
-use crate::tube::{oetf, oetf_inverse, photo_current, scan, TubeChannel, TubeKind, BEAM_RATIO_DEFAULT};
+use crate::tube::{oetf_inverse, photo_current, scan, TubeChannel, TubeKind, BEAM_RATIO_DEFAULT};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -60,11 +64,19 @@ pub struct CameraParams {
     /// Beam-bending blooming: the share of the photo current above the beam current that spills
     /// onto the neighbouring elements of the line (0.0 = off, the default; capped at 0.45).
     pub blooming: f64,
+    /// Camera electronics profile (`studio`, `consumer`).
+    pub processing: Processing,
 }
 
 impl Default for CameraParams {
     fn default() -> Self {
-        Self { tube: TubeKind::Off, iris_stops: 0.0, beam_ratio: BEAM_RATIO_DEFAULT, blooming: 0.0 }
+        Self {
+            tube: TubeKind::Off,
+            iris_stops: 0.0,
+            beam_ratio: BEAM_RATIO_DEFAULT,
+            blooming: 0.0,
+            processing: Processing::default(),
+        }
     }
 }
 
@@ -311,12 +323,15 @@ pub struct CameraTube {
     prev_f1_photo: Vec<f64>,
     blooming: f64,
     frame: i64,
+    head_amp: HeadAmplifier,
+    processor: VideoProcessor,
 }
 
 impl CameraTube {
-    /// The stage for `params`, or `None` when the camera has no tube. Every sub-element starts
-    /// at dark equilibrium, found by scanning a dark target until the reading settles.
-    pub fn new(params: &CameraParams) -> Option<Self> {
+    /// The stage for `params` with deterministic noise `seed`, or `None` when the camera has no
+    /// tube. Every sub-element starts at dark equilibrium, found by scanning a dark target until
+    /// the reading settles.
+    pub fn seeded(params: &CameraParams, seed: u64) -> Option<Self> {
         let channels = params.tube.channels(params.beam_ratio)?;
         let exposure = params.iris_stops.exp2();
         let blooming = params.blooming;
@@ -353,6 +368,9 @@ impl CameraTube {
 
         let raw_cols = std::array::from_fn(|_| vec![0.0; ACTIVE_W * ACTIVE_H]);
         let prev_f1_photo = Vec::new();
+        let spec = params.processing.spec();
+        let head_amp = HeadAmplifier::new(&spec.head_amp, seed);
+        let processor = VideoProcessor::new(params.processing, &channels, black);
         Some(Self {
             channels,
             black,
@@ -365,7 +383,19 @@ impl CameraTube {
             prev_f1_photo,
             blooming,
             frame: 0,
+            head_amp,
+            processor,
         })
+    }
+
+    /// The stage for `params` with `seed = 0`, or `None` when the camera has no tube.
+    pub fn new(params: &CameraParams) -> Option<Self> {
+        Self::seeded(params, 0)
+    }
+
+    /// Settled dark-equilibrium reading per channel, nA (the camera's black clamp).
+    pub fn black(&self) -> [f64; 3] {
+        self.black
     }
 
     /// Update the iris exposure setting for subsequent frames.
@@ -490,22 +520,21 @@ impl CameraTube {
         sig
     }
 
+    /// Scan one frame from pictures (`f0` for field 0, `f1` for field 1), amplify and process
+    /// the line signal through the camera electronics.
+    pub fn video(&mut self, f0: &Frame, f1: &Frame) -> CameraVideo {
+        let frame_idx = self.frame;
+        let mut sig = self.read(f0, f1);
+        self.head_amp.amplify(&mut sig, frame_idx);
+        self.processor.process(&sig)
+    }
+
     /// The picture path: `read`, then the camera electronics, then the encoder.
     pub fn encode_fields(&mut self, f0: &Frame, f1: &Frame) -> Baseband {
-        let sig = self.read(f0, f1);
-        let black = &self.black;
-        let peak = [
-            self.channels[0].peak_signal_na,
-            self.channels[1].peak_signal_na,
-            self.channels[2].peak_signal_na,
-        ];
+        let vid = self.video(f0, f1);
         encode_from_rgb(|row, x| {
-            let r = &sig.rows[row];
-            [
-                oetf((r[0][x] as f64 - black[0]) / peak[0]) as f32,
-                oetf((r[1][x] as f64 - black[1]) / peak[1]) as f32,
-                oetf((r[2][x] as f64 - black[2]) / peak[2]) as f32,
-            ]
+            let r = &vid.rows[row];
+            [r[0][x], r[1][x], r[2][x]]
         })
     }
 
@@ -519,21 +548,13 @@ impl CameraTube {
     /// Expose the targets to `frame` for both fields, scan them, and return what the
     /// camera outputs. The target state is kept for the next frame.
     pub fn process_frame(&mut self, frame: &Frame) -> Frame {
-        let sig = self.read(frame, frame);
-        let black = &self.black;
-        let peak = [
-            self.channels[0].peak_signal_na,
-            self.channels[1].peak_signal_na,
-            self.channels[2].peak_signal_na,
-        ];
+        let vid = self.video(frame, frame);
         let mut out = Frame::new(ACTIVE_W, ACTIVE_H);
-        for row in 0..ACTIVE_H {
-            let r = &sig.rows[row];
+        for (row, r) in vid.rows.iter().enumerate() {
             for x in 0..ACTIVE_W {
                 let p = (row * ACTIVE_W + x) * 3;
                 for k in 0..3 {
-                    let lin = (r[k][x] as f64 - black[k]) / peak[k];
-                    out.rgb[p + k] = (255.0 * oetf(lin)).round() as u8;
+                    out.rgb[p + k] = (255.0f32 * r[k][x]).round().clamp(0.0, 255.0) as u8;
                 }
             }
         }
@@ -596,15 +617,6 @@ mod tests {
     }
 
     #[test]
-    fn a_capped_camera_reads_black() {
-        let p = CameraParams { tube: TubeKind::Plumbicon, ..CameraParams::default() };
-        let mut cam = CameraTube::new(&p).unwrap();
-        for _ in 0..3 {
-            assert!(cam.process_frame(&flat(0)).rgb.iter().all(|&v| v == 0));
-        }
-    }
-
-    #[test]
     fn a_light_that_goes_out_leaves_a_fading_trace_and_the_charge_is_kept_between_frames() {
         let p = CameraParams { tube: TubeKind::Plumbicon, ..CameraParams::default() };
         let mut cam = CameraTube::new(&p).unwrap();
@@ -612,11 +624,16 @@ mod tests {
             cam.process_frame(&flat(128));
         }
         // Check field 1 (row 1), which integrates the dark half-frame before it is read.
-        let idx = ACTIVE_W * 3 + 1;
-        let first = cam.process_frame(&flat(0)).rgb[idx];
-        let second = cam.process_frame(&flat(0)).rgb[idx];
-        let third = cam.process_frame(&flat(0)).rgb[idx];
+        let row1_green = |f: Frame| {
+            let margin = 16;
+            let sum: f64 =
+                (margin..ACTIVE_W - margin).map(|x| f.rgb[(ACTIVE_W + x) * 3 + 1] as f64).sum();
+            sum / (ACTIVE_W - 2 * margin) as f64
+        };
+        let first = row1_green(cam.process_frame(&flat(0)));
+        let second = row1_green(cam.process_frame(&flat(0)));
+        let third = row1_green(cam.process_frame(&flat(0)));
         assert!(first > second && second >= third, "{first} {second} {third}");
-        assert!(first > 0 && first < 64, "{first}");
+        assert!(first > 0.0 && first < 64.0, "{first}");
     }
 }

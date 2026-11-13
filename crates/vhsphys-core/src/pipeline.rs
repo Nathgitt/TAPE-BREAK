@@ -449,7 +449,7 @@ impl Session {
         params.decode.burst_nominal = cal.burst_nominal;
         params.decode.burst_boost = params.record.burst_boost as f64;
         params.decode.chroma_delay = cal.chroma_delay;
-        let camera = CameraTube::new(&params.camera);
+        let camera = CameraTube::seeded(&params.camera, params.seed);
         let cx = Ctx::new(params.clone());
         Self {
             params,

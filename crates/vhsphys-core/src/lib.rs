@@ -45,6 +45,8 @@ macro_rules! engine {
         pub mod audio;
         #[path = "camera.rs"]
         pub mod camera;
+        #[path = "camera_processing.rs"]
+        pub mod camera_processing;
         #[path = "composite.rs"]
         pub mod composite;
         #[path = "condition.rs"]

@@ -173,15 +173,28 @@ fn a_still_flat_grey_keeps_its_level_apart_from_the_tube_gamma() {
 
 /// A still scene at normal exposure keeps its tones: averaged over blocks the camera's output is
 /// its input, apart from the tube's gamma and the spot, which softens the finest stripes in
-/// linear light before the gamma corrector and so lifts them a little.
+/// linear light before the gamma corrector and so lifts them a little. The tones are read through
+/// the processing amplifier without the head amplifier's noise, which is checked on its own in
+/// `camera_electronics.rs`: noise clipped one-sided at black would lift the dark blocks by about a
+/// level and hide what this check is about.
 #[test]
 fn a_still_scene_at_normal_exposure_is_not_restyled() {
+    use vhsphys_core::camera_processing::VideoProcessor;
     let params = vhsphys_core::camera::CameraParams { tube: TubeKind::Plumbicon, ..Default::default() };
     let mut cam = vhsphys_core::camera::CameraTube::new(&params).unwrap();
     let input = vhsphys_core::video::test_pattern();
-    let mut out = cam.process_frame(&input);
+    let mut sig = cam.read(&input, &input);
     for _ in 0..SETTLE_FRAMES {
-        out = cam.process_frame(&input);
+        sig = cam.read(&input, &input);
+    }
+    let video = VideoProcessor::new(params.processing, cam.channels(), cam.black()).process(&sig);
+    let mut out = Frame::new(input.w, input.h);
+    for (r, row) in video.rows.iter().enumerate() {
+        for x in 0..input.w {
+            for k in 0..3 {
+                out.rgb[(r * input.w + x) * 3 + k] = (255.0f32 * row[k][x]).round().clamp(0.0, 255.0) as u8;
+            }
+        }
     }
     let (mut err, mut n) = (0.0, 0.0);
     for by in (0..=input.h - TONE_BLOCK).step_by(TONE_BLOCK) {

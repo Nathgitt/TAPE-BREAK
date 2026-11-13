@@ -28,8 +28,9 @@ sees `f0` and field 1's half-frame sees `f1`). Per channel:
 4. The charge landed across the pass's sub-rows is summed and divided by `SUB_ROWS * T_frame`
    to give the row signal current in nA, then convolved along the line with a horizontal
    Gaussian beam spot (`sigma_h = 40 ns`, renormalised inside the active line at the ends).
-5. `lin = (signal - dark_signal) / peak`, where `dark_signal` is the dark-equilibrium
-   reading (the camera's black clamp), and `oetf(lin)` is encoded directly to baseband Y / C.
+5. The line signal passes through the head amplifier and the processing amplifier
+   (`camera_processing.rs`), then the three clipped gamma-corrected signals are encoded directly
+   to baseband Y / C (`encode_from_rgb`).
 
 The stage keeps the charge and last-read time of every sub-element between frames. It begins
 with zero charge, then scans a dark column for 10 seconds before frame 0. It is built only when
@@ -123,6 +124,72 @@ bias; build-up is relative to the final signal. Values are reported in measured 
 
 The XQ1410 and high-key figures are predictions, not fit targets. The 525-line engine uses the
 same constants and is checked at the same elapsed times.
+
+## Electronics
+
+After the beam reads each row's current in nA, the line signal passes through the head
+amplifier and processing amplifier (`camera_processing.rs`) in the order of US 4032974: head
+amplifier (noise and band) -> clamp -> gain -> knee -> gamma -> aperture correction with
+coring -> clip. See `docs/design/CAMERA_SCAN.md` ("Camera electronics") for the contract and
+`docs/CAMERA_RESEARCH.md` ("Head-amplifier noise and processing lie mostly above 2.5 MHz") for
+the measurements and sources. The colour matrix waits for the targets' spectral taking
+characteristics, and flare and shading with their corrections wait for the optics and geometry
+work (without the error they cancel, adding them would only add a fault).
+
+**Head amplifier.** The tube acts as a current source into the input capacitance `C_in` of
+tube, coil, FET and strays. The amplifier adds a noise current of one-sided spectral density
+`S(f) = 2 q I + 4 k T / R_f + (2 pi f C_in)^2 4 k T R_n` (A^2/Hz): white shot noise of the
+sample's own current `I` (clamped at zero), white thermal noise of the feedback resistor `R_f`,
+and the FET voltage noise (`R_n`) differentiated across `C_in`. Because the FET term rises in
+amplitude with frequency (the "triangular" spectrum, US 4355335), 87.5 % of the FET noise
+power in a flat 0 to 5 MHz band lies above 2.5 MHz; across 15 to 30 pF over 5 MHz this gives
+0.55 to 1.6 nA rms, bracketing the "about 1 nA, as low as 0.5 nA" of good preamplifiers
+(US 4704635). Noise is deterministic and independent per `(seed, frame, row, channel)` via
+`rng::Rng` stream `STREAM_CAMERA = 61`. Signal plus noise then pass the amplifier's band
+(`band_hz = 5.5 MHz`, flat to about 5 MHz, US 3743766): the magnitude of an analog second-order
+Butterworth low-pass, `|H(f)| = 1 / sqrt(1 + (f / band_hz)^4)`, delay-compensated and realised as
+a 21-tap symmetric linear-phase FIR whose line ends repeat their end sample.
+
+**Clamp and gain.** Each channel subtracts its settled dark-equilibrium current (`black`) so a
+capped camera averages zero, then divides by `peak_signal_na` (150 / 300 / 150 nA for R / G / B
+in the 30 mm Plumbicon) so peak white is 1.0 in linear light `L`.
+
+**Knee.** Applied per channel on the linear signal when a knee range `R` is set (US 4470067).
+Values `L <= 1` are unchanged, and highlights above `1` follow `1 + (L - 1) s` with
+`s = (gamma_inverse(WHITE_CLIP) - 1) / (R - 1)` so `L = R` reaches the white clip. Without a
+knee, highlights pass unchanged to gamma and clip there.
+
+**Gamma.** Each channel passes through the unclamped 0.45 law (`gamma_correct(L)`): `4.5 L`
+below `0.018` (negative excursions included, multiplying low-key noise by 4.5) and
+`1.099 L^0.45 - 0.099` above (EBU Tech 3335; equal to `tube::oetf` on `[0, 1]`).
+
+**Aperture correction and coring.** Detail is extracted from the gamma-corrected green channel
+and added equally to all three channels so edges receive no colour fringes. Horizontal detail
+uses delay `T` along the line, `d_h(t) = s(t) - (s(t - T) + s(t + T)) / 2`, with fractional
+delays interpolated by cubic spline and end samples repeated at the line ends (BBC Engineering
+91). Vertical detail uses 1H delays within the same field,
+`d_v(r) = s(r) - (s(r - 2) + s(r + 2)) / 2`, with rows that lack a neighbour using their own
+value (BBC Monograph 47). Coring suppresses small detail below threshold `c`,
+`core(d) = sign(d) max(|d| - c, 0)`, before adding `k_h core(d_h) + k_v core(d_v)`. The
+horizontal gain `k_h` restores the green channel's combined horizontal spot `M(f)` and
+head-amplifier response `|H(f)|` at `f_p = 1 / (2 T)`:
+`k_h = (1 / (M(f_p) |H(f_p)|) - 1) / 2`.
+
+**Clip.** Each channel is clamped to `[BLACK_CLIP, WHITE_CLIP] = [-0.03, 1.05]` of peak white
+after the detail is added, so highlight overshoots are clipped at white while dark undershoots
+remain down to `-0.03`.
+
+**Profiles.** Selected by `CameraParams::processing` (config key `processing`, default
+`studio`):
+
+| Parameter | `studio` (three-tube broadcast) | `consumer` (home camera) | Source / notes |
+|---|---|---|---|
+| `C_in`, `R_n`, `R_f`, `T` | 20 pF, 75 ohm, 1 Mohm, 300 K | 30 pF, 100 ohm, 470 kohm, 300 K | Published ranges 15-30 pF, 50-100 ohm, 0.3-1 Mohm (`docs/CAMERA_RESEARCH.md`); consumer at the poor end (~45 dB at 300 nA, matching PK-958 "> 45 dB") |
+| Band (-3 dB) | 5.5 MHz | 5.5 MHz | Flat to about 5 MHz (US 3743766) |
+| Knee range `R` | 2.3 | none `[est]` | 1984 studio practice: linear to 100 %, 230 % to white clip (US 4470067) |
+| Aperture `T` | 150 ns | 200 ns | 150 ns (BBC Engineering 91); 0.2 us delay line (Panasonic) |
+| Vertical gain `k_v` | 0.5 | 0 | `g = 0.25` (BBC Monograph 47) |
+| Coring `c` | 0.008 `[est]` | 0.015 `[est]` | Threshold in gamma-corrected units |
 
 ## Known limits
 
