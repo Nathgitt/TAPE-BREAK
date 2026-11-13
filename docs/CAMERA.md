@@ -1,31 +1,45 @@
 # Camera pickup tubes
 
 By default the video that goes into the recorder is taken as it is. With a camera tube on,
-it is first treated as what a three-tube Plumbicon camera made of the scene: every picture
-element has a charge on the tube target that outlasts the frame, so moving highlights leave
-lag and, when they are bright enough, comet tails. The model is in `tube.rs`; the stage that
-runs it over a frame is `camera.rs`.
+it is first treated as what a three-tube Plumbicon camera made of the scene: each channel's
+target holds charge across frames, so moving highlights leave lag and, when they are bright
+enough, comet tails. The tube physics is in `tube.rs`; the scanned target stage is in
+`camera.rs`. See `docs/design/CAMERA_SCAN.md` for the design contract and
+`docs/CAMERA_RESEARCH.md` for the underlying data and measurements.
 
 ## Chain
 
-The input frame is the camera's gamma-corrected output. Per element and colour channel:
+The input pictures are the camera's gamma-corrected output, held over their own intervals
+(for `push(f)`, both fields see `f`; for `push_fields(f0, f1)`, field 0's half-frame
+sees `f0` and field 1's half-frame sees `f1`). Per channel:
 
 1. `v = rgb / 255`; scene light `L = oetf_inverse(v) * 2^iris_stops` (BT.709 transfer, so
-   `L = 1` is the light that gives peak white at an iris of 0).
-2. The tube adds the charge `peak * L^0.95` (the light transfer exponent of the data sheet),
-   plus the dark and bias charge, and the beam scans (below). The signal is the charge removed.
-3. `lin = (signal - dark_signal) / peak`, where `dark_signal` is the signal of an element
-   that has sat in the dark (the camera's black clamp), and `out = round(255 * oetf(lin))`.
+   `L = 1` gives peak white at an iris of 0), giving photocurrent `peak * L^0.95` (the
+   light transfer exponent of the data sheet). When `blooming > 0`, photocurrent above the
+   beam current spills laterally to neighbouring columns of the row before storage.
+2. Each target is divided into `ACTIVE_W` columns by `4 * ACTIVE_H` sub-rows (`SUB_ROWS = 4`),
+   so the beam overlaps adjacent lines of the other field. Between beam visits, each
+   sub-element integrates `(j_photo + j_dark + j_bias) * dt` over the held pictures covering
+   its interval, up to the signal-plate limit `C * V_target`.
+3. Rows are read in raster order - field 0 top-down, then field 1 top-down - with sample `x`
+   of active row `r` in frame `n` read at its own time `read_time_s(n, r, x)`. Each row pass
+   offers sub-rows within 3 sigma (`sigma_v = 0.65` frame-line pitches) a vertical Gaussian
+   share of the beam using the scan law in `tube.rs` (with ACT flyback clipping when fitted).
+4. The charge landed across the pass's sub-rows is summed and divided by `SUB_ROWS * T_frame`
+   to give the row signal current in nA, then convolved along the line with a horizontal
+   Gaussian beam spot (`sigma_h = 40 ns`, renormalised inside the active line at the ends).
+5. `lin = (signal - dark_signal) / peak`, where `dark_signal` is the dark-equilibrium
+   reading (the camera's black clamp), and `oetf(lin)` is encoded directly to baseband Y / C.
 
-The stage holds one charge per element and channel and starts every element at dark
-equilibrium. It is built only when a tube is selected, so with `tube = "off"` (the default)
-the picture is untouched and the golden renders do not change. The same code runs at 525/60
-and 625/50: the time the beam spends on the picture per frame is computed from the engine's
-raster constants.
+The stage keeps the charge and last-read time of every sub-element between frames, starting
+at dark equilibrium (a dark target scanned until settled). It is built only when a tube is
+selected, so with `tube = "off"` (the default) the picture is untouched and the golden
+renders do not change. The same code runs at 525/60 and 625/50: read times, frame period
+and sample rate come from the engine's raster constants.
 
-Because the tube's exponent is 0.95 and not 1, a still scene is not returned exactly even
-with the lag at rest: mid greys come out two or three levels brighter. Peak white, black
-and the saturated primaries are unchanged.
+Because the tube's exponent is 0.95 and not 1, and the beam spot has finite width, a still
+scene is not returned identically even with the lag at rest: mid greys shift by a couple
+of levels and fine spatial detail is softened slightly by the spot.
 
 ## Physics
 

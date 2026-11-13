@@ -1,20 +1,30 @@
 //! The camera stage: the video that goes into the recorder is what a three-tube Plumbicon
-//! camera made of the scene, with the lag and the comet tails of its pickup tubes (`tube`).
+//! camera made of the scene, with the lag, comet tails and finite beam aperture of its pickup
+//! tubes (`tube`).
 //!
-//! The input frame is taken as the camera's gamma-corrected output for the scene it was
-//! shot of: it is run back through the BT.709 transfer to scene light, scaled by the iris,
-//! integrated on the tube targets (one charge per picture element and colour channel, which
-//! the stage keeps from frame to frame), read out by the beam and gamma-corrected again. With
-//! a tube that had no lag and no beam limit the stage would give the input back (apart from
-//! the tubes' transfer exponent of 0.95); what it adds is what the beam leaves behind.
+//! Each channel's target is simulated on a sub-row grid (`SUB_ROWS = 4` per active line)
+//! charged continuously in time by the held input pictures and read line by line, field by
+//! field, at each element's own read time (`read_time_s`). The beam has a vertical Gaussian
+//! profile across sub-rows and a horizontal Gaussian spot along the line signal, producing
+//! the continuous signal current in nA before gamma correction and baseband encoding.
 //!
 //! The stage is off by default and then costs nothing: the session does not even build it.
 
-use super::consts::{ACTIVE_H, ACTIVE_W, BB_PER_LINE, FRAME_RATE, LINES};
-use super::video::{encode_from_rgb, Baseband, Frame};
-use crate::tube::{dark_equilibrium, frame_step, oetf, oetf_inverse, photo_current, TubeChannel, TubeKind, BEAM_RATIO_DEFAULT};
+use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, BB_PER_LINE, FH, FRAME_RATE, FS_BB, LINES};
+use super::video::{encode_from_rgb, row_to_line, Baseband, Frame};
+use crate::tube::{
+    dark_equilibrium, oetf, oetf_inverse, photo_current, scan, TubeChannel, TubeKind,
+    BEAM_RATIO_DEFAULT,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+
+/// Sub-rows per active frame row on each target, so the beam's vertical profile overlaps the
+/// other field's lines.
+pub const SUB_ROWS: usize = 4;
+
+/// Number of dark frames scanned on one column at startup to reach dark equilibrium.
+const DARK_SETTLE_FRAMES: i64 = 120;
 
 /// Cap on the blooming share: a larger figure is held here, so an overexposed element always
 /// keeps most of its own excess. [est]
@@ -24,6 +34,20 @@ const BLOOM_NEAR_SHARE: f64 = 0.35;
 /// Share of the spilled current that lands on each of the two second neighbours; the four
 /// shares add up to all of it.
 const BLOOM_FAR_SHARE: f64 = 0.15;
+
+/// Signal currents read from the targets in one frame: per active frame row, per channel, one
+/// value per baseband sample of the active line, nA (before the head amplifier).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetSignal {
+    pub rows: Vec<[Vec<f32>; 3]>,
+}
+
+/// Seconds from the session start at which the beam centre reads sample `x` of active row `r`
+/// in frame `n`.
+pub fn read_time_s(n: i64, r: usize, x: usize) -> f64 {
+    let (line, _) = row_to_line(r);
+    n as f64 / FRAME_RATE + line as f64 / FH + (ACTIVE_START + x) as f64 / FS_BB
+}
 
 /// The camera: which pickup tubes it has and how it is set up.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,40 +78,262 @@ fn active_scan_s() -> f64 {
     (ACTIVE_W as f64 / BB_PER_LINE as f64) * (ACTIVE_H as f64 / LINES as f64) / FRAME_RATE
 }
 
-/// The pickup tubes of the camera with the charge on every element of their targets.
+/// Precomputed vertical Gaussian beam shares `g(y_k - c_r) / S_k` for one active row `r`.
+#[derive(Clone)]
+struct RowWeights {
+    k_start: usize,
+    shares: Vec<f64>,
+}
+
+/// Build the vertical beam shares for every active row, truncated at `3 * sigma_v` and
+/// normalised by `S_k` (the sum of `g` over every pass of a frame at sub-row `k`).
+fn build_vertical_weights(sigma_v: f64) -> Vec<RowWeights> {
+    let n_sub = SUB_ROWS * ACTIVE_H;
+    let cutoff = 3.0 * sigma_v;
+    let mut raw: Vec<(usize, Vec<f64>)> = Vec::with_capacity(ACTIVE_H);
+    let mut s_k = vec![0.0; n_sub];
+    for r in 0..ACTIVE_H {
+        let c_r = r as f64 + 0.5;
+        let k_min = (((c_r - cutoff) * SUB_ROWS as f64 - 0.5).ceil() as isize).max(0) as usize;
+        let k_max =
+            (((c_r + cutoff) * SUB_ROWS as f64 - 0.5).floor() as isize).min((n_sub - 1) as isize);
+        if k_max < k_min as isize {
+            raw.push((0, Vec::new()));
+            continue;
+        }
+        let k_max = k_max as usize;
+        let mut gs = Vec::with_capacity(k_max - k_min + 1);
+        for k in k_min..=k_max {
+            let y_k = (k as f64 + 0.5) / SUB_ROWS as f64;
+            let d = (y_k - c_r) / sigma_v;
+            let g = (-0.5 * d * d).exp();
+            s_k[k] += g;
+            gs.push(g);
+        }
+        raw.push((k_min, gs));
+    }
+    raw.into_iter()
+        .map(|(k_start, mut gs)| {
+            for (j, g) in gs.iter_mut().enumerate() {
+                *g /= s_k[k_start + j];
+            }
+            RowWeights { k_start, shares: gs }
+        })
+        .collect()
+}
+
+/// Precompute the horizontal Gaussian spot kernel in baseband sample steps.
+fn build_horizontal_kernel(sigma_h_s: f64) -> (usize, Vec<f64>) {
+    let sigma_samples = sigma_h_s * FS_BB;
+    if sigma_samples <= 0.0 {
+        return (0, vec![1.0]);
+    }
+    let radius = (4.0 * sigma_samples).ceil() as usize;
+    let kernel = (-(radius as isize)..=(radius as isize))
+        .map(|d| (-0.5 * (d as f64 / sigma_samples).powi(2)).exp())
+        .collect();
+    (radius, kernel)
+}
+
+/// Convolve one active row's signal with the horizontal spot kernel, renormalising at the line
+/// ends inside `[0, raw.len())`.
+fn convolve_horizontal(raw: &[f64], radius: usize, kernel: &[f64], out: &mut [f32]) {
+    let w = raw.len();
+    if radius == 0 || w == 0 {
+        for (o, &v) in out.iter_mut().zip(raw.iter()) {
+            *o = v as f32;
+        }
+        return;
+    }
+    let full_sum: f64 = kernel.iter().sum();
+    let r_edge = radius.min(w);
+    for x in 0..r_edge {
+        out[x] = convolve_edge(raw, x, radius, kernel) as f32;
+    }
+    if w > 2 * radius {
+        for x in radius..w - radius {
+            let mut acc = 0.0;
+            let src = &raw[x - radius..=x + radius];
+            for (a, b) in src.iter().zip(kernel.iter()) {
+                acc += a * b;
+            }
+            out[x] = (acc / full_sum) as f32;
+        }
+    }
+    let right_start = r_edge.max(w.saturating_sub(radius));
+    for x in right_start..w {
+        out[x] = convolve_edge(raw, x, radius, kernel) as f32;
+    }
+}
+
+fn convolve_edge(raw: &[f64], x: usize, radius: usize, kernel: &[f64]) -> f64 {
+    let x0 = x.saturating_sub(radius);
+    let x1 = (x + radius + 1).min(raw.len());
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for xi in x0..x1 {
+        let w = kernel[xi + radius - x];
+        num += w * raw[xi];
+        den += w;
+    }
+    num / den
+}
+
+/// Scan all active rows of one frame for a single column `x` and channel `ch_idx`, updating the
+/// column's stored sub-row charges `q_col` and last-landed times `t_col` in place.
+#[allow(clippy::too_many_arguments)]
+fn scan_column<F>(
+    ch_idx: usize,
+    ch: &TubeChannel,
+    weights: &[RowWeights],
+    frame: i64,
+    x: usize,
+    q_col: &mut [f64],
+    t_col: &mut [f64],
+    raw_col: &mut [f64],
+    photo: &F,
+) where
+    F: Fn(usize, usize, usize, f64) -> f64 + Sync + ?Sized,
+{
+    let frame_s = 1.0 / FRAME_RATE;
+    let field_s = 0.5 * frame_s;
+    let beam_frame_nas = ch.beam_na * frame_s;
+    let dark_plus_bias = ch.dark_na + ch.bias_na;
+    let plate_nas = ch.plate_nas;
+    let k_nas = ch.k_nas;
+    let act = ch.act;
+
+    for field in 0..2 {
+        for r in (field..ACTIVE_H).step_by(2) {
+            let t_now = read_time_s(frame, r, x);
+            let rw = &weights[r];
+            let mut landed_sum = 0.0;
+            for (j, &share) in rw.shares.iter().enumerate() {
+                let k = rw.k_start + j;
+                let t_prev = t_col[k];
+                let mut t0 = t_prev;
+                let mut m = (t0 / field_s).floor() as i64;
+                let mut photo_nas = 0.0;
+                while t0 < t_now {
+                    let t_end = ((m + 1) as f64 * field_s).min(t_now);
+                    let dt_piece = t_end - t0;
+                    if dt_piece > 0.0 {
+                        let t_mid = 0.5 * (t0 + t_end);
+                        photo_nas += photo(ch_idx, k / SUB_ROWS, x, t_mid).max(0.0) * dt_piece;
+                    }
+                    t0 = t_end;
+                    m += 1;
+                }
+                let dt = t_now - t_prev;
+                let mut before = (q_col[k] + photo_nas + dark_plus_bias * dt).min(plate_nas);
+                if act {
+                    before = before.min(beam_frame_nas);
+                }
+                let beam_share = beam_frame_nas * share;
+                let after = scan(beam_share, k_nas, before);
+                landed_sum += before - after;
+                q_col[k] = after;
+                t_col[k] = t_now;
+            }
+            raw_col[r] = landed_sum / (SUB_ROWS as f64 * frame_s);
+        }
+    }
+}
+
+/// The pickup tubes of the camera with the charge and last-read time on every sub-element of
+/// their targets.
 #[derive(Clone)]
 pub struct CameraTube {
     channels: [TubeChannel; 3],
-    /// Signal of an element in dark equilibrium, nA: the level the camera clamps to black.
+    /// Signal of a dark target at equilibrium, nA: the level the camera clamps to black.
     black: [f64; 3],
     /// Photo current for each input level, nA, per channel: the iris, the inverse gamma
     /// corrector and the target's transfer exponent, evaluated once for the 256 levels.
     photo: [[f64; 256]; 3],
-    /// Charge per element and channel (`ACTIVE_W x ACTIVE_H x 3`), nA.
-    charge: Vec<f64>,
+    /// Precomputed vertical beam weights per channel and active row.
+    weights: [Vec<RowWeights>; 3],
+    /// Precomputed horizontal beam spot kernel per channel: `(radius, kernel)`.
+    horiz: [(usize, Vec<f64>); 3],
+    /// Stored charge per sub-element in nA s, column-major (`x * SUB_ROWS * ACTIVE_H + k`).
+    charge: [Vec<f64>; 3],
+    /// Last-landed timestamp per sub-element in seconds, column-major.
+    last_t: [Vec<f64>; 3],
+    /// Pre-spot signal scratch per channel, column-major (`x * ACTIVE_H + r`).
+    raw_cols: [Vec<f64>; 3],
+    /// Held photocurrent map of the previous frame's field 1 (`ACTIVE_H x ACTIVE_W x 3`), nA.
+    /// Empty before the first `read`, which holds the first picture over `t < 0`.
+    prev_f1_photo: Vec<f64>,
     blooming: f64,
+    frame: i64,
 }
 
 impl CameraTube {
-    /// The stage for `params`, or `None` when the camera has no tube. Every element starts
-    /// in dark equilibrium, as a camera does that has been capped for a long time.
+    /// The stage for `params`, or `None` when the camera has no tube. Every sub-element starts
+    /// at dark equilibrium, found by scanning a dark target until the reading settles.
     pub fn new(params: &CameraParams) -> Option<Self> {
         let channels = params.tube.channels(params.beam_ratio, active_scan_s())?;
         let exposure = params.iris_stops.exp2();
         let blooming = params.blooming;
+        let n_sub = SUB_ROWS * ACTIVE_H;
+
+        let weights: [Vec<RowWeights>; 3] =
+            std::array::from_fn(|ch| build_vertical_weights(channels[ch].sigma_v_lines));
+        let horiz: [(usize, Vec<f64>); 3] =
+            std::array::from_fn(|ch| build_horizontal_kernel(channels[ch].sigma_h_s));
+
         let mut black = [0.0; 3];
         let mut photo = [[0.0; 256]; 3];
-        let mut start = [0.0; 3];
+        let mut charge: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
+        let mut last_t: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
+
+        let zero = |_: usize, _: usize, _: usize, _: f64| 0.0;
         for k in 0..3 {
-            start[k] = dark_equilibrium(&channels[k]);
-            let mut q = start[k];
-            black[k] = frame_step(&channels[k], &mut q, 0.0);
+            let q_init = (dark_equilibrium(&channels[k]) * 0.04).min(channels[k].plate_nas);
+            let mut q_col = vec![q_init; n_sub];
+            let mut t_col = vec![(-DARK_SETTLE_FRAMES - 1) as f64 / FRAME_RATE; n_sub];
+            let mut row_dark = vec![0.0; ACTIVE_H];
+            for n in -DARK_SETTLE_FRAMES..0 {
+                scan_column(
+                    k,
+                    &channels[k],
+                    &weights[k],
+                    n,
+                    0,
+                    &mut q_col,
+                    &mut t_col,
+                    &mut row_dark,
+                    &zero,
+                );
+            }
+            black[k] = row_dark.iter().sum::<f64>() / ACTIVE_H as f64;
+            for x in 0..ACTIVE_W {
+                let off = x * n_sub;
+                charge[k][off..off + n_sub].copy_from_slice(&q_col);
+                let dx_s = x as f64 / FS_BB;
+                for i in 0..n_sub {
+                    last_t[k][off + i] = t_col[i] + dx_s;
+                }
+            }
             for (v, p) in photo[k].iter_mut().enumerate() {
                 *p = photo_current(&channels[k], oetf_inverse(v as f64 / 255.0) * exposure);
             }
         }
-        let charge = (0..ACTIVE_W * ACTIVE_H * 3).map(|i| start[i % 3]).collect();
-        Some(Self { channels, black, photo, charge, blooming })
+
+        let raw_cols = std::array::from_fn(|_| vec![0.0; ACTIVE_W * ACTIVE_H]);
+        let prev_f1_photo = Vec::new();
+        Some(Self {
+            channels,
+            black,
+            photo,
+            weights,
+            horiz,
+            charge,
+            last_t,
+            raw_cols,
+            prev_f1_photo,
+            blooming,
+            frame: 0,
+        })
     }
 
     /// Update the iris exposure setting for subsequent frames.
@@ -100,79 +346,166 @@ impl CameraTube {
         }
     }
 
-    /// Expose the targets to `frame` for one frame time, scan them, and encode the continuous
-    /// camera output signal directly to baseband Y / C without writing an intermediate `u8`
-    /// video frame.
-    pub fn encode_baseband(&mut self, frame: &Frame) -> Baseband {
-        assert_eq!(frame.rgb.len(), self.charge.len(), "the camera stage takes frames of the engine's active size");
-        let (channels, black, photo) = (&self.channels, &self.black, &self.photo);
-        let row_len = ACTIVE_W * 3;
-        let mut signals = vec![0.0f32; self.charge.len()];
-        let blooming = self.blooming;
-        signals
-            .par_chunks_mut(row_len)
-            .zip(self.charge.par_chunks_mut(row_len))
-            .zip(frame.rgb.par_chunks(row_len))
-            .for_each_init(Vec::new, |scratch, ((sig, charge), input)| {
-                Self::scan_row(channels, black, photo, blooming, charge, input, scratch, |i, lin| sig[i] = oetf(lin) as f32);
-            });
-        encode_from_rgb(|row, x| {
-            let p = (row * ACTIVE_W + x) * 3;
-            [signals[p], signals[p + 1], signals[p + 2]]
-        })
+    /// The channels as built (operating point, `K`, spot widths).
+    pub fn channels(&self) -> &[TubeChannel; 3] {
+        &self.channels
     }
 
-    /// Expose the targets to `frame` for one frame time, scan them, and return what the
-    /// camera outputs. The charge left on the targets is kept for the next frame.
-    pub fn process_frame(&mut self, frame: &Frame) -> Frame {
-        assert_eq!(frame.rgb.len(), self.charge.len(), "the camera stage takes frames of the engine's active size");
-        let mut out = Frame::new(frame.w, frame.h);
-        let (channels, black, photo) = (&self.channels, &self.black, &self.photo);
-        let row_len = ACTIVE_W * 3;
+    /// Read one frame from photocurrents: `photo(ch, r, x, t)` is the target-equivalent photo
+    /// current density, nA, at element (row r, sample x) at time t. It is constant over each
+    /// field's interval (the pictures are held), so the engine integrates it in pieces split at
+    /// the field boundaries, evaluating it once inside each piece. Advances the frame counter.
+    pub fn read_currents(
+        &mut self,
+        photo: &(dyn Fn(usize, usize, usize, f64) -> f64 + Sync),
+    ) -> TargetSignal {
+        self.read_currents_impl(photo)
+    }
+
+    fn read_currents_impl<F>(&mut self, photo: &F) -> TargetSignal
+    where
+        F: Fn(usize, usize, usize, f64) -> f64 + Sync + ?Sized,
+    {
+        let n_sub = SUB_ROWS * ACTIVE_H;
+        let frame = self.frame;
+        let channels = &self.channels;
+        let weights = &self.weights;
+        let horiz = &self.horiz;
+        let raw_cols = &mut self.raw_cols;
+
+        self.charge
+            .par_iter_mut()
+            .zip(self.last_t.par_iter_mut())
+            .zip(raw_cols.par_iter_mut())
+            .enumerate()
+            .for_each(|(ch_idx, ((q_all, t_all), raw_all))| {
+                let ch = &channels[ch_idx];
+                let w_ch = &weights[ch_idx];
+                q_all
+                    .par_chunks_mut(n_sub)
+                    .zip(t_all.par_chunks_mut(n_sub))
+                    .zip(raw_all.par_chunks_mut(ACTIVE_H))
+                    .enumerate()
+                    .for_each(|(x, ((q_col, t_col), raw_col))| {
+                        scan_column(ch_idx, ch, w_ch, frame, x, q_col, t_col, raw_col, photo);
+                    });
+            });
+
+        let rows: Vec<[Vec<f32>; 3]> = (0..ACTIVE_H)
+            .into_par_iter()
+            .map_init(
+                || vec![0.0; ACTIVE_W],
+                |scratch, r| {
+                    std::array::from_fn(|ch| {
+                        let raw_ch = &raw_cols[ch];
+                        for x in 0..ACTIVE_W {
+                            scratch[x] = raw_ch[x * ACTIVE_H + r];
+                        }
+                        let mut out = vec![0.0f32; ACTIVE_W];
+                        let (radius, ref kernel) = horiz[ch];
+                        convolve_horizontal(scratch, radius, kernel, &mut out);
+                        out
+                    })
+                },
+            )
+            .collect();
+
+        self.frame += 1;
+        TargetSignal { rows }
+    }
+
+    /// Convert an RGB frame into per-element photocurrents (nA), applying lateral blooming if set.
+    fn frame_photo(&self, frame: &Frame) -> Vec<f64> {
+        let expected = ACTIVE_W * ACTIVE_H * 3;
+        assert_eq!(frame.rgb.len(), expected, "the camera stage takes frames of the engine's active size");
+        let mut out = vec![0.0; expected];
+        let photo = &self.photo;
+        let channels = &self.channels;
         let blooming = self.blooming;
-        out.rgb
-            .par_chunks_mut(row_len)
-            .zip(self.charge.par_chunks_mut(row_len))
+        let row_len = ACTIVE_W * 3;
+        out.par_chunks_mut(row_len)
             .zip(frame.rgb.par_chunks(row_len))
-            .for_each_init(Vec::new, |scratch, ((out, charge), input)| {
-                Self::scan_row(channels, black, photo, blooming, charge, input, scratch, |i, lin| out[i] = (255.0 * oetf(lin)).round() as u8);
+            .for_each(|(dst, src)| {
+                for (i, &v) in src.iter().enumerate() {
+                    dst[i] = photo[i % 3][v as usize];
+                }
+                if blooming > 0.0 {
+                    Self::apply_blooming(dst, channels, blooming);
+                }
             });
         out
     }
 
-    /// Expose one row of the targets to `input` and scan it. `emit(i, lin)` gets the linear
-    /// signal (black at 0, peak white at 1) of value `i` of the row. It does not take `&self`
-    /// because the charge of the row is borrowed mutably out of `self` by the parallel
-    /// iterators of the callers; `scratch` holds the row's photo current when blooming
-    /// needs it as a whole, and is kept between rows so that none of them allocates.
-    fn scan_row(
-        channels: &[TubeChannel; 3],
-        black: &[f64; 3],
-        photo: &[[f64; 256]; 3],
-        blooming: f64,
-        charge: &mut [f64],
-        input: &[u8],
-        scratch: &mut Vec<f64>,
-        mut emit: impl FnMut(usize, f64),
-    ) {
-        if blooming > 0.0 {
-            scratch.clear();
-            scratch.extend(input.iter().enumerate().map(|(i, &v)| photo[i % 3][v as usize]));
-            Self::apply_blooming(scratch, channels, blooming);
-            for (i, (q, &p_val)) in charge.iter_mut().zip(scratch.iter()).enumerate() {
-                let k = i % 3;
-                let s = frame_step(&channels[k], q, p_val);
-                let lin = (s - black[k]) / channels[k].peak_signal_na;
-                emit(i, lin);
+    /// Read one frame from pictures: field 0's interval sees `f0`, field 1's sees `f1`.
+    pub fn read(&mut self, f0: &Frame, f1: &Frame) -> TargetSignal {
+        let cur_f0 = self.frame_photo(f0);
+        let cur_f1 = if std::ptr::eq(f0, f1) { None } else { Some(self.frame_photo(f1)) };
+        let f1_ref: &[f64] = cur_f1.as_deref().unwrap_or(&cur_f0);
+        let t_f0 = self.frame as f64 / FRAME_RATE;
+        let t_f1 = (self.frame as f64 + 0.5) / FRAME_RATE;
+        let prev_f1 = std::mem::take(&mut self.prev_f1_photo);
+        let sig = self.read_currents_impl(&|ch, r, x, t| {
+            let idx = (r * ACTIVE_W + x) * 3 + ch;
+            if t < t_f0 && !prev_f1.is_empty() {
+                prev_f1[idx]
+            } else if t < t_f1 {
+                cur_f0[idx]
+            } else {
+                f1_ref[idx]
             }
-        } else {
-            for (i, (q, &v)) in charge.iter_mut().zip(input.iter()).enumerate() {
-                let k = i % 3;
-                let s = frame_step(&channels[k], q, photo[k][v as usize]);
-                let lin = (s - black[k]) / channels[k].peak_signal_na;
-                emit(i, lin);
+        });
+        self.prev_f1_photo = cur_f1.unwrap_or(cur_f0);
+        sig
+    }
+
+    /// The picture path: `read`, then the camera electronics, then the encoder.
+    pub fn encode_fields(&mut self, f0: &Frame, f1: &Frame) -> Baseband {
+        let sig = self.read(f0, f1);
+        let black = &self.black;
+        let peak = [
+            self.channels[0].peak_signal_na,
+            self.channels[1].peak_signal_na,
+            self.channels[2].peak_signal_na,
+        ];
+        encode_from_rgb(|row, x| {
+            let r = &sig.rows[row];
+            [
+                oetf((r[0][x] as f64 - black[0]) / peak[0]) as f32,
+                oetf((r[1][x] as f64 - black[1]) / peak[1]) as f32,
+                oetf((r[2][x] as f64 - black[2]) / peak[2]) as f32,
+            ]
+        })
+    }
+
+    /// Expose the targets to `frame` for both fields, scan them, and encode the continuous
+    /// camera output signal directly to baseband Y / C without writing an intermediate `u8`
+    /// video frame.
+    pub fn encode_baseband(&mut self, frame: &Frame) -> Baseband {
+        self.encode_fields(frame, frame)
+    }
+
+    /// Expose the targets to `frame` for both fields, scan them, and return what the
+    /// camera outputs. The target state is kept for the next frame.
+    pub fn process_frame(&mut self, frame: &Frame) -> Frame {
+        let sig = self.read(frame, frame);
+        let black = &self.black;
+        let peak = [
+            self.channels[0].peak_signal_na,
+            self.channels[1].peak_signal_na,
+            self.channels[2].peak_signal_na,
+        ];
+        let mut out = Frame::new(ACTIVE_W, ACTIVE_H);
+        for row in 0..ACTIVE_H {
+            let r = &sig.rows[row];
+            for x in 0..ACTIVE_W {
+                let p = (row * ACTIVE_W + x) * 3;
+                for k in 0..3 {
+                    let lin = (r[k][x] as f64 - black[k]) / peak[k];
+                    out.rgb[p + k] = (255.0 * oetf(lin)).round() as u8;
+                }
             }
         }
+        out
     }
 
     /// Beam-bending lateral charge deflection across adjacent elements on the scanned target line.
@@ -246,9 +579,11 @@ mod tests {
         for _ in 0..40 {
             cam.process_frame(&flat(128));
         }
-        let first = cam.process_frame(&flat(0)).rgb[1];
-        let second = cam.process_frame(&flat(0)).rgb[1];
-        let third = cam.process_frame(&flat(0)).rgb[1];
+        // Check field 1 (row 1), which integrates the dark half-frame before it is read.
+        let idx = ACTIVE_W * 3 + 1;
+        let first = cam.process_frame(&flat(0)).rgb[idx];
+        let second = cam.process_frame(&flat(0)).rgb[idx];
+        let third = cam.process_frame(&flat(0)).rgb[idx];
         assert!(first > second && second >= third, "{first} {second} {third}");
         assert!(first > 0 && first < 64, "{first}");
     }

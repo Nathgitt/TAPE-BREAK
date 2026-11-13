@@ -60,6 +60,16 @@ pub const TARGET_VOLTAGE_V: f64 = 45.0;
 /// Target capacitance, F: PbO layer of 10 to 18 um (data sheet; 15 used), relative
 /// permittivity about 25 [est], scanned area 12.8 x 17.1 mm (data sheet).
 pub const TARGET_CAPACITANCE_F: f64 = 3.2e-9;
+/// Vertical beam spot width (Gaussian sigma) in frame-line pitches [est].
+/// Source: `docs/CAMERA_RESEARCH.md` ("Interlaced readout"), 0.55 to 0.73 across tube formats,
+/// derived from Philips T10 and RCA 1977 400 TVL modulation depths.
+pub const SIGMA_V_LINES: f64 = 0.65;
+/// Horizontal beam spot width (Gaussian sigma) in seconds [est].
+/// Source: `docs/CAMERA_RESEARCH.md` ("Interlaced readout"), 36 to 44 ns at 52 us active scan
+/// for 30 mm Plumbicon tubes (XQ1520 ACT 36 ns, XQ1020 G 44 ns).
+pub const SIGMA_H_S: f64 = 40e-9;
+/// Frame period (50 Hz) of the handbook lag measurements used to fit `CHARGE_SCALE_*`.
+const LAG_FIT_FRAME_S: f64 = 0.04;
 /// The lag measurement condition of the data sheets: signal and beam current, nA.
 pub const LAG_TEST_SIGNAL_NA: f64 = 20.0;
 pub const LAG_TEST_BEAM_NA: f64 = 300.0;
@@ -116,6 +126,15 @@ pub struct TubeChannel {
     pub beam_na: f64,
     /// `Q_T = C kT/e / t_dwell` in signal-current units, nA (fitted to the decay lag).
     pub charge_scale_na: f64,
+    /// Charge constant `K = C V_T` in target-equivalent nA s (`CHARGE_SCALE * 0.04`).
+    pub k_nas: f64,
+    /// Vertical beam spot Gaussian sigma in frame-line pitches.
+    pub sigma_v_lines: f64,
+    /// Horizontal beam spot Gaussian sigma in seconds.
+    pub sigma_h_s: f64,
+    /// Charge at which an element reaches the signal-plate voltage, nA s:
+    /// `TARGET_CAPACITANCE_F * TARGET_VOLTAGE_V * 1e9`.
+    pub plate_nas: f64,
     pub dark_na: f64,
     pub bias_na: f64,
     /// Charge at which an element reaches the signal-plate voltage, nA:
@@ -135,12 +154,17 @@ impl TubeKind {
             TubeKind::Plumbicon | TubeKind::PlumbiconBias => CHARGE_SCALE_XQ1020_NA,
             TubeKind::PlumbiconAct => CHARGE_SCALE_XQ1520_NA,
         };
+        let plate_nas = TARGET_CAPACITANCE_F * TARGET_VOLTAGE_V * 1e9;
         // C V / t in nA: the charge that takes an element from the cathode to the plate voltage
-        let saturation_na = TARGET_CAPACITANCE_F * TARGET_VOLTAGE_V / active_scan_s * 1e9;
+        let saturation_na = plate_nas / active_scan_s;
         Some(std::array::from_fn(|k| TubeChannel {
             peak_signal_na: PEAK_SIGNAL_NA[k],
             beam_na: beam_ratio * PEAK_SIGNAL_NA[k],
             charge_scale_na: charge_scale[k],
+            k_nas: charge_scale[k] * LAG_FIT_FRAME_S,
+            sigma_v_lines: SIGMA_V_LINES,
+            sigma_h_s: SIGMA_H_S,
+            plate_nas,
             dark_na: DARK_NA,
             bias_na: if self == TubeKind::PlumbiconBias { LIGHT_BIAS_XQ1410_NA[k] } else { 0.0 },
             saturation_na,
@@ -169,7 +193,7 @@ pub fn frame_step(ch: &TubeChannel, q: &mut f64, photo_na: f64) -> f64 {
 }
 
 /// The scan of one element holding charge `q`: the charge it holds afterwards.
-fn scan(beam: f64, scale: f64, q: f64) -> f64 {
+pub fn scan(beam: f64, scale: f64, q: f64) -> f64 {
     if beam <= 0.0 {
         return q;
     }

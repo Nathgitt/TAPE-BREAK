@@ -479,8 +479,7 @@ impl Session {
         self
     }
 
-    /// Queue an input frame (must be ACTIVE_W x ACTIVE_H RGB).
-    pub fn push(&mut self, f: &Frame) {
+    fn update_camera_iris(&mut self) {
         if let Some(auto) = &self.automation {
             if let Some(d_iris) = auto.iris_stops(self.pushed as f64) {
                 if let Some(cam) = self.camera.as_mut() {
@@ -488,6 +487,11 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Queue an input frame (must be ACTIVE_W x ACTIVE_H RGB).
+    pub fn push(&mut self, f: &Frame) {
+        self.update_camera_iris();
         let bb = match self.camera.as_mut() {
             Some(camera) => camera.encode_baseband(f),
             None => encode_frame(f),
@@ -496,13 +500,17 @@ impl Session {
     }
 
     /// Queue two consecutive fields (sampled at t0 and t1 = t0 + 1/field_rate) as one
-    /// interlaced frame. The pictures are woven first (even rows from `f0`, odd rows from
-    /// `f1`) and the result goes through `push`: the camera then exposes and scans each target
-    /// element once per frame, by the field that reads its row, which is what the tube's lag
-    /// and beam figures are fitted for (a scan per picture would age the charge twice as fast),
-    /// and the iris automation applies as it does for any other frame.
+    /// interlaced frame. With a camera tube on, `camera.encode_fields(f0, f1)` holds each
+    /// picture over its own field interval so the scanned target integrates `f0` then `f1`
+    /// without weaving. Without a camera tube, the fields are woven first and encoded as a
+    /// frame (`encode_frame(&weave_fields(f0, f1))`). Iris automation applies as for `push`.
     pub fn push_fields(&mut self, f0: &Frame, f1: &Frame) {
-        self.push(&weave_fields(f0, f1));
+        self.update_camera_iris();
+        let bb = match self.camera.as_mut() {
+            Some(camera) => camera.encode_fields(f0, f1),
+            None => encode_frame(&weave_fields(f0, f1)),
+        };
+        self.push_baseband(bb);
     }
 
     /// Queue a continuous `Baseband` frame directly (used when dubbing from an upstream VCR deck

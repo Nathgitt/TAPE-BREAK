@@ -2,11 +2,19 @@
 //! and the stage in the chain (off = untouched; a static scene is not restyled).
 
 mod common;
-use common::*;
 use vhsphys_core::tube::*;
 use vhsphys_core::{config, consts::*, pipeline::Session, video::Frame};
 
 const FRAME_50: f64 = 0.04;
+/// Still-scene checks: the flat greys, how many frames they are held first, the edge rows left
+/// out, and the tolerances in 8-bit levels (flat: the rounding of the output; blocks: the tube's
+/// gamma, about 5 levels in the shadows and mid greys, plus the spot on the finest stripes).
+const STILL_GREYS: [u8; 3] = [32, 128, 200];
+const SETTLE_FRAMES: usize = 20;
+const EDGE_ROWS: usize = 8;
+const FLAT_TOLERANCE: f64 = 1.0;
+const TONE_BLOCK: usize = 16;
+const TONE_TOLERANCE: f64 = 5.0;
 /// Active scan time per frame at 625/50: 52/64 of the line, 575/625 of the lines.
 const ACTIVE_50: f64 = 0.04 * (52.0 / 64.0) * (575.0 / 625.0);
 
@@ -154,13 +162,15 @@ fn square_at(cx: usize) -> Frame {
 }
 
 /// A white square held for 8 frames, then moved right; the luma at the old position in the
-/// first and the third frame after the move.
+/// first frame lit only by the new picture and two frames later. Each line integrates the light
+/// of the frame period before it is read, so frame 8 still holds the square's own light from
+/// picture 7: the trail is measured from frame 9.
 fn moved_square(camera: &str) -> [f64; 2] {
     let p = config::build(Some("pristine"), camera, 3).unwrap();
     let mut input: Vec<Frame> = (0..8).map(|_| square_at(200)).collect();
     input.extend((0..4).map(|_| square_at(500)));
     let out = Session::run(p, &input);
-    [8, 10].map(|k| {
+    [9, 11].map(|k| {
         let f = &out[k];
         let mut acc = 0.0;
         for y in ACTIVE_H / 2 - 8..ACTIVE_H / 2 + 8 {
@@ -174,7 +184,7 @@ fn moved_square(camera: &str) -> [f64; 2] {
 }
 
 /// Overexposed by two stops, the square's charge outlives it at clipped white; the ACT gun
-/// removes that, leaving only the lag, which is faint by the third frame.
+/// removes that, leaving only the lag, which is faint two frames later.
 #[test]
 fn an_overexposed_highlight_leaves_a_trail_on_tape_and_the_act_gun_removes_it() {
     let off = moved_square("");
@@ -187,19 +197,57 @@ fn an_overexposed_highlight_leaves_a_trail_on_tape_and_the_act_gun_removes_it() 
     assert!(act[1] < off[1] + 15.0, "ACT {} vs no tube {}", act[1], off[1]);
 }
 
-/// A still scene at normal exposure comes out of the camera as it went in, apart from the
-/// tube's gamma of 0.95 (a few levels). Measured at the camera's output: the tape chain's noise
-/// decorrelates under any change of its input (the same render with every pixel one level up
-/// already differs by about 10 levels), so a whole-chain comparison cannot isolate the camera.
+/// A still flat grey comes out of the camera at the level the tube's gamma of 0.95 gives it.
+/// The rows at the raster edge are left out: the beam's wings there find no neighbouring line.
+/// Measured at the camera's output: the tape chain's noise decorrelates under any change of its
+/// input, so a whole-chain comparison cannot isolate the camera.
+#[test]
+fn a_still_flat_grey_keeps_its_level_apart_from_the_tube_gamma() {
+    let params = vhsphys_core::camera::CameraParams { tube: TubeKind::Plumbicon, ..Default::default() };
+    for grey in STILL_GREYS {
+        let mut cam = vhsphys_core::camera::CameraTube::new(&params).unwrap();
+        let mut input = Frame::new(ACTIVE_W, ACTIVE_H);
+        input.rgb.fill(grey);
+        let mut out = cam.process_frame(&input);
+        for _ in 0..SETTLE_FRAMES {
+            out = cam.process_frame(&input);
+        }
+        let want = 255.0 * oetf(oetf_inverse(grey as f64 / 255.0).powf(GAMMA));
+        let inner = &out.rgb[EDGE_ROWS * ACTIVE_W * 3..(ACTIVE_H - EDGE_ROWS) * ACTIVE_W * 3];
+        let got = inner.iter().map(|&v| v as f64).sum::<f64>() / inner.len() as f64;
+        assert!((got - want).abs() < FLAT_TOLERANCE, "grey {grey}: {got} vs {want}");
+    }
+}
+
+/// A still scene at normal exposure keeps its tones: averaged over blocks the camera's output is
+/// its input, apart from the tube's gamma and the spot, which softens the finest stripes in
+/// linear light before the gamma corrector and so lifts them a little.
 #[test]
 fn a_still_scene_at_normal_exposure_is_not_restyled() {
     let params = vhsphys_core::camera::CameraParams { tube: TubeKind::Plumbicon, ..Default::default() };
     let mut cam = vhsphys_core::camera::CameraTube::new(&params).unwrap();
     let input = vhsphys_core::video::test_pattern();
     let mut out = cam.process_frame(&input);
-    for _ in 0..20 {
+    for _ in 0..SETTLE_FRAMES {
         out = cam.process_frame(&input);
     }
-    let d = mean_abs_error(&input, &out);
-    assert!(d < 3.0, "mean abs difference {d}");
+    let (mut err, mut n) = (0.0, 0.0);
+    for by in (0..=input.h - TONE_BLOCK).step_by(TONE_BLOCK) {
+        for bx in (0..=input.w - TONE_BLOCK).step_by(TONE_BLOCK) {
+            for c in 0..3 {
+                let (mut a, mut b) = (0.0, 0.0);
+                for y in by..by + TONE_BLOCK {
+                    for x in bx..bx + TONE_BLOCK {
+                        let i = (y * input.w + x) * 3 + c;
+                        a += input.rgb[i] as f64;
+                        b += out.rgb[i] as f64;
+                    }
+                }
+                err += (a - b).abs() / (TONE_BLOCK * TONE_BLOCK) as f64;
+                n += 1.0;
+            }
+        }
+    }
+    let d = err / n;
+    assert!(d < TONE_TOLERANCE, "mean abs difference of the block means {d}");
 }
