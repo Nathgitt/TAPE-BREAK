@@ -31,11 +31,11 @@ sees `f0` and field 1's half-frame sees `f1`). Per channel:
 5. `lin = (signal - dark_signal) / peak`, where `dark_signal` is the dark-equilibrium
    reading (the camera's black clamp), and `oetf(lin)` is encoded directly to baseband Y / C.
 
-The stage keeps the charge and last-read time of every sub-element between frames, starting
-at dark equilibrium (a dark target scanned until settled). It is built only when a tube is
-selected, so with `tube = "off"` (the default) the picture is untouched and the golden
-renders do not change. The same code runs at 525/60 and 625/50: read times, frame period
-and sample rate come from the engine's raster constants.
+The stage keeps the charge and last-read time of every sub-element between frames. It begins
+with zero charge, then scans a dark column for 10 seconds before frame 0. It is built only when
+a tube is selected, so with `tube = "off"` (the default) the picture is untouched and the
+golden renders do not change. The same code runs at 525/60 and 625/50: read times, frame
+period and sample rate come from the engine's raster constants.
 
 Because the tube's exponent is 0.95 and not 1, and the beam spot has finite width, a still
 scene is not returned identically even with the lag at rest: mid greys shift by a couple
@@ -52,25 +52,23 @@ limits of the beam make the picture remember the past.
 beam can land, because their energies are spread thermally. The landing current falls
 exponentially as the element approaches the cathode potential: `i = I_b exp(u / V_T)` for
 `u <= 0`, and `i = I_b` above. An element left slightly charged after a scan gives up the
-rest over the next scans. In charge units per dwell (`q = C u / t_dwell`, in nA) one scan of
-one element is exact:
+rest over the next scans. In target-equivalent charge `q = C u` (nA s), one scan of one
+element is exact:
 
 1. above the cathode potential the whole beam lands: `r1 = min(q, I_b)`, `q -= r1`;
-2. with the beam charge `I_b - r1` left, below it: `exp(-q'/Q_T) = exp(-q/Q_T) + (I_b - r1)/Q_T`.
+2. with the beam charge `I_b - r1` left, below it: `exp(-q'/K) = exp(-q/K) + (I_b - r1)/K`.
 
-`Q_T = C V_T / t_dwell` is the charge scale (`charge_scale_na`) and the signal is the charge
-removed. A scan always leaves the element a little below the cathode potential, which is why
-a tube at rest holds a negative charge (about -30 to -45 nA here, "dark equilibrium"), and why
-the first frames of a new light are weak: that charge has to be worked off first. A light bias
-adds a steady charge that keeps the elements off the slow part of the curve, which is how the
-XQ1410 cuts the lag.
+`K = C V_T` is the charge constant in nA s and the signal is the charge removed. A scan leaves
+the element slightly below the cathode potential, so a tube at rest holds negative charge;
+the first rows of a new light are weak while that charge is worked off. A light bias adds a
+steady charge that keeps elements off the slow part of the curve, which is how the XQ1410 cuts
+the lag.
 
 **Comet tails.** The beam is set to twice what peak white needs. A highlight beyond that
 (the sun on chrome, a lamp, an overexposed face) leaves charge the scan cannot remove. It
 accumulates until the element reaches the signal-plate voltage and photoconduction stops
-(`saturation_na = C * 45 V / t_active`, about 4800 nA), and after the highlight has gone it
-drains at the beam current per frame, reading above peak white (clipped white) until it is
-gone. The tail is as many frames long as the beam current divides the stored charge. A
+(`C * 45 V`, the target plate limit), and after the highlight has gone it drains at the beam
+current, reading above peak white (clipped white) until it is gone. A
 longer or brighter highlight stores more; a stronger beam (`beam_ratio`) shortens it.
 
 **Anti-comet-tail (ACT) gun.** It recharges, during the line flyback, every element above the
@@ -78,106 +76,78 @@ level the read beam can stabilise, so nothing is left over: the stored charge is
 beam current before the scan and the highlight never outlasts its frame. Only the ordinary
 lag remains.
 
-## Data
+## Tube constants in seconds
 
-All from the Philips Data Handbook T10, Plumbicon camera tubes, 1985 (types XQ1020, XQ1410,
-XQ1520, 30 mm tubes), except where marked as an estimate.
+The beam lands with an exponential energy distribution. Its temperature voltage is
+`V_T = k T_b / e`: `0.17 V` for the triode guns with crossover (1900 to 2350 K, US
+4,388,556), and `0.10 V` for a diode gun (about 1200 K, the same patent). All three currents
+here use the triode value; the ACT gun is a triode. The fitted target capacitance is shared by
+the XQ1020, XQ1410 and XQ1520 of each colour.
 
-| Quantity | Value |
-|---|---|
-| Peak signal current | G 300 nA, R and B 150 nA |
-| Beam current | twice what peak white needs (G 600, R and B 300 nA) |
-| Light transfer exponent | 0.95 +/- 0.05, all three types |
-| Dark current | at most 1 to 3 nA (1 nA used) [est] |
-| Target (signal-plate) voltage | 45 V |
-| Target capacitance | PbO layer 10 to 18 um, 12.8 x 17.1 mm scanned area, relative permittivity about 25 [est]: 3.2 nF |
-| Light bias of the XQ1410 | R 3, G 2, B 3.5 nA |
-| Lag, XQ1020 (standard gun) | build-up 60 ms: 85 / 95 / 70 %; decay 60 ms: 12 / 10 / 15 %; decay 200 ms: 4 / 3.5 / 5 % (R / G / B) |
-| Lag, XQ1410 (XQ1020 with light bias) | build-up 98 / 98 / 95 %; decay 60 ms 8 / 7 / 11 %; decay 200 ms 3 / 2 / 3.5 % |
-| Lag, XQ1520 (ACT gun) | build-up 85 / 95 / 70 %; decay 60 ms 13 / 9 / 15 %; decay 200 ms 3.5 / 3 / 5.5 % |
+The scan charge constant is `K = C V_T` in nA s. The plate limit is `C * 45 V`; neither value
+depends on frame rate. Capacitance was fitted on the 625/50 scanned target using the XQ1520 red
+decay family against bias (least squares on log ratios) together with the 40 to 80 ms build-up,
+and the 60 and 200 ms decay plus 60 ms build-up table figures for green and blue. The data-sheet
+read is a uniformly lit column at `ACTIVE_W / 2`, with each active row's target-equivalent
+current measured in nA by the same sub-row scan as the camera. See
+[`docs/design/CAMERA_SCAN.md`](design/CAMERA_SCAN.md), “Tube constants in seconds”.
 
-The lag figures are the data sheet's low-key measurement (signal 20 nA, beam 300 nA, 50 Hz):
-decay is the residual signal above the dark level, as a percentage of the signal, 60 and
-200 ms after the light is cut off (after 5 s of light); build-up is the percentage of the
-final signal 60 ms after the light is switched on (after 10 s of dark). `tube::lag_measurement`
-reproduces that measurement on the model, with the scans at multiples of the frame period
-and the figure at 60 or 200 ms interpolated between them.
+| Channel | `C` (nF) | `K = C V_T` (nA s) | `V_T` (V) |
+|---|---:|---:|---:|
+| R | 1.38 | 0.235 | 0.17 |
+| G | 1.15 | 0.196 | 0.17 |
+| B | 1.76 | 0.299 | 0.17 |
 
-The PbO photoconductive lag is negligible (data sheet, Plumbicon notes 1.4), so the lag the
-sheet shows is the beam's: it is worst at low key and reduced by light bias. The ACT gun's
-flyback recharge uses a defocused beam of about 100 uA (notes 1.6); the model needs only that
-it takes every element above the stabilised level back to it.
+Blue's larger capacitance stands in for trap lag in the blue layer until trap populations are
+modelled. The diode-gun value is provided for later tube types and is not used by the current
+Plumbicon family.
 
-## Fitted charge scales
+The following table records the lag checks from `tests/camera_lag.rs`; percentages are measured
+at the indicated time after a light transition. Decay is relative to the signal above dark and
+bias; build-up is relative to the final signal. Values are reported in measured (handbook) form.
 
-Only one figure is fitted: `Q_T` per channel. It is the least-squares fit, on the logarithm
-of the two figures, of the decay lag at 60 and 200 ms of the tube's own data by
-`lag_measurement` at 0.04 s: the XQ1020 data for the Plumbicon and the Plumbicon with light
-bias (the same target and gun), the XQ1520 data for the ACT tube. Everything else is the data
-sheet's operating point.
+| Check | Measure | Data (%) | Scanned model (%) |
+|---|---|---:|---:|
+| XQ1520 R, 0 nA bias | decay 60 / 80 / 120 / 200 ms | 13 / 9 / 5.3 / 3.3 | 14.67 / 10.83 / 6.80 / 3.46 |
+| XQ1520 R, 1 nA bias | decay 60 / 80 / 120 / 200 ms | 10 / 7.3 / 3.2 / 1.5 | 12.61 / 8.84 / 4.99 / 2.02 |
+| XQ1520 R, 3 nA bias | decay 60 / 80 / 120 / 200 ms | 8.3 / 5.5 / 2.4 / 0.6 | 9.18 / 5.73 / 2.53 / 0.59 |
+| XQ1520 R, 8 nA bias | decay 60 / 80 / 120 ms | 3 / 1.9 / 0.25 | 3.84 / 1.69 / 0.35 |
+| XQ1520 R, 0 nA bias | build-up 40 / 60 / 80 ms | 52 / 85 / 96 | 56.53 / 85.96 / 97.11 |
+| XQ1020 / XQ1520 R | decay 60 / 200 ms; build-up 60 ms | 12.5 / 3.75; 85 | 14.67 / 3.46; 85.96 |
+| XQ1020 / XQ1520 G | decay 60 / 200 ms; build-up 60 ms | 9.5 / 3.25; 95 | 12.31 / 2.65; 93.12 |
+| XQ1020 / XQ1520 B | decay 60 / 200 ms; build-up 60 ms | 15 / 5.25; 70 | 18.30 / 4.82; 71.33 |
+| XQ1410 R / G / B | decay 60 ms | 8 / 7 / 11 | 9.18 / 8.54 / 11.79 |
+| XQ1410 G, 40/600 nA | decay 60 ms, no bias / 10 nA bias | 8 / 1–1.7 | 6.84 / 0.98 |
+| XQ1020 G, 300/600 nA | decay 60 / 200 ms | 1.2 / 0.4 | 1.04 / 0.19 |
+| 525/60 vs 625/50 | XQ1520 R decay 60 / 80 / 120 / 200 ms; build-up 60 ms | same-time curves within 12%; build-up within 10 points | passed within both limits |
 
-| Channel | `Q_T` XQ1020 (nA) | `Q_T` XQ1520 (nA) |
-|---|---|---|
-| R | 6.32 | 6.12 |
-| G | 5.64 | 5.12 |
-| B | 7.55 | 7.90 |
-
-As a voltage, `V_T = Q_T t_active / C` is 0.05 to 0.07 V, the order of kT/e for a hot cathode
-(0.086 V at 1000 K).
-
-How the model meets the data (percent; the data sheet's figure in brackets; the model's
-deviation from it for the decay):
-
-| Tube, channel | Decay 60 ms | Decay 200 ms | Build-up 60 ms |
-|---|---|---|---|
-| XQ1020 R | 13.9 (12), +16 % | 3.58 (4), -11 % | 70.3 (85) |
-| XQ1020 G | 12.3 (10), +23 % | 3.02 (3.5), -14 % | 74.8 (95) |
-| XQ1020 B | 16.8 (15), +12 % | 4.60 (5), -8 % | 62.3 (70) |
-| XQ1520 R | 13.4 (13), +3 % | 3.41 (3.5), -2 % | 71.6 (85) |
-| XQ1520 G | 11.0 (9), +22 % | 2.59 (3), -14 % | 78.1 (95) |
-| XQ1520 B | 17.6 (15), +17 % | 4.89 (5.5), -11 % | 60.0 (70) |
-| XQ1410 R (not fitted) | 8.2 (8), +3 % | 0.63 (3), -79 % | 88.4 (98) |
-| XQ1410 G (not fitted) | 8.3 (7), +19 % | 0.85 (2), -57 % | 87.8 (98) |
-| XQ1410 B (not fitted) | 10.0 (11), -9 % | 0.87 (3.5), -75 % | 85.7 (95) |
-
-The two decay figures of each tube are met within 23 % at 60 ms and 14 % at 200 ms. The
-XQ1410 is not fitted: it is the XQ1020 target and gun with its bias current added, and the
-model has to predict that the bias cuts the lag. It does, and at 60 ms by about the data
-sheet's amount.
+The XQ1410 and high-key figures are predictions, not fit targets. The 525-line engine uses the
+same constants and is checked at the same elapsed times.
 
 ## Known limits
 
-* The build-up figure comes out lower than the data sheet's (62 to 78 % against 70 to 95 %):
-  the model's picture builds up more slowly than the tube's. The one charge scale per channel
-  is fitted to the decay, which is what shows on moving highlights, and the build-up is left
-  as it comes out.
 * The slow tail with light bias is too short: at 200 ms the model leaves under 1 % where the
   XQ1410 data shows 2 to 3.5 %. That tail is the PbO photoconductive lag, which is left out
   because the data sheet calls it negligible for the plain tube; with bias it is what is left.
 * Blooming by beam bending (a highlight spreading sideways) and burn-in are not modelled. The
   charge stays on its own element.
-* The charge scales are fitted at 625/50 and used unchanged at 525/60. The model is per frame,
-  so at 60 Hz the same lag takes less time: at 59.94 Hz the XQ1020 decay at 60 ms is 5 to 7 %.
+* The capacitances are fitted at 625/50 and used unchanged at 525/60; elapsed-time lag is
+  checked on both raster engines.
 * Only the three types of the data sheet. Saticon, Newvicon and Vidicon tubes (a photoconductor
   with a lag of its own) are not here.
 
 ## Why tails end magenta
 
-The three tubes share one kind of target: the same capacitance and the same signal-plate
-voltage, so the same charge at saturation. The red and blue tubes carry half the peak current
-of the green with half the beam on it. At saturation they therefore store twice the overload
-per unit of beam, and a white highlight's tail lasts about twice as many frames in red and in
-blue (15 frames against 7 here for a saturating highlight at 4 times peak white). Their
-fitted charge scales are also larger, so their lag is the longer after a briefer highlight.
-Green runs out first and the tail ends in red plus blue: magenta.
+Each colour has its own fitted capacitance and the same signal-plate voltage. Red and blue
+carry half the peak current of green with half the beam on them. Their higher stored overload
+and capacitance make their tails longer, while blue's larger capacitance also stands in for
+trap lag in its layer until traps are modelled. Green runs out first and the tail ends in red
+plus blue: magenta.
 
-A white square, 32 pixels wide, moving 30 pixels a frame across black, two stops
-overexposed: behind its trailing edge the camera output stays full white for one frame
-(30 pixels), then steps down by one frame (30 pixels) at a time through
-R 56 G 35 B 61, then 25 / 11 / 29, 14 / 6 / 17, 10 / 4 / 12, 7 / 3 / 9: a purple tail above
-16 levels for about 120 pixels and still a few levels 250 pixels back. The ACT tube has no
-white frame: the first frame behind the square is already the lag only (R 97 G 65 B 108),
-then 28 / 12 / 35 and falling the same way.
+For the uniform-column highlight checks in `tests/camera_tube.rs`, a 4x highlight leaves
+clipped-white tails of 1 frame on green, 4 on red and 6 on blue; at 8x and 100x, green has
+1 frame in both cases because the plate limit caps the stored charge. The ACT gun leaves no
+clipped-white tail on any channel.
 
 ## Why there is no phosphor stage
 
@@ -201,7 +171,7 @@ beyond what the beam can take off and leave tails. In a config file:
     iris_stops = 2.0
     beam_ratio = 2.0
 
-The tube's memory starts at dark equilibrium when a session starts. A render that starts
+The tube's memory starts after its dark settling scan when a session starts. A render that starts
 part-way into a clip (`--start`) with a tube on therefore needs a few frames of pre-roll
 before its first output frame to match a render of the whole clip; the lag of a long tail is
 a few tens of frames.

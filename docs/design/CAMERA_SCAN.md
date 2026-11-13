@@ -99,6 +99,39 @@ impl CameraTube {
 
 `Session::push_fields(f0, f1)` calls `encode_fields(f0, f1)` directly.
 
+## Tube constants in seconds
+
+- The charge constant is `K = C V_T` (nA s) with both factors physical. `V_T = k T_b / e` is set by
+  the gun: about 0.17 V for the triode guns with a crossover of the three Plumbicon types
+  (1900 to 2350 K) and about 0.10 V for a diode gun (about 1200 K); the ACT gun is a triode.
+  `C` is the target capacitance per colour (whole target, F), fitted on the scanned engine to the
+  handbook lag and checked against the 1000 to 2000 pF of the data. A colour's target is the same
+  in the XQ1020, XQ1410 and XQ1520, so `C` and `V_T` are shared by the three types.
+- The plate limit is `C * TARGET_VOLTAGE_V`, so it follows the fitted `C`.
+- No constant depends on the frame or field period: 50 and 60 Hz use the same values.
+- The per-frame engine (`frame_step`, `dark_equilibrium`, `lag_measurement`, the charge scales
+  in nA, `saturation_na`) is retired; the data-sheet tables move into the tests. A target starts at
+  dark equilibrium by scanning it dark from the cathode potential until it settles.
+
+In `camera.rs`, the measurement surface of the data sheets: one column of a uniformly lit target,
+read by the same scan as `CameraTube` (sub-rows, beam passes at their read times, ACT clip, plate
+limit) on column `ACTIVE_W / 2`.
+
+```rust
+pub struct UniformColumn { /* sub-row charges and landing times of one column, frame counter */ }
+impl UniformColumn {
+    /// One channel's target at dark equilibrium; the next read is frame 0.
+    pub fn new(ch: &TubeChannel) -> Self;
+    /// Read the next frame with photocurrent `photo(t)`, nA, the same over the whole target
+    /// and held within each field's interval (evaluated once per piece, as `read_currents`).
+    /// Returns the signal of every active row, nA, as `TargetSignal` would hold it.
+    pub fn read(&mut self, photo: &dyn Fn(f64) -> f64) -> Vec<f64>;
+}
+```
+
+In `tube.rs`, `TubeChannel` carries `capacitance_f` (F) and `v_t` (V), with `k_nas` and `plate_nas`
+derived from them, and `TubeKind::channels(beam_ratio)` no longer takes a scan time.
+
 ## Cards
 
 | Card | Content |

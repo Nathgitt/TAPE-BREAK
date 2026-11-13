@@ -10,12 +10,9 @@
 //!
 //! The stage is off by default and then costs nothing: the session does not even build it.
 
-use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, BB_PER_LINE, FH, FRAME_RATE, FS_BB, LINES};
+use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, FH, FRAME_RATE, FS_BB};
 use super::video::{encode_from_rgb, row_to_line, Baseband, Frame};
-use crate::tube::{
-    dark_equilibrium, oetf, oetf_inverse, photo_current, scan, TubeChannel, TubeKind,
-    BEAM_RATIO_DEFAULT,
-};
+use crate::tube::{oetf, oetf_inverse, photo_current, scan, TubeChannel, TubeKind, BEAM_RATIO_DEFAULT};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -23,8 +20,8 @@ use serde::{Deserialize, Serialize};
 /// other field's lines.
 pub const SUB_ROWS: usize = 4;
 
-/// Number of dark frames scanned on one column at startup to reach dark equilibrium.
-const DARK_SETTLE_FRAMES: i64 = 120;
+/// Dark scanning time before frame 0; exceeds 30 times the slowest dark settling constant.
+const DARK_SETTLE_S: f64 = 10.0;
 
 /// Cap on the blooming share: a larger figure is held here, so an overexposed element always
 /// keeps most of its own excess. [est]
@@ -69,13 +66,6 @@ impl Default for CameraParams {
     fn default() -> Self {
         Self { tube: TubeKind::Off, iris_stops: 0.0, beam_ratio: BEAM_RATIO_DEFAULT, blooming: 0.0 }
     }
-}
-
-/// Time per frame the beam spends on the picture, seconds: the active part of the line times
-/// the active part of the lines times the frame period, so that one code serves 525/60 and
-/// 625/50.
-fn active_scan_s() -> f64 {
-    (ACTIVE_W as f64 / BB_PER_LINE as f64) * (ACTIVE_H as f64 / LINES as f64) / FRAME_RATE
 }
 
 /// Precomputed vertical Gaussian beam shares `g(y_k - c_r) / S_k` for one active row `r`.
@@ -193,7 +183,7 @@ fn scan_column<F>(
     raw_col: &mut [f64],
     photo: &F,
 ) where
-    F: Fn(usize, usize, usize, f64) -> f64 + Sync + ?Sized,
+    F: Fn(usize, usize, usize, f64) -> f64 + ?Sized,
 {
     let frame_s = 1.0 / FRAME_RATE;
     let field_s = 0.5 * frame_s;
@@ -240,6 +230,62 @@ fn scan_column<F>(
     }
 }
 
+/// One uniformly lit target column scanned by the same row passes as the full camera.
+pub struct UniformColumn {
+    ch: TubeChannel,
+    weights: Vec<RowWeights>,
+    charge: Vec<f64>,
+    last_t: Vec<f64>,
+    dark: Vec<f64>,
+    frame: i64,
+}
+
+impl UniformColumn {
+    /// Start at zero charge and scan the column dark until its state settles.
+    pub fn new(ch: &TubeChannel) -> Self {
+        let weights = build_vertical_weights(ch.sigma_v_lines);
+        let n_sub = SUB_ROWS * ACTIVE_H;
+        let mut charge = vec![0.0; n_sub];
+        let mut last_t = vec![-DARK_SETTLE_S; n_sub];
+        let mut raw = vec![0.0; ACTIVE_H];
+        let dark = |_: usize, _: usize, _: usize, _: f64| 0.0;
+        let settle_frames = (DARK_SETTLE_S * FRAME_RATE).ceil() as i64;
+        for frame in -settle_frames..0 {
+            scan_column(
+                0,
+                ch,
+                &weights,
+                frame,
+                ACTIVE_W / 2,
+                &mut charge,
+                &mut last_t,
+                &mut raw,
+                &dark,
+            );
+        }
+        Self { ch: *ch, weights, charge, last_t, dark: raw, frame: 0 }
+    }
+
+    /// Scan one frame with a uniform photocurrent over the target, returning each row's signal in nA.
+    pub fn read(&mut self, photo: &dyn Fn(f64) -> f64) -> Vec<f64> {
+        let mut raw = vec![0.0; ACTIVE_H];
+        let current = |_: usize, _: usize, _: usize, t: f64| photo(t);
+        scan_column(
+            0,
+            &self.ch,
+            &self.weights,
+            self.frame,
+            ACTIVE_W / 2,
+            &mut self.charge,
+            &mut self.last_t,
+            &mut raw,
+            &current,
+        );
+        self.frame += 1;
+        raw
+    }
+}
+
 /// The pickup tubes of the camera with the charge and last-read time on every sub-element of
 /// their targets.
 #[derive(Clone)]
@@ -271,7 +317,7 @@ impl CameraTube {
     /// The stage for `params`, or `None` when the camera has no tube. Every sub-element starts
     /// at dark equilibrium, found by scanning a dark target until the reading settles.
     pub fn new(params: &CameraParams) -> Option<Self> {
-        let channels = params.tube.channels(params.beam_ratio, active_scan_s())?;
+        let channels = params.tube.channels(params.beam_ratio)?;
         let exposure = params.iris_stops.exp2();
         let blooming = params.blooming;
         let n_sub = SUB_ROWS * ACTIVE_H;
@@ -286,30 +332,16 @@ impl CameraTube {
         let mut charge: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
         let mut last_t: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
 
-        let zero = |_: usize, _: usize, _: usize, _: f64| 0.0;
         for k in 0..3 {
-            let q_init = (dark_equilibrium(&channels[k]) * 0.04).min(channels[k].plate_nas);
-            let mut q_col = vec![q_init; n_sub];
-            let mut t_col = vec![(-DARK_SETTLE_FRAMES - 1) as f64 / FRAME_RATE; n_sub];
-            let mut row_dark = vec![0.0; ACTIVE_H];
-            for n in -DARK_SETTLE_FRAMES..0 {
-                scan_column(
-                    k,
-                    &channels[k],
-                    &weights[k],
-                    n,
-                    0,
-                    &mut q_col,
-                    &mut t_col,
-                    &mut row_dark,
-                    &zero,
-                );
-            }
+            let settled = UniformColumn::new(&channels[k]);
+            let q_col = settled.charge;
+            let t_col = settled.last_t;
+            let row_dark = settled.dark;
             black[k] = row_dark.iter().sum::<f64>() / ACTIVE_H as f64;
             for x in 0..ACTIVE_W {
                 let off = x * n_sub;
                 charge[k][off..off + n_sub].copy_from_slice(&q_col);
-                let dx_s = x as f64 / FS_BB;
+                let dx_s = (x as f64 - (ACTIVE_W / 2) as f64) / FS_BB;
                 for i in 0..n_sub {
                     last_t[k][off + i] = t_col[i] + dx_s;
                 }

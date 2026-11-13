@@ -1,11 +1,12 @@
-//! The camera pickup tube: data-sheet lag, comet tails from the beam limit, the ACT gun,
-//! and the stage in the chain (off = untouched; a static scene is not restyled).
+//! The camera pickup tube: the data-sheet operating points, comet tails from the beam limit,
+//! the ACT gun, and the stage in the chain (off = untouched; a static scene is not restyled).
+//! The data-sheet lag is in `camera_lag.rs`.
 
 mod common;
+use vhsphys_core::camera::UniformColumn;
 use vhsphys_core::tube::*;
 use vhsphys_core::{config, consts::*, pipeline::Session, video::Frame};
 
-const FRAME_50: f64 = 0.04;
 /// Still-scene checks: the flat greys, how many frames they are held first, the edge rows left
 /// out, and the tolerances in 8-bit levels (flat: the rounding of the output; blocks: the tube's
 /// gamma, about 5 levels in the shadows and mid greys, plus the spot on the finest stripes).
@@ -15,20 +16,16 @@ const EDGE_ROWS: usize = 8;
 const FLAT_TOLERANCE: f64 = 1.0;
 const TONE_BLOCK: usize = 16;
 const TONE_TOLERANCE: f64 = 5.0;
-/// Active scan time per frame at 625/50: 52/64 of the line, 575/625 of the lines.
-const ACTIVE_50: f64 = 0.04 * (52.0 / 64.0) * (575.0 / 625.0);
+/// Frames read after a highlight in the tail checks.
+const DARK_FRAMES: usize = 200;
 
 fn chans(kind: TubeKind) -> [TubeChannel; 3] {
-    kind.channels(BEAM_RATIO_DEFAULT, ACTIVE_50).expect("a tube")
-}
-
-fn within(got: f64, want: f64, rel: f64) -> bool {
-    (got - want).abs() <= rel * want
+    kind.channels(BEAM_RATIO_DEFAULT).expect("a tube")
 }
 
 #[test]
 fn off_has_no_channels() {
-    assert!(TubeKind::Off.channels(2.0, ACTIVE_50).is_none());
+    assert!(TubeKind::Off.channels(BEAM_RATIO_DEFAULT).is_none());
 }
 
 #[test]
@@ -38,71 +35,28 @@ fn operating_points_are_the_data_sheets() {
         for k in 0..3 {
             assert_eq!(c[k].peak_signal_na, PEAK_SIGNAL_NA[k]);
             assert!((c[k].beam_na - 2.0 * PEAK_SIGNAL_NA[k]).abs() < 1e-9);
-            let sat = TARGET_CAPACITANCE_F * TARGET_VOLTAGE_V / ACTIVE_50 * 1e9;
-            assert!((c[k].saturation_na - sat).abs() < 1e-6 * sat);
             assert_eq!(c[k].act, kind == TubeKind::PlumbiconAct);
             let bias = if kind == TubeKind::PlumbiconBias { LIGHT_BIAS_XQ1410_NA[k] } else { 0.0 };
             assert_eq!(c[k].bias_na, bias);
+            assert_eq!(c[k].dark_na, DARK_NA);
         }
     }
 }
 
-#[test]
-fn decay_lag_matches_the_data_sheet() {
-    for (kind, data) in [(TubeKind::Plumbicon, XQ1020_LAG), (TubeKind::PlumbiconAct, XQ1520_LAG)] {
-        let c = chans(kind);
-        for k in 0..3 {
-            let m = lag_measurement(&c[k], FRAME_50);
-            assert!(within(m.decay_60, data[k].decay_60, 0.30), "{kind:?} ch{k}: decay 60 ms {} vs {}", m.decay_60, data[k].decay_60);
-            assert!(within(m.decay_200, data[k].decay_200, 0.40), "{kind:?} ch{k}: decay 200 ms {} vs {}", m.decay_200, data[k].decay_200);
-        }
-    }
-}
-
-/// Not fitted: the XQ1410 is the XQ1020 with light bias. The model has to predict that the
-/// bias cuts the lag, and by about the data sheet's amount at 60 ms.
-#[test]
-fn light_bias_cuts_the_lag_as_the_xq1410_shows() {
-    let plain = chans(TubeKind::Plumbicon);
-    let biased = chans(TubeKind::PlumbiconBias);
-    for k in 0..3 {
-        let a = lag_measurement(&plain[k], FRAME_50);
-        let b = lag_measurement(&biased[k], FRAME_50);
-        assert!(b.decay_60 < a.decay_60 && b.decay_200 < a.decay_200, "ch{k}: {a:?} -> {b:?}");
-        assert!(b.build_60 > a.build_60, "ch{k}: {a:?} -> {b:?}");
-        assert!(within(b.decay_60, XQ1410_LAG[k].decay_60, 0.35), "ch{k}: {} vs {}", b.decay_60, XQ1410_LAG[k].decay_60);
-    }
-}
-
-#[test]
-fn a_steady_scene_reads_back_its_light() {
-    let c = chans(TubeKind::Plumbicon);
-    for k in 0..3 {
-        let mut q = dark_equilibrium(&c[k]);
-        let photo = photo_current(&c[k], 0.5);
-        let mut s = 0.0;
-        for _ in 0..200 {
-            s = frame_step(&c[k], &mut q, photo);
-        }
-        // in the steady state the beam removes what the frame added
-        let added = photo + c[k].dark_na + c[k].bias_na;
-        assert!((s - added).abs() < 1e-6 * added.max(1.0), "ch{k}: read {s}, added {added}");
-    }
-}
-
-/// Signal of channel `k` per frame: `on` frames of `light`, then darkness.
+/// Signal of the middle row of a uniformly lit target, one reading per frame: `light` (1.0 =
+/// peak white) for `on` frames, then darkness. The readings start with the first frame whose
+/// middle row integrated no light (the frame of the change still holds some).
 fn after_highlight(ch: &TubeChannel, light: f64, on: usize, dark: usize) -> Vec<f64> {
-    let mut q = dark_equilibrium(ch);
+    let mut col = UniformColumn::new(ch);
     let p = photo_current(ch, light);
-    for _ in 0..on {
-        frame_step(ch, &mut q, p);
-    }
-    (0..dark).map(|_| frame_step(ch, &mut q, 0.0)).collect()
+    let t_off = on as f64 / FRAME_RATE;
+    let photo = move |t: f64| if t < t_off { p } else { 0.0 };
+    (0..on + 1 + dark).map(|_| col.read(&photo)[ACTIVE_H / 2]).skip(on + 1).collect()
 }
 
 /// Frames after the highlight has gone that still read above peak white (clipped white).
 fn tail_frames(ch: &TubeChannel, light: f64, on: usize) -> usize {
-    after_highlight(ch, light, on, 200).iter().take_while(|&&s| s > ch.peak_signal_na).count()
+    after_highlight(ch, light, on, DARK_FRAMES).iter().take_while(|&&s| s > ch.peak_signal_na).count()
 }
 
 #[test]
@@ -110,7 +64,7 @@ fn a_highlight_beyond_the_beam_leaves_a_comet_tail() {
     let g = chans(TubeKind::Plumbicon)[1];
     let s = after_highlight(&g, 4.0, 20, 5);
     assert!(s[0] > 0.95 * g.beam_na, "first dark frame reads {} (beam {})", s[0], g.beam_na);
-    assert!(tail_frames(&g, 4.0, 20) >= 3);
+    assert!(tail_frames(&g, 4.0, 20) >= 2);
     // within the beam's reach there is only lag
     assert_eq!(tail_frames(&g, 1.0, 20), 0);
     assert!(after_highlight(&g, 1.0, 20, 1)[0] < 0.5 * g.peak_signal_na);
@@ -121,14 +75,12 @@ fn the_tail_grows_with_the_overload_and_shrinks_with_the_beam() {
     let g = chans(TubeKind::Plumbicon)[1];
     let t: Vec<usize> = [2.0, 4.0, 8.0].iter().map(|&l| tail_frames(&g, l, 30)).collect();
     assert!(t[0] <= t[1] && t[1] <= t[2] && t[0] < t[2], "{t:?}");
-    let strong = TubeKind::Plumbicon.channels(3.0, ACTIVE_50).unwrap()[1];
+    let strong = TubeKind::Plumbicon.channels(3.0).unwrap()[1];
     assert!(tail_frames(&strong, 4.0, 30) < tail_frames(&g, 4.0, 30));
-    // the stored charge stops at the signal-plate voltage
-    let mut q = dark_equilibrium(&g);
-    for _ in 0..500 {
-        frame_step(&g, &mut q, photo_current(&g, 100.0));
-    }
-    assert!(q <= g.saturation_na + 1e-9);
+    // the stored charge stops at the signal-plate voltage, so a far brighter highlight leaves
+    // no longer a tail than one that already filled the element
+    let (bright, blinding) = (tail_frames(&g, 8.0, 300), tail_frames(&g, 100.0, 300));
+    assert!(blinding.abs_diff(bright) <= 1, "8x: {bright} frames, 100x: {blinding} frames");
 }
 
 #[test]
@@ -138,8 +90,8 @@ fn the_act_gun_leaves_no_tail() {
     assert!(after_highlight(&g, 8.0, 30, 1)[0] < 0.25 * g.peak_signal_na);
 }
 
-/// The red and blue tubes carry half the peak current with half the beam on the same
-/// target, so they store twice the overload per unit of beam: a white highlight's tail
+/// The red and blue tubes carry half the peak current with half the beam on a target of about
+/// the same capacitance, so they store more overload per unit of beam: a white highlight's tail
 /// outlasts on red and blue (it ends magenta).
 #[test]
 fn red_and_blue_tails_outlast_green() {
