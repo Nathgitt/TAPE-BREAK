@@ -22,6 +22,7 @@ pub const STREAM_CAMERA: u64 = 61;
 /// White and black clip levels relative to peak white (US 4032974; contract).
 pub const WHITE_CLIP: f64 = 1.05;
 pub const BLACK_CLIP: f64 = -0.03;
+const IDENTITY_MATRIX: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// Elementary charge, C (SI exact).
 const Q_E: f64 = 1.602_176_634e-19;
@@ -105,6 +106,7 @@ pub struct ApertureSpec {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProcessingSpec {
     pub head_amp: HeadAmpSpec,
+    pub matrix: bool,
     pub knee_range: Option<f64>,
     pub aperture: ApertureSpec,
 }
@@ -121,6 +123,7 @@ impl Processing {
                     temp_k: TEMP_K,
                     band_hz: BAND_HZ,
                 },
+                matrix: true,
                 knee_range: Some(STUDIO_KNEE_RANGE),
                 aperture: ApertureSpec {
                     delay_s: STUDIO_DELAY_S,
@@ -136,6 +139,7 @@ impl Processing {
                     temp_k: TEMP_K,
                     band_hz: BAND_HZ,
                 },
+                matrix: false,
                 knee_range: None,
                 aperture: ApertureSpec {
                     delay_s: CONSUMER_DELAY_S,
@@ -310,13 +314,14 @@ impl HeadAmplifier {
     }
 }
 
-/// Camera processing amplifier: clamp, gain, linearise, knee, gamma, aperture correction with coring, clip.
+/// Camera processing amplifier: clamp, gain, linearise, matrix, knee, gamma, aperture correction with coring, clip.
 #[derive(Clone)]
 pub struct VideoProcessor {
     spec: ProcessingSpec,
     peak_na: [f64; 3],
     black_na: [f64; 3],
     inv_gamma: [Option<f64>; 3],
+    matrix: Option<[[f64; 3]; 3]>,
     knee_slope: Option<f64>,
     k_h: f64,
 }
@@ -340,7 +345,19 @@ impl VideoProcessor {
         let inv_gamma = std::array::from_fn(|k| channels[k].linearise.then(|| 1.0 / channels[k].gamma));
         let knee_slope = spec.knee_range.map(|r| (gamma_inverse(WHITE_CLIP) - 1.0) / (r - 1.0));
         let k_h = horizontal_gain(spec.aperture.delay_s, channels[1].sigma_h_s, spec.head_amp.band_hz);
-        Self { spec, peak_na: peak, black_na: black, inv_gamma, knee_slope, k_h }
+        Self { spec, peak_na: peak, black_na: black, inv_gamma, matrix: None, knee_slope, k_h }
+    }
+
+    /// The colour matrix the processor applies after linearising; `new` starts with the identity,
+    /// which is not applied.
+    pub fn with_matrix(mut self, m: [[f64; 3]; 3]) -> Self {
+        self.matrix = (m != IDENTITY_MATRIX).then_some(m);
+        self
+    }
+
+    /// The colour matrix held by this processor (identity when none is applied).
+    pub fn matrix(&self) -> [[f64; 3]; 3] {
+        self.matrix.unwrap_or(IDENTITY_MATRIX)
     }
 
     /// Horizontal aperture gain `k_h` for this processor.
@@ -348,32 +365,55 @@ impl VideoProcessor {
         self.k_h
     }
 
-    /// Clamp, gain, linearise, knee, gamma, aperture correction, clip.
+    /// Clamp, gain, linearise, matrix, knee, gamma, aperture correction, clip.
     pub fn process(&self, sig: &TargetSignal) -> CameraVideo {
         let gamma_rows: Vec<[Vec<f32>; 3]> = sig
             .rows
             .par_iter()
             .map(|row| {
-                std::array::from_fn(|k| {
-                    let black = self.black_na[k];
-                    let peak = self.peak_na[k];
-                    let inv_gamma = self.inv_gamma[k];
-                    row[k]
-                        .iter()
-                        .map(|&i_na| {
-                            let mut l = (i_na as f64 - black) / peak;
-                            if let Some(exp) = inv_gamma {
-                                l = if l == 0.0 { 0.0 } else { l.abs().powf(exp).copysign(l) };
-                            }
-                            if let Some(s) = self.knee_slope {
-                                if l > 1.0 {
-                                    l = 1.0 + (l - 1.0) * s;
+                let Some(m) = self.matrix else {
+                    return std::array::from_fn(|k| {
+                        let black = self.black_na[k];
+                        let peak = self.peak_na[k];
+                        let inv_gamma = self.inv_gamma[k];
+                        row[k]
+                            .iter()
+                            .map(|&i_na| {
+                                let mut l = (i_na as f64 - black) / peak;
+                                if let Some(exp) = inv_gamma {
+                                    l = if l == 0.0 { 0.0 } else { l.abs().powf(exp).copysign(l) };
                                 }
+                                if let Some(s) = self.knee_slope {
+                                    if l > 1.0 {
+                                        l = 1.0 + (l - 1.0) * s;
+                                    }
+                                }
+                                gamma_correct(l) as f32
+                            })
+                            .collect()
+                    });
+                };
+                let w = row[0].len();
+                let mut out: [Vec<f32>; 3] = std::array::from_fn(|_| Vec::with_capacity(w));
+                for x in 0..w {
+                    let lin: [f64; 3] = std::array::from_fn(|k| {
+                        let mut l = (row[k][x] as f64 - self.black_na[k]) / self.peak_na[k];
+                        if let Some(exp) = self.inv_gamma[k] {
+                            l = if l == 0.0 { 0.0 } else { l.abs().powf(exp).copysign(l) };
+                        }
+                        l
+                    });
+                    for k in 0..3 {
+                        let mut l = m[k][0] * lin[0] + m[k][1] * lin[1] + m[k][2] * lin[2];
+                        if let Some(s) = self.knee_slope {
+                            if l > 1.0 {
+                                l = 1.0 + (l - 1.0) * s;
                             }
-                            gamma_correct(l) as f32
-                        })
-                        .collect()
-                })
+                        }
+                        out[k].push(gamma_correct(l) as f32);
+                    }
+                }
+                out
             })
             .collect();
 

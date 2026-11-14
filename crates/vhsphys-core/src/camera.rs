@@ -17,6 +17,7 @@ use super::camera_processing::{CameraVideo, HeadAmplifier, Processing, VideoProc
 use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, FH, FRAME_RATE, FS_BB};
 use super::stripe::{optical_lowpass, target_light, StripeDecoder, STRIPE_WHITE_LIGHT};
 use super::video::{encode_from_rgb, row_to_line, Baseband, Frame};
+use crate::spectral::{colour_matrix, taking_matrix};
 use crate::tube::{
     oetf_inverse, photo_current, scan, Dbc, TubeChannel, TubeKind, ACT_BEAM_NA, ACT_FLYBACK_S,
     ACT_SPAN_PH, BEAM_RATIO_DEFAULT, BEND_RADIUS_MAX_LINES, DBC_TOLERANCE_NA, MAX_TRAPS,
@@ -31,6 +32,7 @@ pub const SUB_ROWS: usize = 4;
 
 /// Dark scanning time before frame 0; exceeds 30 times the slowest dark settling constant.
 const DARK_SETTLE_S: f64 = 10.0;
+const IDENTITY_MATRIX: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// Signal currents read from the targets in one frame: per active frame row, per channel, one
 /// value per baseband sample of the active line, nA (before the head amplifier).
@@ -110,6 +112,9 @@ pub struct CameraParams {
     pub processing: Processing,
     /// Target temperature in degrees Celsius (default 25.0).
     pub temperature_c: f64,
+    /// Spectral taking through the prism, IR-cut and material responses, with the processing
+    /// amplifier's colour matrix when the profile carries one (default `false`: ideal taking).
+    pub spectral: bool,
 }
 
 impl Default for CameraParams {
@@ -122,6 +127,7 @@ impl Default for CameraParams {
             blooming: 0.0,
             processing: Processing::default(),
             temperature_c: 25.0,
+            spectral: false,
         }
     }
 }
@@ -1091,6 +1097,8 @@ fn align_stripe(base: &CameraTube) -> (StripeAlignment, StripeDecoder) {
 #[derive(Clone)]
 pub struct CameraTube {
     layout: Layout,
+    spectral: bool,
+    taking: [[f64; 3]; 3],
     channels: [TubeChannel; 3],
     /// Signal of a dark target at equilibrium, nA: the level the camera clamps to black.
     black: [f64; 3],
@@ -1127,6 +1135,7 @@ impl CameraTube {
     /// the reading settles.
     pub fn seeded(params: &CameraParams, seed: u64) -> Option<Self> {
         let mut channels = params.tube.channels_at(params.beam_ratio, params.temperature_c)?;
+        let materials = params.tube.materials()?;
         let bending = params.blooming.max(0.0);
         for ch in &mut channels {
             ch.bending = bending;
@@ -1134,6 +1143,8 @@ impl CameraTube {
         if params.layout == Layout::Stripe {
             channels = [channels[STRIPE_SLOT]; 3];
         }
+        let spectral = params.spectral && params.layout == Layout::ThreeTube;
+        let taking = if spectral { taking_matrix(materials) } else { IDENTITY_MATRIX };
         let exposure = params.iris_stops.exp2();
         let linear_light: [f64; 256] =
             std::array::from_fn(|v| oetf_inverse(v as f64 / 255.0) * exposure);
@@ -1224,9 +1235,14 @@ impl CameraTube {
         let prev_f1_photo = Vec::new();
         let spec = params.processing.spec();
         let head_amp = HeadAmplifier::new(&spec.head_amp, seed);
-        let processor = VideoProcessor::new(params.processing, &channels, black);
+        let mut processor = VideoProcessor::new(params.processing, &channels, black);
+        if spectral && spec.matrix {
+            processor = processor.with_matrix(colour_matrix(materials));
+        }
         let mut cam = Self {
             layout: params.layout,
+            spectral,
+            taking,
             channels,
             black,
             linear_light,
@@ -1294,6 +1310,32 @@ impl CameraTube {
     /// The channels as built (operating point, `K`, spot widths).
     pub fn channels(&self) -> &[TubeChannel; 3] {
         &self.channels
+    }
+
+    /// The taking matrix in use: `taking_matrix(kind.materials())` with `spectral`, else the identity.
+    pub fn taking(&self) -> [[f64; 3]; 3] {
+        self.taking
+    }
+
+    /// The processor's colour matrix: `colour_matrix(..)` with `spectral` and a profile that has one,
+    /// else the identity.
+    pub fn colour_matrix(&self) -> [[f64; 3]; 3] {
+        self.processor.matrix()
+    }
+
+    /// The photocurrent the picture `f` drives on each target element, nA, indexed
+    /// `(r * ACTIVE_W + x) * 3 + ch`: the light through the taking, then the target's sensitivity
+    /// and transfer. What `read` integrates for a picture held over a field.
+    pub fn photo_currents(&self, f: &Frame) -> Vec<f64> {
+        if self.layout == Layout::Stripe {
+            let mono = self.stripe_frame_photo(f);
+            let mut out = vec![0.0; ACTIVE_W * ACTIVE_H * 3];
+            for (i, &p) in mono.iter().enumerate() {
+                out[i * 3 + STRIPE_SLOT] = p;
+            }
+            return out;
+        }
+        self.frame_photo(f)
     }
 
     /// Read one frame from photocurrents: `photo(ch, r, x, t)` is the target-equivalent photo
@@ -1399,13 +1441,35 @@ impl CameraTube {
         let expected = ACTIVE_W * ACTIVE_H * 3;
         assert_eq!(frame.rgb.len(), expected, "the camera stage takes frames of the engine's active size");
         let mut out = vec![0.0; expected];
-        let photo = &self.photo;
         let row_len = ACTIVE_W * 3;
+        if !self.spectral {
+            let photo = &self.photo;
+            out.par_chunks_mut(row_len)
+                .zip(frame.rgb.par_chunks(row_len))
+                .for_each(|(dst, src)| {
+                    for (i, &v) in src.iter().enumerate() {
+                        dst[i] = photo[i % 3][v as usize];
+                    }
+                });
+            return out;
+        }
+        let linear = &self.linear_light;
+        let t = &self.taking;
+        let chs = &self.channels;
         out.par_chunks_mut(row_len)
             .zip(frame.rgb.par_chunks(row_len))
             .for_each(|(dst, src)| {
-                for (i, &v) in src.iter().enumerate() {
-                    dst[i] = photo[i % 3][v as usize];
+                for x in 0..ACTIVE_W {
+                    let p = x * 3;
+                    let l_in = [
+                        linear[src[p] as usize],
+                        linear[src[p + 1] as usize],
+                        linear[src[p + 2] as usize],
+                    ];
+                    for ch in 0..3 {
+                        let l_ch = t[ch][0] * l_in[0] + t[ch][1] * l_in[1] + t[ch][2] * l_in[2];
+                        dst[p + ch] = photo_current(&chs[ch], l_ch);
+                    }
                 }
             });
         out

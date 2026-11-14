@@ -241,12 +241,13 @@ relative to the unbiased value; its absolute H8397A level comes out lower than t
 
 After the beam reads each row's current in nA, the line signal passes through the head
 amplifier and processing amplifier (`camera_processing.rs`) in the order of US 4032974: head
-amplifier (noise and band) -> clamp -> gain -> knee -> gamma -> aperture correction with
-coring -> clip. See `docs/design/CAMERA_SCAN.md` ("Camera electronics") for the contract and
-`docs/CAMERA_RESEARCH.md` ("Head-amplifier noise and processing lie mostly above 2.5 MHz") for
-the measurements and sources. The colour matrix waits for the targets' spectral taking
-characteristics, and flare and shading with their corrections wait for the optics and geometry
-work (without the error they cancel, adding them would only add a fault).
+amplifier (noise and band) -> clamp -> gain -> linearise (`vidicon` only) -> colour matrix (when
+`spectral` is enabled on a profile with `matrix = true`) -> knee -> gamma -> aperture correction
+with coring -> clip. See `docs/design/CAMERA_SCAN.md` ("Camera electronics" and "Spectral taking
+and the colour matrix") for the contract and `docs/CAMERA_RESEARCH.md` ("Head-amplifier noise and
+processing lie mostly above 2.5 MHz") for the measurements and sources. Flare and shading with
+their corrections wait for the optics and geometry work (without the error they cancel, adding them
+would only add a fault).
 
 **Head amplifier.** The tube acts as a current source into the input capacitance `C_in` of
 tube, coil, FET and strays. The amplifier adds a noise current of one-sided spectral density
@@ -298,10 +299,95 @@ remain down to `-0.03`.
 |---|---|---|---|
 | `C_in`, `R_n`, `R_f`, `T` | 20 pF, 75 ohm, 1 Mohm, 300 K | 30 pF, 100 ohm, 470 kohm, 300 K | Published ranges 15-30 pF, 50-100 ohm, 0.3-1 Mohm (`docs/CAMERA_RESEARCH.md`); consumer at the poor end (~45 dB at 300 nA, matching PK-958 "> 45 dB") |
 | Band (-3 dB) | 5.5 MHz | 5.5 MHz | Flat to about 5 MHz (US 3743766) |
+| Colour matrix | `true` (`T^-1`) | `false` `[est]` | US 4032974, Jones 1968; WV-3110 has no linear matrix |
 | Knee range `R` | 2.3 | none `[est]` | 1984 studio practice: linear to 100 %, 230 % to white clip (US 4470067) |
 | Aperture `T` | 150 ns | 200 ns | 150 ns (BBC Engineering 91); 0.2 us delay line (Panasonic) |
 | Vertical gain `k_v` | 0.5 | 0 | `g = 0.25` (BBC Monograph 47) |
 | Coring `c` | 0.008 `[est]` | 0.015 `[est]` | Threshold in gamma-corrected units |
+
+## Spectral taking and the colour matrix
+
+With `CameraParams::spectral = true` (config key `spectral`, default `false`) in three-tube mode,
+each channel sees the scene's light through the lens IR-cut filter, its dichroic prism arm and its
+photoconductor's spectral response (`spectral.rs`), and the processing amplifier applies the inverse
+3x3 linear matrix (`camera_processing.rs`) when the profile enables it (`studio` yes, `consumer`
+no). With `spectral = false`, both the taking matrix and the colour matrix are identity (and the
+matrix multiply is skipped), so existing output is bit-identical. Stripe-layout spectra are out of
+scope for this stage.
+
+**Scene basis spectra and observer.** All spectra live on an 81-point wavelength grid from
+`380 nm` to `780 nm` in `5 nm` steps (`N_LAMBDA = 81`, `LAMBDA_MIN_NM = 380.0`,
+`LAMBDA_STEP_NM = 5.0`); light outside `380-780 nm` is not invented `[est]`. The scene light is a
+sum of three non-negative primary spectra `E(l) = sum_c L_c E_c(l)`, formed from smooth shapes
+`S_R = 0.0118 + 0.9882 long_pass(l, 619.0, 15.0)`, `S_G = exp(-((l - 539.1) / 33.2)^2 / 2)` and
+`S_B = short_pass(l, 474.2, 18.8)` (`[DER]`, where `long_pass(l, e, w) = 1 / (1 + exp(-(l - e) / w))`
+and `short_pass = 1 - long_pass`), scaled by `E_c(l) = Y_c S_c(l) / sum_i ybar(l_i) S_c(l_i)` with
+`BT709_LUMINANCE = [0.2126, 0.7152, 0.0722]` `[DS]` and the Wyman, Sloan and Shirley 2013 (JCGT
+2(2)) multi-lobe CIE 1931 2-degree fit `[DS]`. Their chromaticities sit at `(0.6400, 0.3300)`,
+`(0.3002, 0.6001)` and `(0.1500, 0.0601)` against BT.709 `(0.64, 0.33)`, `(0.30, 0.60)` and
+`(0.15, 0.06)`, summing to D65 white at `(0.3129, 0.3292)` against `(0.3127, 0.3290)`.
+
+**Fitted prism and IR-cut `[est, fitted to DS]`.** The dichroic prism splits at `480 nm` and
+`580 nm` with `5 nm` edges (`prism_R = long_pass(l, 580, 5)`, `prism_G = long_pass(l, 480, 5) *
+short_pass(l, 580, 5)`, `prism_B = short_pass(l, 480, 5)`), and the lens IR-cut is
+`short_pass(l, 680, 10)` (`680 nm` edge, `10 nm` wide). These widths and edges are fitted so the
+Plumbicon camera's matrix comes within `0.075` in every term of the BBC optimum Plumbicon matrix
+(`[[1.14, -0.18, 0.04], [-0.06, 1.23, -0.17], [-0.03, 0.02, 1.01]]`, Jones 1968 `[DS]`).
+
+**Material responses.** Each material's relative spectral response is piecewise linear between the
+`(nm, response)` knots below and `0` outside them; `[FIG]` points come from the published data-sheet
+figures (`docs/CAMERA_RESEARCH.md`), and remaining points are `[est]` fills of the curve shapes:
+
+| Material | Knots `(nm, response)` | Sources and notes |
+|---|---|---|
+| `Pbo` (standard PbO) | `380 0.55 [est], 400 0.70 [est], 450 0.92 [est], 490 1.00 [FIG], 550 0.72 [est], 600 0.35 [est], 630 0.10 [est], 650 0.00 [FIG]` | Philips T10 Fig. 1 (peak 485-500 nm, dark by 650 nm) |
+| `PboExtendedRed` | `380 0.55 [est], 400 0.70 [est], 450 0.92 [est], 490 1.00 [est], 550 0.80 [est], 600 0.55 [est], 650 0.38 [est], 700 0.25 [est], 780 0.10 [FIG]` | Philips T10 Fig. 1 (sulphur-doped layer tailing to 850-950 nm); red channel of all Plumbicon kinds `[DER]` |
+| `Sb2s3` (`vidicon`) | `380 0.40 [est], 400 0.55 [est], 450 0.80 [est], 550 1.00 [FIG], 600 0.88 [est], 675 0.50 [FIG], 700 0.36 [est], 750 0.12 [est], 780 0.05 [est]` | `docs/CAMERA_RESEARCH.md` (peaks near 550 nm, half peak near 675 nm) |
+| `Newvicon` | `380 0.36 [est], 400 0.38 [FIG], 500 0.55 [est], 600 0.78 [est], 700 0.96 [est], 735 1.00 [FIG], 780 0.92 [est]` | Philips T12 Fig. 1 (220 of 575 mA/W at 400 nm, peak 730-740 nm) |
+| `Saticon` | `380 0.65 [est], 400 0.80 [est], 430 1.00 [FIG], 450 1.00 [FIG], 500 0.82 [est], 550 0.62 [est], 595 0.40 [FIG], 650 0.12 [est], 700 0.03 [FIG], 750 0.00 [est]` | Hitachi H8397A Fig. 3 (100 % at 430-450 nm, ~40 % at 595 nm, ~3 % at 700 nm) |
+| `Chalnicon` | `380 0.60 [est], 400 0.64 [FIG], 500 0.75 [est], 600 0.87 [est], 710 1.00 [FIG], 740 0.50 [est], 770 0.02 [FIG], 780 0.00 [est]` | Toshiba 1973 Fig. 6 (0.30 of 0.47 uA/uW at 400 nm, peak ~710 nm, near zero by 770 nm) |
+
+`TubeKind::materials()` assigns `[PboExtendedRed, Pbo, Pbo]` to every Plumbicon kind, `[Sb2s3; 3]`
+to `Vidicon`, `[Newvicon; 3]` to `Newvicon`, `[Saticon; 3]` to `Saticon`, `[Chalnicon; 3]` to
+`Chalnicon`, and `None` to `Off`.
+
+**Taking and colour matrices.** Channel `ch` weights wavelength `l` by
+`tau_ch(l) = ir_cut(l) * prism_ch(l) * response_m(l)`. Integrating against each scene primary and
+normalising each row to sum to `1` (white balance on `L = (1, 1, 1)`) gives the taking matrix `T`,
+so the linear light on target `ch` is `l_ch = sum_c T[ch][c] L_c` before `photo_current`. The
+processing amplifier applies `M = T^-1` (whose rows also sum to `1`) after clamp, gain and
+vidicon linearising (`1 / gamma`) and before knee and gamma (US 4032974). Recorded contract values
+(`docs/design/CAMERA_SCAN.md`):
+
+- Plumbicon (`[PboExtendedRed, Pbo, Pbo]`):
+  `T = [[0.846, 0.153, 0.001], [0.032, 0.803, 0.165], [0.016, 0.043, 0.940]]`,
+  `M = [[1.191, -0.229, 0.039], [-0.044, 1.265, -0.222], [-0.019, -0.054, 1.073]]`.
+  Without the red-extended layer (`[Pbo; 3]`), the red arm sees only 580-650 nm and requires a red
+  row `[1.69, -0.83, 0.14]` `[DER]`.
+- Red primary read on its own channel without a matrix (`T[R][R]`): Saticon `0.766`, Plumbicon
+  `0.846`, Vidicon `0.854`, Chalnicon `0.898`, Newvicon `0.903`. (The full `T` and `M` 3x3
+  tables for the non-Plumbicon kinds are defined by `taking_matrix` / `colour_matrix` from the
+  knots above; see `tests/camera_colour.rs`.)
+
+**Checks (`tests/camera_colour.rs`).**
+- Scene primaries: non-negative across `380-780 nm`, BT.709 `(x, y)` within `0.003`, luminance
+  shares within `0.002`, and D65 white within `0.003`.
+- Material curves: peak `1.0` (`<= 1e-9`), peak wavelengths within `+-10 nm`, data-sheet points
+  within `0.03`, `Chalnicon` non-decreasing over `400-710 nm`, `PboExtendedRed >= Pbo` everywhere,
+  prism isolation `<= 1e-6` at `400 nm` (red) and `700 nm` (blue).
+- White balance: `T` and `M` row sums `= 1.0` and `M * T = I` within `1e-9`; `photo_currents` on
+  white and grey (`0.5`) match `photo_current` within `1e-9`; `VideoProcessor` with matrix reads
+  grey within `0.002`.
+- Matrix necessity and mismatch: Plumbicon `M` within `0.10` of `BBC_PLUMBICON` and `T` within
+  `0.07` of `BBC_PLUMBICON^-1`; standard `[Pbo; 3]` `M[R][G] <= -0.5`; every material's `M` has an
+  off-diagonal term `>= 0.10`; without a matrix `T[c][c] <= 0.97` with primaries turning toward
+  their spectral neighbours (red and green toward yellow, blue toward cyan); behind the PbO matrix,
+  Newvicon red over-saturates by `>= 0.03` and Saticon red under-corrects by `>= 0.05`.
+- Whole-camera bars (`BAR_LIGHT = 0.5`, 8 frames, inner rows, `BAR_MARGIN = 24`): spectral `read`
+  agrees with ideal `read_currents` fed `T * L` within `1e-5` relative; Vidicon `VideoProcessor`
+  restores saturated red within `0.002`; Studio Plumbicon restores colour bars within `0.02` of
+  expected video and `0.03` linear light of the ideal camera, while Consumer leaves the unmatrixed
+  taking mixture within `0.02`.
 
 ## Highlights
 
@@ -426,9 +512,9 @@ lose chroma near the noise floor and dim greys lean green (~0.05 greener at 18 %
   and cross-channel bending across separate prism targets.
 * The capacitances are fitted at 625/50 and used unchanged at 525/60; elapsed-time lag is
   checked on both raster engines.
-* Only the Plumbicon variants and monochrome-style target curves (R = G = B channels for
-  Vidicon, Newvicon, Saticon and Chalnicon) are modelled; spectral responses and the colour
-  matrix are left for later.
+* Spectral taking and the colour matrix cover the three-tube prism cameras behind the fitted
+  dichroic prism and IR-cut filter; stripe-camera spectra, illuminant shifts and metameric
+  residuals outside the three primary spectra are out of scope.
 
 ## Why tails end magenta
 

@@ -28,6 +28,7 @@
 //! Source: Philips Data Handbook T10, Plumbicon camera tubes, 1985 (XQ1020, XQ1410, XQ1520),
 //! lag at Is/Ib = 20/300 nA, low key, 50 Hz. See docs/CAMERA.md.
 
+use crate::spectral::Material;
 use serde::{Deserialize, Serialize};
 
 /// Gamma of the light transfer characteristic (all three types: 0.95 +/- 0.05).
@@ -421,6 +422,23 @@ impl TubeKind {
     /// beam current to that multiple of each channel's peak-white current.
     pub fn channels(self, beam_ratio: f64) -> Option<[TubeChannel; 3]> {
         self.channels_at(beam_ratio, 25.0)
+    }
+
+    /// Photoconductor material of each channel `[R, G, B]`, or `None` for `Off`.
+    pub fn materials(self) -> Option<[Material; 3]> {
+        match self {
+            TubeKind::Off => None,
+            TubeKind::Plumbicon
+            | TubeKind::PlumbiconBias
+            | TubeKind::PlumbiconAct
+            | TubeKind::PlumbiconDbc => {
+                Some([Material::PboExtendedRed, Material::Pbo, Material::Pbo])
+            }
+            TubeKind::Vidicon => Some([Material::Sb2s3; 3]),
+            TubeKind::Newvicon => Some([Material::Newvicon; 3]),
+            TubeKind::Saticon => Some([Material::Saticon; 3]),
+            TubeKind::Chalnicon => Some([Material::Chalnicon; 3]),
+        }
     }
 }
 
