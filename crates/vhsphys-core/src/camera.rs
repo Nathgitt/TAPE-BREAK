@@ -16,7 +16,9 @@
 use super::camera_processing::{CameraVideo, HeadAmplifier, Processing, VideoProcessor};
 use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, FH, FRAME_RATE, FS_BB};
 use super::video::{encode_from_rgb, row_to_line, Baseband, Frame};
-use crate::tube::{oetf_inverse, photo_current, scan, TubeChannel, TubeKind, BEAM_RATIO_DEFAULT};
+use crate::tube::{
+    oetf_inverse, photo_current, scan, TubeChannel, TubeKind, BEAM_RATIO_DEFAULT, MAX_TRAPS,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +56,8 @@ pub fn read_time_s(n: i64, r: usize, x: usize) -> f64 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CameraParams {
-    /// The pickup tube (`off`, `plumbicon`, `plumbicon-bias`, `plumbicon-act`).
+    /// The pickup tube (`off`, `plumbicon`, `plumbicon-bias`, `plumbicon-act`, `vidicon`,
+    /// `newvicon`, `saticon`, `chalnicon`).
     pub tube: TubeKind,
     /// Exposure of the scene on the tube targets, in stops (powers of two of the light).
     /// Positive values overexpose: highlights then carry more than the beam can take off.
@@ -66,6 +69,8 @@ pub struct CameraParams {
     pub blooming: f64,
     /// Camera electronics profile (`studio`, `consumer`).
     pub processing: Processing,
+    /// Target temperature in degrees Celsius (default 25.0).
+    pub temperature_c: f64,
 }
 
 impl Default for CameraParams {
@@ -76,6 +81,7 @@ impl Default for CameraParams {
             beam_ratio: BEAM_RATIO_DEFAULT,
             blooming: 0.0,
             processing: Processing::default(),
+            temperature_c: 25.0,
         }
     }
 }
@@ -182,7 +188,8 @@ fn convolve_edge(raw: &[f64], x: usize, radius: usize, kernel: &[f64]) -> f64 {
 }
 
 /// Scan all active rows of one frame for a single column `x` and channel `ch_idx`, updating the
-/// column's stored sub-row charges `q_col` and last-landed times `t_col` in place.
+/// column's stored sub-row charges `q_col`, last-landed times `t_col`, and (when the channel has
+/// traps) trap occupancies `traps_col` in place.
 #[allow(clippy::too_many_arguments)]
 fn scan_column<F>(
     ch_idx: usize,
@@ -192,6 +199,7 @@ fn scan_column<F>(
     x: usize,
     q_col: &mut [f64],
     t_col: &mut [f64],
+    traps_col: &mut [[f64; MAX_TRAPS]],
     raw_col: &mut [f64],
     photo: &F,
 ) where
@@ -200,10 +208,12 @@ fn scan_column<F>(
     let frame_s = 1.0 / FRAME_RATE;
     let field_s = 0.5 * frame_s;
     let beam_frame_nas = ch.beam_na * frame_s;
-    let dark_plus_bias = ch.dark_na + ch.bias_na;
+    let bias_na = ch.bias_na;
+    let dark_plus_bias = ch.dark_na + bias_na;
     let plate_nas = ch.plate_nas;
     let k_nas = ch.k_nas;
     let act = ch.act;
+    let has_traps = !traps_col.is_empty();
 
     for field in 0..2 {
         for r in (field..ACTIVE_H).step_by(2) {
@@ -216,18 +226,36 @@ fn scan_column<F>(
                 let mut t0 = t_prev;
                 let mut m = (t0 / field_s).floor() as i64;
                 let mut photo_nas = 0.0;
+                let mut trap_dn = 0.0;
                 while t0 < t_now {
                     let t_end = ((m + 1) as f64 * field_s).min(t_now);
                     let dt_piece = t_end - t0;
                     if dt_piece > 0.0 {
                         let t_mid = 0.5 * (t0 + t_end);
-                        photo_nas += photo(ch_idx, k / SUB_ROWS, x, t_mid).max(0.0) * dt_piece;
+                        let p_na = photo(ch_idx, k / SUB_ROWS, x, t_mid).max(0.0);
+                        photo_nas += p_na * dt_piece;
+                        if has_traps {
+                            let j_light = p_na + bias_na;
+                            let occ = &mut traps_col[k];
+                            for (p, trap) in ch.traps.iter().enumerate() {
+                                if trap.capture > 0.0 {
+                                    let b = trap.capture * j_light / trap.capacity_nas
+                                        + 1.0 / trap.release_s;
+                                    let n_inf = trap.capture * j_light / b;
+                                    let n_0 = occ[p];
+                                    let n_1 = n_inf + (n_0 - n_inf) * (-b * dt_piece).exp();
+                                    trap_dn += n_1 - n_0;
+                                    occ[p] = n_1;
+                                }
+                            }
+                        }
                     }
                     t0 = t_end;
                     m += 1;
                 }
                 let dt = t_now - t_prev;
-                let mut before = (q_col[k] + photo_nas + dark_plus_bias * dt).min(plate_nas);
+                let mut before =
+                    (q_col[k] + photo_nas + dark_plus_bias * dt - trap_dn).min(plate_nas);
                 if act {
                     before = before.min(beam_frame_nas);
                 }
@@ -248,6 +276,7 @@ pub struct UniformColumn {
     weights: Vec<RowWeights>,
     charge: Vec<f64>,
     last_t: Vec<f64>,
+    traps: Vec<[f64; MAX_TRAPS]>,
     dark: Vec<f64>,
     frame: i64,
 }
@@ -259,6 +288,8 @@ impl UniformColumn {
         let n_sub = SUB_ROWS * ACTIVE_H;
         let mut charge = vec![0.0; n_sub];
         let mut last_t = vec![-DARK_SETTLE_S; n_sub];
+        let has_traps = ch.traps.iter().any(|t| t.capture > 0.0);
+        let mut traps = if has_traps { vec![[0.0; MAX_TRAPS]; n_sub] } else { Vec::new() };
         let mut raw = vec![0.0; ACTIVE_H];
         let dark = |_: usize, _: usize, _: usize, _: f64| 0.0;
         let settle_frames = (DARK_SETTLE_S * FRAME_RATE).ceil() as i64;
@@ -271,11 +302,12 @@ impl UniformColumn {
                 ACTIVE_W / 2,
                 &mut charge,
                 &mut last_t,
+                &mut traps,
                 &mut raw,
                 &dark,
             );
         }
-        Self { ch: *ch, weights, charge, last_t, dark: raw, frame: 0 }
+        Self { ch: *ch, weights, charge, last_t, traps, dark: raw, frame: 0 }
     }
 
     /// Scan one frame with a uniform photocurrent over the target, returning each row's signal in nA.
@@ -290,6 +322,7 @@ impl UniformColumn {
             ACTIVE_W / 2,
             &mut self.charge,
             &mut self.last_t,
+            &mut self.traps,
             &mut raw,
             &current,
         );
@@ -316,6 +349,8 @@ pub struct CameraTube {
     charge: [Vec<f64>; 3],
     /// Last-landed timestamp per sub-element in seconds, column-major.
     last_t: [Vec<f64>; 3],
+    /// Trap occupancies per sub-element in nA s, column-major; empty when the channel has no traps.
+    traps: [Vec<[f64; MAX_TRAPS]>; 3],
     /// Pre-spot signal scratch per channel, column-major (`x * ACTIVE_H + r`).
     raw_cols: [Vec<f64>; 3],
     /// Held photocurrent map of the previous frame's field 1 (`ACTIVE_H x ACTIVE_W x 3`), nA.
@@ -332,7 +367,7 @@ impl CameraTube {
     /// tube. Every sub-element starts at dark equilibrium, found by scanning a dark target until
     /// the reading settles.
     pub fn seeded(params: &CameraParams, seed: u64) -> Option<Self> {
-        let channels = params.tube.channels(params.beam_ratio)?;
+        let channels = params.tube.channels_at(params.beam_ratio, params.temperature_c)?;
         let exposure = params.iris_stops.exp2();
         let blooming = params.blooming;
         let n_sub = SUB_ROWS * ACTIVE_H;
@@ -346,19 +381,27 @@ impl CameraTube {
         let mut photo = [[0.0; 256]; 3];
         let mut charge: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
         let mut last_t: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
+        let mut traps: [Vec<[f64; MAX_TRAPS]>; 3] = std::array::from_fn(|_| Vec::new());
 
         for k in 0..3 {
             let settled = UniformColumn::new(&channels[k]);
             let q_col = settled.charge;
             let t_col = settled.last_t;
+            let tr_col = settled.traps;
             let row_dark = settled.dark;
             black[k] = row_dark.iter().sum::<f64>() / ACTIVE_H as f64;
+            if !tr_col.is_empty() {
+                traps[k] = vec![[0.0; MAX_TRAPS]; ACTIVE_W * n_sub];
+            }
             for x in 0..ACTIVE_W {
                 let off = x * n_sub;
                 charge[k][off..off + n_sub].copy_from_slice(&q_col);
                 let dx_s = (x as f64 - (ACTIVE_W / 2) as f64) / FS_BB;
                 for i in 0..n_sub {
                     last_t[k][off + i] = t_col[i] + dx_s;
+                }
+                if !tr_col.is_empty() {
+                    traps[k][off..off + n_sub].copy_from_slice(&tr_col);
                 }
             }
             for (v, p) in photo[k].iter_mut().enumerate() {
@@ -379,6 +422,7 @@ impl CameraTube {
             horiz,
             charge,
             last_t,
+            traps,
             raw_cols,
             prev_f1_photo,
             blooming,
@@ -438,19 +482,54 @@ impl CameraTube {
         self.charge
             .par_iter_mut()
             .zip(self.last_t.par_iter_mut())
+            .zip(self.traps.par_iter_mut())
             .zip(raw_cols.par_iter_mut())
             .enumerate()
-            .for_each(|(ch_idx, ((q_all, t_all), raw_all))| {
+            .for_each(|(ch_idx, (((q_all, t_all), traps_all), raw_all))| {
                 let ch = &channels[ch_idx];
                 let w_ch = &weights[ch_idx];
-                q_all
-                    .par_chunks_mut(n_sub)
-                    .zip(t_all.par_chunks_mut(n_sub))
-                    .zip(raw_all.par_chunks_mut(ACTIVE_H))
-                    .enumerate()
-                    .for_each(|(x, ((q_col, t_col), raw_col))| {
-                        scan_column(ch_idx, ch, w_ch, frame, x, q_col, t_col, raw_col, photo);
-                    });
+                if traps_all.is_empty() {
+                    q_all
+                        .par_chunks_mut(n_sub)
+                        .zip(t_all.par_chunks_mut(n_sub))
+                        .zip(raw_all.par_chunks_mut(ACTIVE_H))
+                        .enumerate()
+                        .for_each(|(x, ((q_col, t_col), raw_col))| {
+                            scan_column(
+                                ch_idx,
+                                ch,
+                                w_ch,
+                                frame,
+                                x,
+                                q_col,
+                                t_col,
+                                &mut [],
+                                raw_col,
+                                photo,
+                            );
+                        });
+                } else {
+                    q_all
+                        .par_chunks_mut(n_sub)
+                        .zip(t_all.par_chunks_mut(n_sub))
+                        .zip(traps_all.par_chunks_mut(n_sub))
+                        .zip(raw_all.par_chunks_mut(ACTIVE_H))
+                        .enumerate()
+                        .for_each(|(x, (((q_col, t_col), trap_col), raw_col))| {
+                            scan_column(
+                                ch_idx,
+                                ch,
+                                w_ch,
+                                frame,
+                                x,
+                                q_col,
+                                t_col,
+                                trap_col,
+                                raw_col,
+                                photo,
+                            );
+                        });
+                }
             });
 
         let rows: Vec<[Vec<f32>; 3]> = (0..ACTIVE_H)

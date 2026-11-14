@@ -61,7 +61,99 @@ pub const V_T_TRIODE_GUN_V: f64 = 0.17;
 /// Diode gun beam temperature of about 1200 K, US 4,388,556.
 pub const V_T_DIODE_GUN_V: f64 = 0.10;
 /// Fitted target capacitance per colour `[R, G, B]`, F; see docs/CAMERA.md.
-pub const TARGET_CAPACITANCE_F: [f64; 3] = [1.38e-9, 1.15e-9, 1.76e-9];
+/// R and G are unchanged from the capacitive Plumbicon fit (`docs/CAMERA_RESEARCH.md`, "One
+/// constant reproduces the handbook curves"); B is refitted with traps within 15 % of the R/G
+/// mean (`docs/CAMERA_RESEARCH.md`, "Traps add an exposure-dependent tail, strongest in blue PbO
+/// and in Sb2S3").
+pub const TARGET_CAPACITANCE_F: [f64; 3] = [1.38e-9, 1.15e-9, 1.32e-9];
+/// Maximum trap populations per target channel.
+pub const MAX_TRAPS: usize = 2;
+
+/// One photoconductor trap population on a target channel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trap {
+    /// Share of light current (photocurrent plus bias) captured while empty (0 to 1).
+    pub capture: f64,
+    /// Trap capacity in target-equivalent nA s.
+    pub capacity_nas: f64,
+    /// Exponential release time constant, s.
+    pub release_s: f64,
+}
+
+impl Trap {
+    /// An unused trap slot.
+    pub const NONE: Trap = Trap { capture: 0.0, capacity_nas: 0.0, release_s: 0.0 };
+}
+
+/// Fitted PbO blue trap populations, capacities on the 30 mm target (`docs/CAMERA_RESEARCH.md`,
+/// "Traps add an exposure-dependent tail, strongest in blue PbO and in Sb2S3"): fitted to the
+/// XQ1410B floor against bias (Mullard 1987 Figs. 12 and 14), the XQ1427B exposure family (RCA
+/// handbook Figs. 11-61/11-62) and the XQ1020/XQ1520 blue table. The first fills within a few
+/// fields and carries the 50 ms excess; the second fills over about a second and holds the floor
+/// that bias light does not remove.
+pub const PBO_BLUE_TRAPS: [Trap; MAX_TRAPS] = [
+    Trap { capture: 0.12, capacity_nas: 0.37, release_s: 0.066 },
+    Trap { capture: 0.035, capacity_nas: 3.9, release_s: 0.45 },
+];
+
+/// Peak-white signal current for the 2/3-inch and 18 mm non-PbO tubes, nA.
+/// Source: `docs/CAMERA_RESEARCH.md` ("Six photoconductors differ in gamma, dark current and lag
+/// mechanism"); Hitachi H8397A (0.2 uA), Matsushita S4075 / Philips T12 (0.2 uA), home vidicons
+/// (200 nA); Chalnicon `[est]`.
+pub const NEW_PEAK_SIGNAL_NA: f64 = 200.0;
+/// Transfer exponents (`gamma`) of the non-PbO materials.
+/// Source: `docs/CAMERA_RESEARCH.md` ("Six photoconductors differ in gamma, dark current and lag
+/// mechanism"); Philips T12 / Panasonic WV-3110 (Sb2S3 0.65), Philips T12 (Newvicon 1.0), Hitachi
+/// H8397A (Saticon 1.0), Toshiba 1973 (Chalnicon 0.90-0.95).
+pub const VIDICON_GAMMA: f64 = 0.65;
+pub const NEWVICON_GAMMA: f64 = 1.0;
+pub const SATICON_GAMMA: f64 = 1.0;
+pub const CHALNICON_GAMMA: f64 = 0.925;
+/// Signal-plate (target) voltages, V.
+/// Source: `docs/CAMERA_RESEARCH.md` ("Six photoconductors differ in gamma, dark current and lag
+/// mechanism"); Philips T12 / XQ1271 (vidicon 10-60 V `[est]`, Newvicon 10-35 V `[est]`),
+/// Hitachi H8397A (Saticon 50 V), Toshiba 1973 (Chalnicon 35 V).
+pub const VIDICON_TARGET_VOLTAGE_V: f64 = 30.0;
+pub const NEWVICON_TARGET_VOLTAGE_V: f64 = 25.0;
+pub const SATICON_TARGET_VOLTAGE_V: f64 = 50.0;
+pub const CHALNICON_TARGET_VOLTAGE_V: f64 = 35.0;
+/// Dark current at 25 deg C (nA) and temperature doubling step (deg C).
+/// Source: `docs/CAMERA_RESEARCH.md` ("Six photoconductors differ in gamma, dark current and lag
+/// mechanism"); Philips T12 / XQ1271 (vidicon 20 nA, doubles every 7-8 deg C; Newvicon 5 nA,
+/// doubles every 7-8 deg C), Hitachi H8397A (Saticon 0.15 nA at 20 deg C, 2.7 nA at 60 deg C),
+/// Toshiba 1973 (Chalnicon 0.1 / 1 / 10 nA at 0 / 30 / 60 deg C).
+pub const VIDICON_DARK_25_NA: f64 = 20.0;
+pub const VIDICON_DARK_DOUBLING_C: f64 = 7.5;
+pub const NEWVICON_DARK_25_NA: f64 = 5.0;
+pub const NEWVICON_DARK_DOUBLING_C: f64 = 7.5;
+pub const SATICON_DARK_25_NA: f64 = 0.215;
+pub const SATICON_DARK_DOUBLING_C: f64 = 9.6;
+pub const CHALNICON_DARK_25_NA: f64 = 0.681;
+pub const CHALNICON_DARK_DOUBLING_C: f64 = 9.0;
+/// Fitted target capacitances for the non-PbO materials, F, with `V_T = 0.17` V, on the scanned
+/// target against the lag data of `docs/CAMERA_RESEARCH.md` ("Six photoconductors differ in gamma,
+/// dark current and lag mechanism", "Traps add an exposure-dependent tail"). Saticon: Hitachi
+/// H8397A Fig. 6 and the RCA handbook BC4391 family, inside the layer's 1000-2000 pF/cm^2 (Hitachi
+/// Hyoron 1976, 0.58-1.16 nF on 6.6 x 8.8 mm). Newvicon: Matsushita S4075 (10 % at 50 ms) and
+/// Philips T12 (8-13 % at 60 ms). Chalnicon: Toshiba 1973 (10 % at 50 ms) [est conditions].
+/// Vidicon: home-camera 20 % at 50 ms, Philips XQ1240 and RCA's bias cut.
+pub const VIDICON_CAPACITANCE_F: f64 = 9.9e-9;
+pub const NEWVICON_CAPACITANCE_F: f64 = 7.6e-9;
+pub const SATICON_CAPACITANCE_F: f64 = 0.64e-9;
+pub const CHALNICON_CAPACITANCE_F: f64 = 6.4e-9;
+/// Fitted trap populations for the non-PbO materials, from the same lag data
+/// (`docs/CAMERA_RESEARCH.md`, "Traps add an exposure-dependent tail"). The vidicon's single strong
+/// trap carries most of its lag and is what bias light cuts. The Saticon's first trap is small and
+/// fast, so bias light keeps it nearly full; the second holds the tail that grows with exposure.
+/// The Saticon is fitted to the BC4391 family as measured and to the H8397A bias family relative
+/// to its unbiased value: its absolute level at 200 nA rises with signal, which neither the
+/// capacitive law nor a filling trap can give (`docs/CAMERA_RESEARCH.md`, "Unexplained data").
+pub const VIDICON_TRAPS: [Trap; MAX_TRAPS] =
+    [Trap { capture: 0.95, capacity_nas: 5.0, release_s: 0.25 }, Trap::NONE];
+pub const SATICON_TRAPS: [Trap; MAX_TRAPS] = [
+    Trap { capture: 0.54, capacity_nas: 0.066, release_s: 0.061 },
+    Trap { capture: 0.09, capacity_nas: 0.40, release_s: 0.82 },
+];
 /// Vertical beam spot width (Gaussian sigma) in frame-line pitches [est].
 /// Source: `docs/CAMERA_RESEARCH.md` ("Interlaced readout"), 0.55 to 0.73 across tube formats,
 /// derived from Philips T10 and RCA 1977 400 TVL modulation depths.
@@ -83,6 +175,14 @@ pub enum TubeKind {
     PlumbiconBias,
     /// Plumbicon with an anti-comet-tail gun (XQ1520): lag, no comet tails.
     PlumbiconAct,
+    /// Antimony trisulphide (Sb2S3) 2/3-inch home-camera vidicon: heavy trap-dominated lag.
+    Vidicon,
+    /// ZnSe/ZnCdTe 2/3-inch Newvicon: linear transfer, high capacitance, no traps.
+    Newvicon,
+    /// Se-As-Te 2/3-inch Saticon (H8397A): linear transfer, low dark current, traps.
+    Saticon,
+    /// CdSe Chalnicon: near-linear transfer, capacitive lag.
+    Chalnicon,
 }
 
 /// One tube of the camera (one colour channel) at its operating point.
@@ -102,38 +202,149 @@ pub struct TubeChannel {
     pub sigma_v_lines: f64,
     /// Horizontal beam spot Gaussian sigma in seconds.
     pub sigma_h_s: f64,
-    /// Plate limit `C * TARGET_VOLTAGE_V`, nA s.
+    /// Plate limit `C * target_voltage_v`, nA s.
     pub plate_nas: f64,
     pub dark_na: f64,
     pub bias_na: f64,
     /// Anti-comet-tail gun.
     pub act: bool,
+    /// Light transfer exponent.
+    pub gamma: f64,
+    /// Whether the processing amplifier linearises `1 / gamma` before the knee.
+    pub linearise: bool,
+    /// Signal-plate (target) voltage, V.
+    pub target_voltage_v: f64,
+    /// Temperature step for dark-current doubling in deg C (`f64::INFINITY` for none).
+    pub dark_doubling_c: f64,
+    /// Photoconductor trap populations on this channel.
+    pub traps: [Trap; MAX_TRAPS],
+}
+
+fn dark_law(kind: TubeKind) -> Option<(f64, f64)> {
+    match kind {
+        TubeKind::Off => None,
+        TubeKind::Plumbicon | TubeKind::PlumbiconBias | TubeKind::PlumbiconAct => {
+            Some((DARK_NA, f64::INFINITY))
+        }
+        TubeKind::Vidicon => Some((VIDICON_DARK_25_NA, VIDICON_DARK_DOUBLING_C)),
+        TubeKind::Newvicon => Some((NEWVICON_DARK_25_NA, NEWVICON_DARK_DOUBLING_C)),
+        TubeKind::Saticon => Some((SATICON_DARK_25_NA, SATICON_DARK_DOUBLING_C)),
+        TubeKind::Chalnicon => Some((CHALNICON_DARK_25_NA, CHALNICON_DARK_DOUBLING_C)),
+    }
+}
+
+/// Dark current of `kind`'s channels at `temperature_c` (deg C), nA, or `None` for `Off`.
+pub fn dark_at(kind: TubeKind, temperature_c: f64) -> Option<f64> {
+    let (dark_25, doubling) = dark_law(kind)?;
+    if doubling.is_infinite() {
+        Some(dark_25)
+    } else {
+        Some(dark_25 * ((temperature_c - 25.0) / doubling).exp2())
+    }
 }
 
 impl TubeKind {
-    /// The three channels `[R, G, B]`, or `None` for `Off`. `beam_ratio` scales the beam
-    /// current to that multiple of each channel's peak-white current.
+    /// The three channels `[R, G, B]` at `temperature_c` (deg C), or `None` for `Off`.
+    /// `beam_ratio` scales the beam current to that multiple of each channel's peak-white current.
+    pub fn channels_at(self, beam_ratio: f64, temperature_c: f64) -> Option<[TubeChannel; 3]> {
+        let (dark_na, dark_doubling_c) = (dark_at(self, temperature_c)?, dark_law(self)?.1);
+        let make_uniform = |peak: f64,
+                            capacitance_f: f64,
+                            gamma: f64,
+                            linearise: bool,
+                            target_voltage_v: f64,
+                            traps: [Trap; MAX_TRAPS]| {
+            let ch = TubeChannel {
+                peak_signal_na: peak,
+                beam_na: beam_ratio * peak,
+                capacitance_f,
+                v_t: V_T_TRIODE_GUN_V,
+                k_nas: capacitance_f * V_T_TRIODE_GUN_V * 1e9,
+                sigma_v_lines: SIGMA_V_LINES,
+                sigma_h_s: SIGMA_H_S,
+                plate_nas: capacitance_f * target_voltage_v * 1e9,
+                dark_na,
+                bias_na: 0.0,
+                act: false,
+                gamma,
+                linearise,
+                target_voltage_v,
+                dark_doubling_c,
+                traps,
+            };
+            [ch, ch, ch]
+        };
+        match self {
+            TubeKind::Off => None,
+            TubeKind::Plumbicon | TubeKind::PlumbiconBias | TubeKind::PlumbiconAct => {
+                Some(std::array::from_fn(|k| TubeChannel {
+                    peak_signal_na: PEAK_SIGNAL_NA[k],
+                    beam_na: beam_ratio * PEAK_SIGNAL_NA[k],
+                    capacitance_f: TARGET_CAPACITANCE_F[k],
+                    v_t: V_T_TRIODE_GUN_V,
+                    k_nas: TARGET_CAPACITANCE_F[k] * V_T_TRIODE_GUN_V * 1e9,
+                    sigma_v_lines: SIGMA_V_LINES,
+                    sigma_h_s: SIGMA_H_S,
+                    plate_nas: TARGET_CAPACITANCE_F[k] * TARGET_VOLTAGE_V * 1e9,
+                    dark_na,
+                    bias_na: if self == TubeKind::PlumbiconBias {
+                        LIGHT_BIAS_XQ1410_NA[k]
+                    } else {
+                        0.0
+                    },
+                    act: self == TubeKind::PlumbiconAct,
+                    gamma: GAMMA,
+                    linearise: false,
+                    target_voltage_v: TARGET_VOLTAGE_V,
+                    dark_doubling_c,
+                    traps: if k == 2 { PBO_BLUE_TRAPS } else { [Trap::NONE; MAX_TRAPS] },
+                }))
+            }
+            TubeKind::Vidicon => Some(make_uniform(
+                NEW_PEAK_SIGNAL_NA,
+                VIDICON_CAPACITANCE_F,
+                VIDICON_GAMMA,
+                true,
+                VIDICON_TARGET_VOLTAGE_V,
+                VIDICON_TRAPS,
+            )),
+            TubeKind::Newvicon => Some(make_uniform(
+                NEW_PEAK_SIGNAL_NA,
+                NEWVICON_CAPACITANCE_F,
+                NEWVICON_GAMMA,
+                false,
+                NEWVICON_TARGET_VOLTAGE_V,
+                [Trap::NONE; MAX_TRAPS],
+            )),
+            TubeKind::Saticon => Some(make_uniform(
+                NEW_PEAK_SIGNAL_NA,
+                SATICON_CAPACITANCE_F,
+                SATICON_GAMMA,
+                false,
+                SATICON_TARGET_VOLTAGE_V,
+                SATICON_TRAPS,
+            )),
+            TubeKind::Chalnicon => Some(make_uniform(
+                NEW_PEAK_SIGNAL_NA,
+                CHALNICON_CAPACITANCE_F,
+                CHALNICON_GAMMA,
+                false,
+                CHALNICON_TARGET_VOLTAGE_V,
+                [Trap::NONE; MAX_TRAPS],
+            )),
+        }
+    }
+
+    /// The three channels `[R, G, B]` at 25 deg C, or `None` for `Off`. `beam_ratio` scales the
+    /// beam current to that multiple of each channel's peak-white current.
     pub fn channels(self, beam_ratio: f64) -> Option<[TubeChannel; 3]> {
-        if self == TubeKind::Off { return None; }
-        Some(std::array::from_fn(|k| TubeChannel {
-            peak_signal_na: PEAK_SIGNAL_NA[k],
-            beam_na: beam_ratio * PEAK_SIGNAL_NA[k],
-            capacitance_f: TARGET_CAPACITANCE_F[k],
-            v_t: V_T_TRIODE_GUN_V,
-            k_nas: TARGET_CAPACITANCE_F[k] * V_T_TRIODE_GUN_V * 1e9,
-            sigma_v_lines: SIGMA_V_LINES,
-            sigma_h_s: SIGMA_H_S,
-            plate_nas: TARGET_CAPACITANCE_F[k] * TARGET_VOLTAGE_V * 1e9,
-            dark_na: DARK_NA,
-            bias_na: if self == TubeKind::PlumbiconBias { LIGHT_BIAS_XQ1410_NA[k] } else { 0.0 },
-            act: self == TubeKind::PlumbiconAct,
-        }))
+        self.channels_at(beam_ratio, 25.0)
     }
 }
 
 /// Photo current for a linear scene light (1.0 = the light that gives peak white), nA.
 pub fn photo_current(ch: &TubeChannel, light: f64) -> f64 {
-    ch.peak_signal_na * light.max(0.0).powf(GAMMA)
+    ch.peak_signal_na * light.max(0.0).powf(ch.gamma)
 }
 
 /// The scan of one element holding charge `q`: the charge it holds afterwards.

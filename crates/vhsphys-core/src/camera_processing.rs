@@ -310,12 +310,13 @@ impl HeadAmplifier {
     }
 }
 
-/// Camera processing amplifier: clamp, gain, knee, gamma, aperture correction with coring, clip.
+/// Camera processing amplifier: clamp, gain, linearise, knee, gamma, aperture correction with coring, clip.
 #[derive(Clone)]
 pub struct VideoProcessor {
     spec: ProcessingSpec,
     peak_na: [f64; 3],
     black_na: [f64; 3],
+    inv_gamma: [Option<f64>; 3],
     knee_slope: Option<f64>,
     k_h: f64,
 }
@@ -325,9 +326,10 @@ impl VideoProcessor {
     pub fn new(processing: Processing, channels: &[TubeChannel; 3], black: [f64; 3]) -> Self {
         let spec = processing.spec();
         let peak_na = std::array::from_fn(|k| channels[k].peak_signal_na);
+        let inv_gamma = std::array::from_fn(|k| channels[k].linearise.then(|| 1.0 / channels[k].gamma));
         let knee_slope = spec.knee_range.map(|r| (gamma_inverse(WHITE_CLIP) - 1.0) / (r - 1.0));
         let k_h = horizontal_gain(spec.aperture.delay_s, channels[1].sigma_h_s, spec.head_amp.band_hz);
-        Self { spec, peak_na, black_na: black, knee_slope, k_h }
+        Self { spec, peak_na, black_na: black, inv_gamma, knee_slope, k_h }
     }
 
     /// Horizontal aperture gain `k_h` for this processor.
@@ -335,7 +337,7 @@ impl VideoProcessor {
         self.k_h
     }
 
-    /// Clamp, gain, knee, gamma, aperture correction, clip.
+    /// Clamp, gain, linearise, knee, gamma, aperture correction, clip.
     pub fn process(&self, sig: &TargetSignal) -> CameraVideo {
         let gamma_rows: Vec<[Vec<f32>; 3]> = sig
             .rows
@@ -344,10 +346,14 @@ impl VideoProcessor {
                 std::array::from_fn(|k| {
                     let black = self.black_na[k];
                     let peak = self.peak_na[k];
+                    let inv_gamma = self.inv_gamma[k];
                     row[k]
                         .iter()
                         .map(|&i_na| {
                             let mut l = (i_na as f64 - black) / peak;
+                            if let Some(exp) = inv_gamma {
+                                l = if l == 0.0 { 0.0 } else { l.abs().powf(exp).copysign(l) };
+                            }
                             if let Some(s) = self.knee_slope {
                                 if l > 1.0 {
                                     l = 1.0 + (l - 1.0) * s;

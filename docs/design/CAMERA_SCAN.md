@@ -227,6 +227,77 @@ In `camera.rs`: `CameraParams` gains `processing: Processing`; `CameraTube::seed
 `CameraTube::video(f0, f1) -> CameraVideo` (read, amplify with the frame index of the read, process).
 `encode_fields` encodes `video`; `process_frame` writes `video(f, f)` as `(255.0f32 * v).round().clamp(0.0, 255.0) as u8`.
 
+## Target materials and traps
+
+Source: `docs/CAMERA_RESEARCH.md`, "Six photoconductors differ in gamma, dark current and lag
+mechanism" and "Traps add an exposure-dependent tail". Four further targets join the lead-oxide
+Plumbicon. Each is a material: its transfer exponent, its dark current and how fast that grows with
+temperature, its layer capacitance, and its traps. Until the single-tube stripe camera, a camera with
+one of them carries three identical tubes behind the prism.
+
+- **Kinds** (`TubeKind`, config names in brackets): `Vidicon` (`vidicon`, Sb2S3, a 2/3-inch home
+  camera tube), `Newvicon` (`newvicon`, ZnSe/ZnCdTe, 2/3 inch), `Saticon` (`saticon`, Se-As-Te,
+  the low-lag H8397A, 2/3 inch), `Chalnicon` (`chalnicon`, CdSe). The three Plumbicon kinds keep
+  every constant they have, except blue's capacitance (below).
+- **Transfer.** `photo_current = peak * light^gamma` with `gamma` per channel: PbO 0.95, Sb2S3 0.65
+  (the home camera's tube, Panasonic WV-3110), Newvicon 1.0, Saticon 1.0, Chalnicon 0.925 (0.90 to
+  0.95). The camera's gamma corrector is set for its tube: a vidicon camera's correction gamma is about
+  0.7 on a 0.65 tube, an overall law near 0.45, so for a channel with `linearise` the processing
+  amplifier raises the clamped, gained signal to `1 / gamma` (keeping its sign) before the knee. Only the
+  vidicon linearises; the 0.95 of PbO and Chalnicon was left in by the cameras.
+- **Operating points** (all channels of a non-PbO kind alike): peak signal 200 nA (H8397A 0.2 uA,
+  S4075 0.2 uA, home vidicons 200 nA; Chalnicon [est]). Target voltage: PbO 45 V, Saticon 50 V,
+  Chalnicon 35 V, Newvicon 25 V [est, 10 to 35 V], vidicon 30 V [est, 10 to 60 V]. Every gun is a
+  triode: `V_T = V_T_TRIODE_GUN_V`. The beam is `beam_ratio` times peak as now (the Saticon's
+  practice of 3 to 4 times is used in its lag measurement).
+- **Dark current against temperature.** `dark(T) = dark_25 * 2^((T - 25) / doubling)`, `T` in deg C.
+  Saticon: through the H8397A curve, 0.15 nA at 20 deg C and 2.7 nA at 60 deg C. Chalnicon: 0.1 / 1 / 10
+  nA at 0 / 30 / 60 deg C. Newvicon: 5 nA at 25 deg C, doubling every 7.5 deg C (7 to 8). Vidicon: 20 nA
+  at 25 deg C (the voltage is set for it), doubling every 7.5 deg C. PbO: 1 nA, no temperature law (none
+  is published). `CameraParams.temperature_c` (default 25) sets it; `TubeKind::channels(beam_ratio)` is
+  `channels_at(beam_ratio, 25.0)`.
+- **Capacitance.** One `C` per material (per colour for PbO), fitted on the scanned engine with
+  `V_T = 0.17` together with the traps. Checks against the data: Saticon within 0.58 to 1.16 nF (1000
+  to 2000 pF/cm^2 on 6.6 x 8.8 mm); Newvicon more than twice PbO green ("much larger target
+  capacitance"); PbO blue within 15 % of the mean of red and green (its excess was standing in for trap
+  lag). Red and green PbO stay as fitted.
+- **Traps.** Up to `MAX_TRAPS = 2` populations per channel, each with a capture share `f` (0 to 1),
+  a capacity `N` (target-equivalent nA s) and a release time `tau` (s). Light (the photocurrent and the
+  bias light, not the dark current) of current `j` at an element fills them:
+  `dn/dt = f j (1 - n / N) - n / tau`, and the element stores the light less what the traps keep:
+  over an interval in which `j` is constant the element gains `j dt - sum(n_end - n_start)`, with
+  `n(t) = n_inf + (n_0 - n_inf) exp(-b t)`, `b = f j / N + 1 / tau`, `n_inf = f j / b`. Charge is
+  conserved: all trapped charge arrives, late. Each sub-element carries its own `n`, settled with the
+  dark settle (bias light on) before frame 0. Traps: PbO blue, Saticon, vidicon. None in PbO red and
+  green ("negligible"), Newvicon ("free of photoconductive lag") and Chalnicon ("mainly capacitive").
+- **Fit data** (`tests/camera_materials.rs`; the RCA procedure is a 30 nA signal, 5 nA bias, a
+  100 nA beam, 60 Hz, a dark target exposed for a number of fields, lag in percent of the signal
+  current): XQ1410B blue floor at 200 ms against bias (20/300 nA, 50 Hz); XQ1427B blue and BC4391
+  Saticon exposure families; H8397A against bias at 50 ms (0.2 uA, 60 Hz); Newvicon S4075 10 % at
+  50 ms (0.2 uA, 60 Hz) and T12 8 to 13 % at 60 ms (50 Hz); Chalnicon 10 % at 50 ms (200 nA, 60 Hz
+  [est conditions]); home vidicon 20 % at 50 ms (200 nA, 20 nA dark, 60 Hz), XQ1240 8 % at 200 ms, and
+  the bias cut of RCA's vidicon (13 to 9.2 % at 50 ms, 3.3 to 1.2 % at 200 ms with 20 nA).
+
+Interfaces, in `tube.rs`:
+
+```rust
+pub const MAX_TRAPS: usize = 2;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trap { pub capture: f64, pub capacity_nas: f64, pub release_s: f64 }
+impl Trap { pub const NONE: Trap; }
+// TubeChannel gains: gamma, linearise, target_voltage_v, dark_doubling_c (f64::INFINITY for none),
+// traps: [Trap; MAX_TRAPS]; plate_nas = capacitance_f * target_voltage_v * 1e9.
+impl TubeKind {
+    pub fn channels_at(self, beam_ratio: f64, temperature_c: f64) -> Option<[TubeChannel; 3]>;
+}
+/// Dark current of `kind`'s channels at `temperature_c`, nA.
+pub fn dark_at(kind: TubeKind, temperature_c: f64) -> Option<f64>;
+pub fn photo_current(ch: &TubeChannel, light: f64) -> f64; // peak * light^ch.gamma
+```
+
+`UniformColumn` and `CameraTube` integrate the traps in the same pieces as the light. `GAMMA` stays as
+the PbO value.
+
 ## Stages
 
 | Stage | Content |
@@ -234,7 +305,8 @@ In `camera.rs`: `CameraParams` gains `processing: Processing`; `CameraTube::seed
 | Scan engine | Target grid, beam passes, read times, held pictures, signal normalisation, horizontal spot; the existing tube parameters converted to `K`. |
 | Tube in seconds | Tube parameters in seconds: physical `V_T` per gun, `C` fitted per channel to the handbook curves (decay against bias, build-up at 40 to 80 ms, high key) on the scanned model; the lag measurement re-run on the engine; 50 and 60 Hz from the same constants. |
 | Electronics | Head amplifier noise (amplitude rising with frequency) and band, clamp, knee, gamma, aperture correction from line delays with coring, clip; studio and consumer profiles. |
-| Materials | Sb2S3, Newvicon, Saticon, Chalnicon targets: transfer exponent, dark current against temperature, capacitance, trap populations, spectral weighting of the channels and the colour matrix that goes with it. |
+| Materials | Sb2S3, Newvicon, Saticon, Chalnicon targets: transfer exponent, dark current against temperature, capacitance, trap populations. |
+| Spectra | Spectral weighting of the channels per material and the colour matrix that goes with it. |
 | Stripe camera | Single-tube colour: stripe filter on the target behind an optical low-pass, carrier from scan speed, decoder (trap, band-pass, 1H separation, detection, 2.8 MHz Y and 0.5 MHz colour). |
 | Highlights | ACT flyback spanning several lines, dynamic beam control, beam bending from element potential, trail colour. |
 | Geometry | Deflection distortion, three-tube registration, black and white shading and its correction, lens flare and its correction, corner focus. |
