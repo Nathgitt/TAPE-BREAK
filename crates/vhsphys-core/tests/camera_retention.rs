@@ -33,8 +33,8 @@ const PBO_BLUE_CURVE: [(f64, f64); 4] = [(10.0, 0.70), (15.0, 0.84), (20.0, 0.92
 const SATICON_CURVE: [(f64, f64); 4] = [(10.0, 0.21), (12.5, 0.43), (16.0, 0.64), (25.0, 0.85)];
 /// Reading accuracy of the curves plus the law's fit.
 const CURVE_TOLERANCE: f64 = 0.06;
-/// The Saticon's element reaches 39.6 V at its 200 nA peak white: its knee must lie below that.
-const SATICON_PEAK_LAYER_V: f64 = 39.6;
+/// The Saticon's element reaches 41.7 V at its 200 nA peak white (0.80 nF): its knee must lie below that.
+const SATICON_PEAK_LAYER_V: f64 = 41.7;
 
 /// Handbook conditions, 50 Hz: low key (signal, beam) and the XQ1020 high key.
 const LOW_KEY: (f64, f64) = (20.0, 300.0);
@@ -75,7 +75,7 @@ const BEAM_OFF_OVER_ON: f64 = 5.0;
 /// 50 and 200 nA, unbiased, beam set for four times a 200 nA highlight. 12.4 / 8.7 / 3.6 %.
 const BC4908_BEAM_NA: f64 = 800.0;
 const BC4908_SIGNALS: [f64; 3] = [30.0, 50.0, 200.0];
-const BC4908_LOW_OVER_HIGH_MIN: f64 = 1.7;
+const BC4908_LOW_OVER_HIGH_MIN: f64 = 2.6;
 
 /// Lead-oxide highlight burn (RCA AN-5042): a specular highlight held on a plain Plumbicon, then the
 /// lens capped. 20 times peak white for 5 s on the spot; read 3 s after.
