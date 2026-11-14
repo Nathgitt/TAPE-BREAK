@@ -375,9 +375,19 @@ vidicon linearising (`1 / gamma`) and before knee and gamma (US 4032974). Record
   Without the red-extended layer (`[Pbo; 3]`), the red arm sees only 580-650 nm and requires a red
   row `[1.69, -0.83, 0.14]` `[DER]`.
 - Red primary read on its own channel without a matrix (`T[R][R]`): Saticon `0.766`, Plumbicon
-  `0.846`, Vidicon `0.854`, Chalnicon `0.898`, Newvicon `0.903`. (The full `T` and `M` 3x3
-  tables for the non-Plumbicon kinds are defined by `taking_matrix` / `colour_matrix` from the
-  knots above; see `tests/camera_colour.rs`.)
+  `0.846`, Vidicon `0.854`, Chalnicon `0.898`, Newvicon `0.903`.
+- The other materials, the same material on all three targets (`taking_matrix` / `colour_matrix`
+  evaluated on the knots above, rows R / G / B) `[DER]`:
+
+  | Tube | Taking matrix `T` | Colour matrix `M = T^-1` |
+  |---|---|---|
+  | `vidicon` (`Sb2s3`) | `[[0.854, 0.145, 0.001], [0.038, 0.830, 0.133], [0.016, 0.046, 0.938]]` | `[[1.179, -0.207, 0.028], [-0.051, 1.224, -0.173], [-0.018, -0.056, 1.074]]` |
+  | `newvicon` | `[[0.903, 0.096, 0.001], [0.041, 0.835, 0.124], [0.016, 0.042, 0.941]]` | `[[1.113, -0.129, 0.016], [-0.051, 1.211, -0.160], [-0.017, -0.052, 1.069]]` |
+  | `saticon` | `[[0.766, 0.232, 0.002], [0.033, 0.801, 0.166], [0.016, 0.037, 0.947]]` | `[[1.320, -0.385, 0.065], [-0.050, 1.273, -0.223], [-0.021, -0.044, 1.064]]` |
+  | `chalnicon` | `[[0.898, 0.101, 0.001], [0.039, 0.828, 0.133], [0.016, 0.039, 0.945]]` | `[[1.120, -0.138, 0.018], [-0.050, 1.222, -0.172], [-0.017, -0.048, 1.065]]` |
+
+  The Saticon's weak red (its response falls to about 40 % at 595 nm) needs the largest
+  correction: its red row takes 0.385 of green back out.
 
 **Checks (`tests/camera_colour.rs`).**
 - Scene primaries: non-negative across `380-780 nm`, BT.709 `(x, y)` within `0.003`, luminance
