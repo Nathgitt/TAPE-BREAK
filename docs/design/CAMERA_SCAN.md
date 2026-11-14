@@ -64,8 +64,8 @@ after the recorder, as for everything else in the project.
   `I + j_dark + j_bias`. `TargetSignal` holds these currents in nA: no black level is subtracted
   and nothing is normalised to peak white there (that is the electronics' job).
 - The horizontal spot is the beam's width moving at scan speed: the row's signal is convolved in
-  time with a Gaussian of `sigma_h_s` seconds (per channel). This is an operation on the line
-  signal, not on a picture.
+  time with a Gaussian of `sigma_h_s` seconds (per channel). This acts on the line signal in
+  time, before any picture exists.
 
 ## Interfaces
 
@@ -264,7 +264,7 @@ one of them carries three identical tubes behind the prism.
   lag). Red and green PbO stay as fitted.
 - **Traps.** Up to `MAX_TRAPS = 2` populations per channel, each with a capture share `f` (0 to 1),
   a capacity `N` (target-equivalent nA s) and a release time `tau` (s). Light (the photocurrent and the
-  bias light, not the dark current) of current `j` at an element fills them:
+  bias light; the dark current is excluded) of current `j` at an element fills them:
   `dn/dt = f j (1 - n / N) - n / tau`, and the element stores the light less what the traps keep:
   over an interval in which `j` is constant the element gains `j dt - sum(n_end - n_start)`, with
   `n(t) = n_inf + (n_0 - n_inf) exp(-b t)`, `b = f j / N + 1 / tau`, `n_inf = f j / b`. Charge is
@@ -603,7 +603,7 @@ a sum over it. `long_pass(l, e, w) = 1 / (1 + exp(-(l - e) / w))`, `short_pass =
   `photo_current(ch, l_ch)` as now. White and every grey reach the targets exactly as with ideal taking.
 - Colour matrix: `M = T^-1`. In the processing amplifier the linear signals `L'_ch` (after clamp, gain,
   correctors and linearising) become `L''_ch = sum_j M[ch][j] L'_j` before the knee.
-- Resulting values (for the record; the tests judge them against the data, not these digits). Taking
+- Resulting values (for the record; the tests judge them against the data). Taking
   `T` of the Plumbicon camera `[[0.846, 0.153, 0.001], [0.032, 0.803, 0.165], [0.016, 0.043, 0.940]]`;
   its matrix `[[1.191, -0.229, 0.039], [-0.044, 1.265, -0.222], [-0.019, -0.054, 1.073]]`. Red
   primary read on its own channel without a matrix (`T[R][R]`): Saticon 0.766, Plumbicon 0.846, vidicon

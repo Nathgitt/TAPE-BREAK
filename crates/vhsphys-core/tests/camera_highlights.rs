@@ -7,7 +7,7 @@
 //! (`photo_current`). Sources: docs/CAMERA_RESEARCH.md ("Beam capacity of twice peak white turns
 //! highlights into comet tails"): Mullard 1987 (ACT 32 times, dynamic beam control 16 times over a spot
 //! of 10 % of the picture height; XQ1520 cutting levels; XQ3440 and XQ1520 low-key lag), US 4,143,305
-//! (the flyback spans many lines, pre-discharges a few lines ahead, not at the top of the picture),
+//! (the flyback spans many lines, pre-discharges a few lines ahead and misses the top of the picture),
 //! US 4,229,767 (the Ampex beam law), Philips 1963 (beam bending, the 10 V swing), RCA 1977 and
 //! Neuhauser 1978 (lead oxide trails red, the Saticon's residue is white and gone in about 2 s).
 //! A camera without a tube is covered by the golden test.
@@ -212,7 +212,7 @@ fn the_highlight_guns_are_the_data_sheets() {
 
 /// The flyback offers each element of its span the beam over the span's share of the target. Four
 /// flybacks before the read (a half span of 8 lines at 525) clear a full element to the cutting level in
-/// every channel; one does not (US 4,143,305: a few lines ahead, not at the top).
+/// every channel; one does not (US 4,143,305: only a few lines ahead, so the top is left).
 #[test]
 fn the_flyback_clears_a_full_element_in_a_few_lines_but_not_in_one() {
     let b = act_flyback_nas();

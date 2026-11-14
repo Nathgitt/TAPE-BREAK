@@ -129,8 +129,8 @@ current measured in nA by the same sub-row scan as the camera. See
 | B | 1.32 | 0.224 | 0.17 |
 
 PbO blue's capacitance sits within 15 % of the red/green mean (1.265 nF); its extra lag comes from
-two trap populations in the blue layer (see "Target materials and traps") rather than from a larger
-capacitance. `plumbicon-dbc` uses the diode-gun value (`V_T = 0.10 V`) with `1.7x` larger
+two trap populations in the blue layer (see "Target materials and traps"), and a larger capacitance
+plays no part. `plumbicon-dbc` uses the diode-gun value (`V_T = 0.10 V`) with `1.7x` larger
 capacitance (`2.346 / 1.955 / 2.244 nF` for R / G / B) so `K = C * V_T` stays the same.
 
 The following table records the lag checks from `tests/camera_lag.rs`; percentages are measured
@@ -152,7 +152,7 @@ bias; build-up is relative to the final signal. Values are reported in measured 
 | XQ1020 G, 300/600 nA | decay 60 / 200 ms | 1.2 / 0.4 | 1.04 / 0.19 |
 | 525/60 vs 625/50 | XQ1520 R decay 60 / 80 / 120 / 200 ms; build-up 60 ms | same-time curves within 12%; build-up within 10 points | passed within both limits |
 
-The XQ1410 and high-key figures are predictions, not fit targets. The 525-line engine uses the
+The XQ1410 and high-key figures are predictions: the fit never saw them. The 525-line engine uses the
 same constants and is checked at the same elapsed times.
 
 ## Target materials and traps
@@ -227,7 +227,7 @@ that scanned area.
 | XQ1427B blue | decay 50, 200 ms after 2 / 4 / 16 / 64 / 256 fields | 1.9, 0.3 / 2.4, 0.45 / 3.4, 1.25 / 4.5, 1.95 / 4.7, 2.25 | 1.60, 0.21 / 1.96, 0.36 / 2.80, 0.93 / 3.56, 1.48 / 3.61, 1.52 |
 | Saticon BC4391 (shape only) | decay 50, 200 ms after 2 / 4 / 16 / 64 / 256 fields; as shares of the 256-field reading | 1.5, 0.2 / 1.8, 0.25 / 2.3, 0.45 / 2.45, 0.5 / 2.55, 0.5; 0.59, 0.4 / 0.71, 0.5 / 0.90, 0.9 / 0.96, 1 / 1, 1 | 4.42, 0.15 / 4.75, 0.25 / 5.45, 0.47 / 5.56, 0.50 / 5.56, 0.50; 0.79, 0.30 / 0.85, 0.50 / 0.98, 0.94 / 1, 1 / 1, 1 |
 | Saticon BC4908 (800 nA beam, 30 C, 60 Hz) | decay 50 ms at 30 / 50 / 200 nA with 0 nA; 5 nA; 10 nA bias | 12.4 / 8.7 / 3.6; 6.1 / 4.3 / 2.4; 2.9 / 2.2 / 1.85 | 12.08 / 8.00 / 3.06; 5.48 / 4.07 / 2.25; 2.96 / 2.54 / 1.93 |
-| Saticon H8397A (200 nA, 3.5x beam, 30 C, 60 Hz), not judged | decay 50 ms at 0 / 5 / 10 / 16 nA bias | 6.7 / 3.9 / 2.0 / 0.8 | 3.06 / 2.25 / 1.94 / 1.80 |
+| Saticon H8397A (200 nA, 3.5x beam, 30 C, 60 Hz), for reference | decay 50 ms at 0 / 5 / 10 / 16 nA bias | 6.7 / 3.9 / 2.0 / 0.8 | 3.06 / 2.25 / 1.94 / 1.80 |
 | Newvicon S4075 / T12 (200 nA, 25 C) | decay 50 ms (60 Hz) / 60 ms (50 Hz) | 10 / 8-13 | 10.93 / 9.17 |
 | Newvicon at 45 C | decay 50 ms (60 Hz) | below 25 C by 1.2x | 6.05 (1.81x) |
 | Chalnicon (200 nA, 25 C, 60 Hz) `[est]` | decay 50 ms | 10 | 10.28 |

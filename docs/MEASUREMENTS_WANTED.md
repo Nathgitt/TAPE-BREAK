@@ -38,7 +38,7 @@ Only `[est]` items and items that a source explicitly leaves unmeasured (includi
 | Highlight blooming extent (`blooming`) | no measured extent | `CameraParams::blooming` in `crates/vhsphys-core/src/camera.rs` (`docs/CAMERA_RESEARCH.md`) | Point or bar highlight at 10x-100x peak white on PbO/Saticon/Vidicon: diameter growth (TVL or % PH) vs overload factor | Calibrated highlight halo and bloom width |
 | 60 Hz Plumbicon lag curves | not modelled | `docs/CAMERA_RESEARCH.md` | 525-line / 59.94 Hz Plumbicon build-up and decay lag at 3rd field (50 ms) vs 50 Hz (60 ms) | Accurate 60 Hz vs 50 Hz lag comparison |
 | Red-specific comet-tail mechanism | not modelled | `docs/design/CAMERA_SCAN.md` | Red-channel vs green/blue-channel comet-tail length on overloaded PbO Plumbicon at matched target current | Red highlight trailing asymmetry |
-| Hybrid field/frame integration window | inferred, not measured | `docs/CAMERA_RESEARCH.md` | Interlaced 2/3-in or 1-in tube under stroboscopic pulse: charge read in field 1 vs field 2 as a function of beam current | Motion-blur and interlace-aliasing accuracy |
+| Hybrid field/frame integration window | inferred, no measurement | `docs/CAMERA_RESEARCH.md` | Interlaced 2/3-in or 1-in tube under stroboscopic pulse: charge read in field 1 vs field 2 as a function of beam current | Motion-blur and interlace-aliasing accuracy |
 
 ## Camera tubes: retention
 

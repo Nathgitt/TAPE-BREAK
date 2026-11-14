@@ -8,7 +8,7 @@
 //! sub-row at the end of every frame, must stay within each case's bound of that reference. Each
 //! bound is the error the rule was measured to make plus a quarter, and each lies below the error of
 //! the first rule (fixed 0.5 ms sub-steps with the collection taken at their start) in the same case:
-//! the step must be closer to the converged target everywhere, not only cheaper. The cases are peak
+//! the step must come closer to the converged target in every case. The cases are peak
 //! white and twice peak white on lead oxide (with and without bias light), a Saticon driven past its
 //! knee into sticking, and a vidicon burning under the lamp of US 3,546,520.
 
@@ -265,7 +265,7 @@ fn within_bounds(case: &Case) {
         );
         assert!(
             got <= first,
-            "{name}: {what} {got:.3e}, not closer than the first rule's {first:.2e}"
+            "{name}: {what} {got:.3e} is above the first rule's {first:.2e}"
         );
     }
     assert!(trap <= TRAP_BOUND, "{name}: trap {trap:.2e} of capacity");

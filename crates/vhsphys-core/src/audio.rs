@@ -16,7 +16,7 @@
 //!
 //! With `hifi` on and the deck holding lock on the FM carriers (1.3 / 1.7 MHz at 525 lines,
 //! 1.4 / 1.8 MHz at 625 lines), the sound comes instead from the helical tracks: recorded at
-//! constant level (no level control or saturation), not limited by the tape speed, mostly
+//! constant level (no level control or saturation), free of the tape speed's band limit, mostly
 //! freed of the capstan's speed error by the drum servo, with FM noise set by the carrier
 //! level, a small share of the hum, and without the audio head, its spacing loss and the
 //! tape-edge dropouts. What the rotating heads add is the head-switch buzz at the field

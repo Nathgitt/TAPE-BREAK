@@ -92,7 +92,7 @@ them. Everything acts on the light, the target or the line signal; nothing is ad
 - **Materials.** The data's single-tube cameras: the WV-3110, whose stripes and decoder these are, on a
   2/3-inch Sb2S3 vidicon of gamma 0.65 [DS]; the PK-958 on a 2/3-inch Newvicon [DS] (a single 5 MHz
   carrier, another stripe system); JVC's 1984 GR-C1 on a 1/2-inch Saticon [SEC]; Sony's Betamovie on a
-  Saticon-target Trinicon [SEC] (an index system, not modelled). The colour checks use `saticon`, a
+  Saticon-target Trinicon [SEC] (an index system, out of scope). The colour checks use `saticon`, a
   linear target: the decoder's colours come out as they went in. The lag checks use `vidicon`, the
   WV-3110's own tube (20 % at 50 ms). When the front ends offer `stripe`, its default material is
   `saticon` [decision]. With `vidicon` the 0.65 transfer acts on the stripes' light before the decoder,

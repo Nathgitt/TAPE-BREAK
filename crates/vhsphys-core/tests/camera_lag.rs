@@ -63,8 +63,8 @@ const TABLE_DECAY_60_FACTOR: f64 = 1.35;
 const TABLE_DECAY_200_FACTOR: f64 = 1.4;
 const TABLE_BUILD_POINTS: f64 = 10.0;
 
-/// XQ1410 table at 60 ms with its own light bias `[R, G, B]`: a prediction (same target and
-/// gun as the XQ1020), not a fit.
+/// XQ1410 table at 60 ms with its own light bias `[R, G, B]`: a prediction from the XQ1020's fit
+/// (same target and gun).
 const XQ1410_DECAY_60: [f64; 3] = [8.0, 7.0, 11.0];
 const XQ1410_FACTOR: f64 = 1.4;
 

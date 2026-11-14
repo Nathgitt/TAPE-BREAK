@@ -2,7 +2,7 @@
 
 ## Intent
 
-The vhs-phys interface replaces a multi-group parameter form with a three-page `1180 x 620` technical schematic rendered in the style of a monochrome green-phosphor cathode-ray monitor and a 1980s vector explainer diagram. The first page (`python/vhsgui/schematic/`) depicts the internal helical-scan NTSC signal chain (`20` controls across `8` blocks); the camera page (`python/vhsgui/schematic/camera/`) depicts the camera ahead of the recorder, from the lens to the encoder (`7` controls across `7` blocks); the outside page (`python/vhsgui/schematic/outside/`) depicts external physical interference sources acting on the deck and picture tube from outside the circuit (`18` controls across `7` blocks). All three pages share the same canvas, phosphor palette, font stack, animation parameters, bottom hint bar, and right-hand television monitor preview, so turning any control shows its effect on the live picture immediately. Each adjustable parameter sits directly below the physical assembly it governs as a monospace row (`LABEL ........ VALUE`) underlined by a 1 px proportional gauge. Hierarchy is established through phosphor brightness and stroke weight rather than colour variety or type scale.
+The vhs-phys interface replaces a multi-group parameter form with a three-page `1180 x 620` technical schematic rendered in the style of a monochrome green-phosphor cathode-ray monitor and a 1980s vector explainer diagram. The first page (`python/vhsgui/schematic/`) depicts the internal helical-scan NTSC signal chain (`20` controls across `8` blocks); the camera page (`python/vhsgui/schematic/camera/`) depicts the camera ahead of the recorder, from the lens to the encoder (`7` controls across `7` blocks); the outside page (`python/vhsgui/schematic/outside/`) depicts external physical interference sources acting on the deck and picture tube from outside the circuit (`18` controls across `7` blocks). All three pages share the same canvas, phosphor palette, font stack, animation parameters, bottom hint bar, and right-hand television monitor preview, so turning any control shows its effect on the live picture immediately. Each adjustable parameter sits directly below the physical assembly it governs as a monospace row (`LABEL ........ VALUE`) underlined by a 1 px proportional gauge. Hierarchy comes from phosphor brightness and stroke weight, with one colour and few type sizes.
 
 ## Palette
 
@@ -166,7 +166,7 @@ Each setting has one line on one page: `TUBE` and `IRIS` moved here from the cir
 
 ### The layout switch
 
-The layout is drawn, not only printed. Two pairs of instances share a place and carry `when: {"camera_layout": [...]}` (see `docs/design/FORMAT.md`):
+The layout switch changes the drawing itself. Two pairs of instances share a place and carry `when: {"camera_layout": [...]}` (see `docs/design/FORMAT.md`):
 
 | `camera_layout` | `split` block | `tubes` block | Top-right label (`1160, 24`, right aligned) | Legend line at `y = 510` |
 |---|---|---|---|---|

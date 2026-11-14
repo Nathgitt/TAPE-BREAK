@@ -74,7 +74,7 @@ proposed for a rise was checked against the H8397A numbers [DER]:
   PbO blue floor); the H8397A 0.2 uA curve is cut eightfold by 16 nA of bias. A bias-proof part larger
   than about 0.15 % at 200 nA already breaks the H8397A cut at 16 nA within the existing factor 1.5.
 - **High-light sticking** (US 4,330,733) is real and is built below, but it starts only where the layer
-  field collapses, beyond about 2.4 times the H8397A's peak white, not at 0.2 uA.
+  field collapses, beyond about 2.4 times the H8397A's peak white, well above 0.2 uA.
 
 Decision: no mechanism makes the lag rise with signal, and the H8397A's 0.2 uA absolute level is **not**
 restored as a test. The test file instead pins what the H8397A's RCA equivalent shows: at a fixed beam
@@ -259,7 +259,7 @@ piece's start the element holds `q` and `h0`, its burn is `b0`; `t_mid` is the p
 
 **Why half a volt** [DER, numerical]. The project holds the step to accuracy first: the rule must
 come closer to the converged target than the first rule (0.5 ms, `eta` at the start) at every point
-measured, not only be cheaper. One step per volt does not: at peak white, where a red or blue element
+measured. One step per volt does not: at peak white, where a red or blue element
 swings under a volt in most pieces and so takes one midpoint step per piece, its reading errs by
 1.1e-4 (R) and 8.6e-6 (B) of peak white against the first rule's 4.2e-5 and 3.6e-6, and its held
 charge by 9.1e-4 against 3.9e-4 of the capacity. At half a volt every case below is closer than the
@@ -589,7 +589,7 @@ at least 1.3), the green low-key decay in its fourth decimal; the rest within th
    its 16 nA point does not show.
 3. **The held-charge capacities and release times are [est]**, two numbers per material fitted to one
    datum each (PbO to the XQ1020 high key, Saticon to US 4,330,733's band). The PbO burn's lifetime
-   (2 s) follows from that fit, not from a burn measurement; no source times a PbO burn.
+   (2 s) follows from that fit alone; no source times a PbO burn.
 4. **The held-charge step, changed.** The first rule (0.5 ms sub-steps, `eta` at their start) made
    the default three-tube Plumbicon read about 1 fps, because lead oxide's knee is its target voltage
    (intended: the Mullard and RCA curves show incomplete collection below 45 V), so every lit element
