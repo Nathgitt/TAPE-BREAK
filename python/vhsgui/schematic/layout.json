@@ -749,7 +749,11 @@
     "off",
     "plumbicon",
     "plumbicon-bias",
-    "plumbicon-act"
+    "plumbicon-act",
+    "vidicon",
+    "newvicon",
+    "saticon",
+    "chalnicon"
    ]
   },
   {

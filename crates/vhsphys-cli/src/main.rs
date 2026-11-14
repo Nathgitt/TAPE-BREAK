@@ -203,6 +203,23 @@ enum CameraTubeArg {
     PlumbiconBias,
     /// Plumbicon with an anti-comet-tail gun (XQ1520): lag, no comet tails.
     PlumbiconAct,
+    /// Sb2S3 vidicon of home cameras: heavy lag, its own transfer curve.
+    Vidicon,
+    /// ZnSe/ZnCdTe Newvicon: sensitive, lag from its large target capacitance.
+    Newvicon,
+    /// Se-As-Te Saticon (H8397A): low lag, residues clear white.
+    Saticon,
+    /// CdSe Chalnicon: sensitive, mainly capacitive lag.
+    Chalnicon,
+}
+
+/// Camera electronics profile ahead of the recorder.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CameraProcessingArg {
+    /// Studio (three-tube broadcast).
+    Studio,
+    /// Consumer (home camera).
+    Consumer,
 }
 
 #[derive(clap::Args)]
@@ -230,12 +247,18 @@ struct RunArgs {
     /// Sound: process (through the simulated tape and deck), copy (untouched) or none.
     #[arg(long, value_enum, default_value_t = AudioMode::Process)]
     audio: AudioMode,
-    /// Camera pickup tube ahead of the recorder: lag and comet tails (off, plumbicon, plumbicon-bias, plumbicon-act).
+    /// Camera pickup tube ahead of the recorder: lag and comet tails (off, plumbicon, plumbicon-bias, plumbicon-act, vidicon, newvicon, saticon, chalnicon).
     #[arg(long, value_enum)]
     camera_tube: Option<CameraTubeArg>,
     /// Exposure of the camera tubes in stops: positive overexposes, so highlights leave tails.
     #[arg(long, value_name = "N", allow_negative_numbers = true)]
     iris_stops: Option<f64>,
+    /// Target temperature of the camera tubes in degrees Celsius: warmer tubes have more dark current.
+    #[arg(long, value_name = "DEG_C", allow_negative_numbers = true)]
+    camera_temperature: Option<f64>,
+    /// Camera electronics: studio (three-tube broadcast) or consumer (home camera).
+    #[arg(long, value_enum, value_name = "PROFILE")]
+    camera_processing: Option<CameraProcessingArg>,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -598,12 +621,26 @@ fn run(a: RunArgs) -> Result<()> {
     if let Some(stops) = a.iris_stops {
         sets.push(format!("camera.iris_stops={stops:?}"));
     }
+    if let Some(temp) = a.camera_temperature {
+        sets.push(format!("camera.temperature_c={temp:?}"));
+    }
+    if let Some(proc) = a.camera_processing {
+        let name = match proc {
+            CameraProcessingArg::Studio => "studio",
+            CameraProcessingArg::Consumer => "consumer",
+        };
+        sets.push(format!("camera.processing={name}"));
+    }
     if let Some(tube) = a.camera_tube {
         let name = match tube {
             CameraTubeArg::Off => "off",
             CameraTubeArg::Plumbicon => "plumbicon",
             CameraTubeArg::PlumbiconBias => "plumbicon-bias",
             CameraTubeArg::PlumbiconAct => "plumbicon-act",
+            CameraTubeArg::Vidicon => "vidicon",
+            CameraTubeArg::Newvicon => "newvicon",
+            CameraTubeArg::Saticon => "saticon",
+            CameraTubeArg::Chalnicon => "chalnicon",
         };
         sets.push(format!("camera.tube={name}"));
     }
@@ -1133,12 +1170,20 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
         ("Plumbicon", "Standard tube (XQ1020): target lag and highlight comet tails"),
         ("Plumbicon+Bias", "Light-bias tube (XQ1410): reduced lag in shadows"),
         ("Plumbicon+ACT", "Anti-comet-tail gun (XQ1520): lag without persistent tails"),
+        ("Vidicon", "Sb2S3 vidicon of home cameras: heavy lag, its own transfer curve"),
+        ("Newvicon", "ZnSe/ZnCdTe Newvicon: sensitive, lag from its large target capacitance"),
+        ("Saticon", "Se-As-Te Saticon (H8397A): low lag, residues clear white"),
+        ("Chalnicon", "CdSe Chalnicon: sensitive, mainly capacitive lag"),
     ];
     let tube_idx = ask_choice("Camera pickup tube simulation:", &tube_choices, 0)?;
     let (camera_tube_arg, iris_stops) = match tube_idx {
         1 => (Some(CameraTubeArg::Plumbicon), ask_iris_stops()?),
         2 => (Some(CameraTubeArg::PlumbiconBias), ask_iris_stops()?),
         3 => (Some(CameraTubeArg::PlumbiconAct), ask_iris_stops()?),
+        4 => (Some(CameraTubeArg::Vidicon), ask_iris_stops()?),
+        5 => (Some(CameraTubeArg::Newvicon), ask_iris_stops()?),
+        6 => (Some(CameraTubeArg::Saticon), ask_iris_stops()?),
+        7 => (Some(CameraTubeArg::Chalnicon), ask_iris_stops()?),
         _ => (None, None),
     };
 
@@ -1190,6 +1235,10 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             CameraTubeArg::Plumbicon => "plumbicon",
             CameraTubeArg::PlumbiconBias => "plumbicon-bias",
             CameraTubeArg::PlumbiconAct => "plumbicon-act",
+            CameraTubeArg::Vidicon => "vidicon",
+            CameraTubeArg::Newvicon => "newvicon",
+            CameraTubeArg::Saticon => "saticon",
+            CameraTubeArg::Chalnicon => "chalnicon",
         };
         cmd_parts.push("--camera-tube".to_string());
         cmd_parts.push(t_str.to_string());
@@ -1232,6 +1281,8 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             audio: audio_arg,
             camera_tube: camera_tube_arg,
             iris_stops,
+            camera_temperature: None,
+            camera_processing: None,
             start: None,
             duration: None,
             frames: None,

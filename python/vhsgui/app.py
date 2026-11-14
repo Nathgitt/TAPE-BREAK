@@ -135,7 +135,16 @@ CONFIG_FILE = "look.toml"
 SIGNAL_LABELS = ("S-Video", "Composite, notch", "Composite, 1-line comb", "Composite, 2-line comb")
 AUDIO_LABELS = ("Simulate", "Keep original", "Remove")
 STANDARD_LABELS = ("NTSC", "PAL", "PAL-60")  # in the order of STANDARDS
-CAMERA_TUBE_LABELS = ("None", "Plumbicon", "Plumbicon with light bias", "Plumbicon, anti-comet-tail gun")  # in the order of CAMERA_TUBES
+CAMERA_TUBE_LABELS = (
+    "None",
+    "Plumbicon",
+    "Plumbicon with light bias",
+    "Plumbicon, anti-comet-tail gun",
+    "Vidicon (home camera)",
+    "Newvicon",
+    "Saticon",
+    "Chalnicon",
+)  # in the order of CAMERA_TUBES
 IRIS_STEP = 0.5  # stops per click of the iris box
 DEFAULT_IRIS_STOPS = 0.0  # normal exposure: the iris neither over- nor underexposes
 IRIS_DECIMALS = 1
@@ -173,7 +182,7 @@ TASK_RENDER = "render"
 # The schematic mirrors these editor lines and prints the same help text as their tooltips. A text has to
 # fit the schematic's one-line hint band (about 140 characters), or the band cuts it short.
 STANDARD_HELP = "The set's television standard: NTSC is 525 lines at 29.97 fps, PAL 625 at 25 fps, PAL-60 plays an NTSC tape on a PAL set."
-CAMERA_TUBE_HELP = "The camera's pickup tube: a Plumbicon lags and smears bright lights into comet tails; the bias and gun variants cure it."
+CAMERA_TUBE_HELP = "The camera's pickup tube: a Plumbicon lags and smears bright lights into comet tails, cured by the bias and gun variants; a vidicon lags heavily, a Saticon hardly at all, and the Newvicon and Chalnicon lag through their large target capacitance."
 IRIS_HELP = "The camera's iris opening past normal, in stops (each doubles the light): wide, it overexposes and shows comet tails. Needs a tube."
 LOOK_HELP = {
     "preset": "The starting condition of the tape and decks; the lines below start from its values.",
@@ -415,7 +424,7 @@ FLOW_SECTIONS: tuple[FlowSection, ...] = (
             "V_out = OETF((s_read - black) / peak_na)",
         ),
         parameters=(
-            ("camera.tube", "Tube selection: plumbicon, plumbicon-bias, plumbicon-act, vidicon, saticon"),
+            ("camera.tube", "Tube selection: off, plumbicon, plumbicon-bias, plumbicon-act, vidicon, newvicon, saticon, chalnicon"),
             ("camera.iris_stops", "Optical exposure offset (stops; positive overexposes to highlight comet tails)"),
             ("camera.beam_ratio", "ACT beam reserve capacity multiplier above peak white (nominal: 2.0)"),
             ("standard", "Raster standard: NTSC (525/29.97), PAL (625/25), or PAL-60"),
