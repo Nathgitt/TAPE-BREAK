@@ -65,6 +65,20 @@ def test_the_camera_tube_runs_in_both_engines(binary, clip, tmp_path):
         assert r.returncode == 0, r.stderr
 
 
+def test_every_target_material_runs(binary, clip, tmp_path):
+    for tube in ("vidicon", "newvicon", "saticon", "chalnicon"):
+        r = run_cli(binary, clip, tmp_path / f"cam_{tube}.mp4", "--camera-tube", tube, "--iris-stops", "1")
+        assert r.returncode == 0, r.stderr
+
+
+def test_the_camera_takes_its_temperature_and_electronics(binary, clip, tmp_path):
+    r = run_cli(binary, clip, tmp_path / "warm.mp4", "--camera-tube", "newvicon", "--camera-temperature", "40", "--camera-processing", "consumer")
+    assert r.returncode == 0, r.stderr
+    bad = run_cli(binary, clip, tmp_path / "bad.mp4", "--camera-tube", "newvicon", "--camera-processing", "broadcast")
+    assert bad.returncode != 0
+    assert "processing" in bad.stderr
+
+
 def test_show_prints_the_engine_s_parameters(binary):
     pal = subprocess.run([str(binary), "show", "worn", "--standard", "pal"], capture_output=True, text=True, timeout=60)
     assert pal.returncode == 0, pal.stderr

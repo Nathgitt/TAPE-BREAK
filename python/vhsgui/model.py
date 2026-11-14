@@ -22,7 +22,8 @@ FRAME_RATES: dict[str, tuple[int, int]] = {"ntsc": (FPS_NUM, FPS_DEN), "pal": (2
 
 # The camera's pickup tube ahead of the recorder (`--camera-tube`), and how far its iris is
 # opened beyond normal exposure (`--iris-stops`): overexposed highlights leave comet tails.
-CAMERA_TUBES = ("off", "plumbicon", "plumbicon-bias", "plumbicon-act")
+# The three lead-oxide Plumbicons come first, then the other target materials.
+CAMERA_TUBES = ("off", "plumbicon", "plumbicon-bias", "plumbicon-act", "vidicon", "newvicon", "saticon", "chalnicon")
 IRIS_STOPS_RANGE = (-2.0, 6.0)
 
 # A frame needs two frames of context on each side, so the first frames of a fresh

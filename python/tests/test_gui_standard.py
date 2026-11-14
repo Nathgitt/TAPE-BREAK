@@ -68,7 +68,16 @@ def test_look_files_refuse_unknown_values():
     with pytest.raises(Exception):
         backend.load_look('[look]\nstandard = "secam"\n')
     with pytest.raises(Exception):
-        backend.load_look('[look]\ncamera_tube = "vidicon"\n')
+        backend.load_look('[look]\ncamera_tube = "trinicon"\n')
+
+
+def test_every_target_material_reaches_the_command_line():
+    for tube in ("vidicon", "newvicon", "saticon", "chalnicon"):
+        assert tube in CAMERA_TUBES
+        back = backend.load_look(backend.save_look(Look(camera_tube=tube, iris_stops=1.0)))
+        assert back.camera_tube == tube
+        args = backend.run_args("vhsphys", _req(camera_tube=tube, iris_stops=1.0), None)
+        assert args[args.index("--camera-tube") + 1] == tube
 
 
 @pytest.fixture
