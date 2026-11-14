@@ -133,27 +133,38 @@ pub const CHALNICON_DARK_25_NA: f64 = 0.681;
 pub const CHALNICON_DARK_DOUBLING_C: f64 = 9.0;
 /// Fitted target capacitances for the non-PbO materials, F, with `V_T = 0.17` V, on the scanned
 /// target against the lag data of `docs/CAMERA_RESEARCH.md` ("Six photoconductors differ in gamma,
-/// dark current and lag mechanism", "Traps add an exposure-dependent tail"). Saticon: Hitachi
-/// H8397A Fig. 6 and the RCA handbook BC4391 family, inside the layer's 1000-2000 pF/cm^2 (Hitachi
-/// Hyoron 1976, 0.58-1.16 nF on 6.6 x 8.8 mm). Newvicon: Matsushita S4075 (10 % at 50 ms) and
-/// Philips T12 (8-13 % at 60 ms). Chalnicon: Toshiba 1973 (10 % at 50 ms) [est conditions].
-/// Vidicon: home-camera 20 % at 50 ms, Philips XQ1240 and RCA's bias cut.
+/// dark current and lag mechanism", "Traps add an exposure-dependent tail"). Saticon [DER]: fitted
+/// with its traps to the BC4908 family [FIG] (RCA 1977, Neuhauser 1978 Fig. 12: 50 ms lag at 30 / 50 /
+/// 200 nA with 0 / 5 / 10 nA bias, 800 nA beam; `docs/design/CAMERA_RETENTION.md`), every point
+/// within a factor 1.2; `K = C V_T` is 0.136 nA s. It lies inside the layer's 1000-2000 pF/cm^2
+/// [FIG] (Hitachi Hyoron 1976 Fig. 10, 0.58-1.16 nF on 6.6 x 8.8 mm [DER]). Newvicon: Matsushita
+/// S4075 (10 % at 50 ms) and Philips T12 (8-13 % at 60 ms). Chalnicon: Toshiba 1973 (10 % at 50 ms)
+/// [est conditions]. Vidicon: home-camera 20 % at 50 ms, Philips XQ1240 and RCA's bias cut.
 pub const VIDICON_CAPACITANCE_F: f64 = 9.9e-9;
 pub const NEWVICON_CAPACITANCE_F: f64 = 7.6e-9;
-pub const SATICON_CAPACITANCE_F: f64 = 0.64e-9;
+pub const SATICON_CAPACITANCE_F: f64 = 0.80e-9;
 pub const CHALNICON_CAPACITANCE_F: f64 = 6.4e-9;
 /// Fitted trap populations for the non-PbO materials, from the same lag data
 /// (`docs/CAMERA_RESEARCH.md`, "Traps add an exposure-dependent tail"). The vidicon's single strong
-/// trap carries most of its lag and is what bias light cuts. The Saticon's first trap is small and
-/// fast, so bias light keeps it nearly full; the second holds the tail that grows with exposure.
-/// The Saticon is fitted to the BC4391 family as measured and to the H8397A bias family relative
-/// to its unbiased value: its absolute level at 200 nA rises with signal, which neither the
-/// capacitive law nor a filling trap can give (`docs/CAMERA_RESEARCH.md`, "Unexplained data").
+/// trap carries most of its lag and is what bias light cuts.
+///
+/// The Saticon's traps are fitted [DER] with `SATICON_CAPACITANCE_F` to the BC4908 family [FIG]
+/// (RCA 1977, Neuhauser 1978 Fig. 12; `docs/design/CAMERA_RETENTION.md`). The first is small and
+/// fast and takes nearly all the light while it has room, so a few nA of bias keep it full: it is
+/// part of what bias light removes at 30 and 50 nA. The second is large and stays proportional to
+/// the light, so bias light does not touch it: it is the tail the family keeps at 200 nA with
+/// 10 nA of bias (1.85 %), about 1.5 % at 50 ms [DER]. Its capacity is [est], only large enough
+/// that a 200 nA picture fills a few per cent of it. Checks the fit was not made on: the BC4390's
+/// 1 % at 150 ms with 6 nA of bias (0.72 %) [DS], the shape of the BC4391 exposure family [FIG],
+/// and US 4,330,733's sticking band with `SATICON_COLLECTION` [FIG]. The BC4391's absolute levels
+/// (about 2 % at 50 ms at 30 nA, 5 nA bias) are not met: the two RCA families disagree by more than
+/// a factor 2 there, and the H8397A's 6.7 % unbiased at 0.2 uA (Fig. 6) is not met either
+/// (`docs/design/CAMERA_RETENTION.md`, "The Saticon's lag does not rise with signal").
 pub const VIDICON_TRAPS: [Trap; MAX_TRAPS] =
     [Trap { capture: 0.95, capacity_nas: 5.0, release_s: 0.25 }, Trap::NONE];
 pub const SATICON_TRAPS: [Trap; MAX_TRAPS] = [
-    Trap { capture: 0.54, capacity_nas: 0.066, release_s: 0.061 },
-    Trap { capture: 0.09, capacity_nas: 0.40, release_s: 0.82 },
+    Trap { capture: 0.95, capacity_nas: 0.14, release_s: 0.047 },
+    Trap { capture: 0.027, capacity_nas: 20.0, release_s: 0.10 },
 ];
 
 /// How completely the layer sweeps out its carriers as its field falls, and the carriers it holds
