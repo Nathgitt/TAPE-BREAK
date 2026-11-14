@@ -2,7 +2,7 @@
 
 ## Intent
 
-The vhs-phys interface replaces a multi-group parameter form with a three-page `1180 x 620` technical schematic rendered in the style of a monochrome green-phosphor cathode-ray monitor and a 1980s vector explainer diagram. The first page (`python/vhsgui/schematic/`) depicts the internal helical-scan NTSC signal chain (`20` controls across `8` blocks); the camera page (`python/vhsgui/schematic/camera/`) depicts the camera ahead of the recorder, from the lens to the encoder (`7` controls across `7` blocks); the outside page (`python/vhsgui/schematic/outside/`) depicts external physical interference sources acting on the deck and picture tube from outside the circuit (`18` controls across `7` blocks). All three pages share the same canvas, phosphor palette, font stack, animation parameters, bottom hint bar, and right-hand television monitor preview, so turning any control shows its effect on the live picture immediately. Each adjustable parameter sits directly below the physical assembly it governs as a monospace row (`LABEL ........ VALUE`) underlined by a 1 px proportional gauge. Hierarchy comes from phosphor brightness and stroke weight, with one colour and few type sizes.
+The vhs-phys interface replaces a multi-group parameter form with a three-page `1180 x 620` technical schematic rendered in the style of a monochrome green-phosphor cathode-ray monitor and a 1980s vector explainer diagram. The first page (`python/vhsgui/schematic/`) depicts the internal helical-scan NTSC signal chain (`20` controls across `8` blocks); the camera page (`python/vhsgui/schematic/camera/`) depicts the camera ahead of the recorder, from the lens to the encoder (`13` controls across `7` blocks); the outside page (`python/vhsgui/schematic/outside/`) depicts external physical interference sources acting on the deck and picture tube from outside the circuit (`18` controls across `7` blocks). All three pages share the same canvas, phosphor palette, font stack, animation parameters, bottom hint bar, and right-hand television monitor preview, so turning any control shows its effect on the live picture immediately. Each adjustable parameter sits directly below the physical assembly it governs as a monospace row (`LABEL ........ VALUE`) underlined by a 1 px proportional gauge. Hierarchy comes from phosphor brightness and stroke weight, with one colour and few type sizes.
 
 ## Palette
 
@@ -93,7 +93,7 @@ The circuit page divides the `1180 x 620 px` canvas into five vertical columns s
 
 ### Camera block and standard labels
 
-The `camera` block sits at the top of column 2, between the input `source` and the recording deck, with a video feed (`w_camera`) into the recorder. It keeps its `pickup_tube` drawing and caption but no control rows: the camera's seven settings live on the camera page, and the block says so with the `dim` 11 px label `SET ON THE CAMERA PAGE` at `(246, 142)` where its `TUBE` and `IRIS` rows were. In the `tv` block, `STANDARD` selects `ntsc`, `pal`, or `pal60`. The technical spec labels along the right column and top header switch dynamically using `when: {"standard": [...]}` to display the exact parameters of the active television standard: raster line count and frame rate, luma FM carrier band (3.4-4.4 MHz vs 3.8-4.8 MHz), colour-under subcarrier (629 kHz vs 627 kHz), drum speed (1800 rpm vs 1500 rpm), and tape speeds (SP/EP vs SP/LP).
+The `camera` block sits at the top of column 2, between the input `source` and the recording deck, with a video feed (`w_camera`) into the recorder. It keeps its `pickup_tube` drawing and caption but no control rows: the camera's settings live on the camera page, and the block says so with the `dim` 11 px label `SET ON THE CAMERA PAGE` at `(246, 142)` where its `TUBE` and `IRIS` rows were. In the `tv` block, `STANDARD` selects `ntsc`, `pal`, or `pal60`. The technical spec labels along the right column and top header switch dynamically using `when: {"standard": [...]}` to display the exact parameters of the active television standard: raster line count and frame rate, luma FM carrier band (3.4-4.4 MHz vs 3.8-4.8 MHz), colour-under subcarrier (629 kHz vs 627 kHz), drum speed (1800 rpm vs 1500 rpm), and tape speeds (SP/EP vs SP/LP).
 
 ## Page 2: Outside the circuit (`python/vhsgui/schematic/outside/`)
 
@@ -139,12 +139,12 @@ The camera page uses the outside page's grid: four `270 px` columns at `x = 20, 
 
 | Column | Blocks (`y .. y+h`) | Drawings (`x, y`) | Control rows (`y`) |
 |---|---|---|---|
-| 1 | `lens` LENS AND IRIS (`40..254`), `split` COLOUR SPLIT (`270..520`) | `lens_iris` (`28, 70`); `prism` or `stripe_filter` (`28, 300`) | `IRIS` 178; `LAYOUT` 444, `SPECTRAL COLOUR` 466 |
-| 2 | `tubes` PICKUP TUBES (`40..298`), `head_amp` HEAD AMPLIFIER (`314..520`) | `tubes_three` or `tube_one` (`318, 70`); `head_amp` (`318, 344`) | `TUBE` 178, `TUBE TEMP` 200, `SCAN GEOMETRY` 222; none |
-| 3 | `processing` PROCESSING AMP (`40..298`), `encoder` ENCODER (`314..520`) | `proc_amp` (`608, 70`); `encoder` (`608, 344`) | `ELECTRONICS` 178; none |
+| 1 | `lens` LENS AND IRIS (`40..254`), `split` COLOUR SPLIT (`270..520`) | `lens_iris` (`28, 70`); `prism` or `stripe_filter` (`28, 300`) | `IRIS` 178, `LENS CAP` 200; `LAYOUT` 444, `SPECTRAL COLOUR` 466 |
+| 2 | `tubes` PICKUP TUBES (`40..386`), `head_amp` HEAD AMPLIFIER (`402..590`) | `tubes_three` or `tube_one` (`318, 70`); `head_amp` (`318, 432`) | `TUBE` 178, `TUBE TEMP` 200, `SCAN GEOMETRY` 222, `BEAM` 244, `BLOOMING` 266, `COLD START` 288, `START TEMP` 310, `BEAM OFF` 332; none |
+| 3 | `processing` PROCESSING AMP (`40..386`), `encoder` ENCODER (`402..590`) | `proc_amp` (`608, 70`); `encoder` (`608, 432`) | `ELECTRONICS` 178; none |
 | 4 | `tv` (`40..400`) + `VIDEO` wire (`424`) + legend (`450..530`) | `tv` (`898, 48`) | none (preview screen) |
 
-- **Flow**: `w_light` drops from `lens` into `split` (`x = 127`); `w_targets` leaves `split` on the right (`y = 352`), climbs the `x = 300` gutter and enters `tubes` at the targets (`y = 114`); `w_signal` drops from the targets' signal lead into `head_amp` (`x = 348`); `w_head` leaves `head_amp` on the right (`y = 374`), climbs the `x = 590` gutter and enters `processing` (`y = 100`); `w_proc` drops into `encoder` (`x = 858`); `w_out` (`VIDEO`) leaves `encoder` at `y = 370`, runs down the `x = 880` gutter and along `y = 424` into the bottom centre of `tv` (`1025, 400`). Every wire is of kind `video`.
+- **Flow**: `w_light` drops from `lens` into `split` (`x = 127`); `w_targets` leaves `split` on the right (`y = 352`), climbs the `x = 300` gutter and enters `tubes` at the targets (`y = 114`); `w_signal` drops from the targets' signal lead into `head_amp` (`x = 348`); `w_head` leaves `head_amp` on the right (`y = 462`), climbs the `x = 590` gutter and enters `processing` (`y = 100`); `w_proc` drops into `encoder` (`x = 858`); `w_out` (`VIDEO`) leaves `encoder` at `y = 458`, climbs the `x = 880` gutter and runs along `y = 424` into the bottom centre of `tv` (`1025, 400`). Every wire is of kind `video`.
 - **Block centres** read left to right: `lens` = `split` < `tubes` = `head_amp` < `processing` = `encoder` < `tv`.
 - **Captions** (at most `35` characters): `EXPOSES THE TARGETS IN STOPS`, `SPLITS THE LIGHT INTO COLOURS`, `STORE CHARGE, LAG AND SMEAR`, `LIFTS NANOAMPS TO VOLTS`, `CLAMPS, MATRIXES, KNEES, CORRECTS`, `ADDS COLOUR BURST AND SYNC`.
 
@@ -153,11 +153,17 @@ The camera page uses the outside page's grid: four `270 px` columns at `x = 20, 
 | Line | id | Block | Kind | Range or choices |
 |---|---|---|---|---|
 | `IRIS` | `iris_stops` | `lens` | slider | `-2 .. 6` stops, step `0.5`, 1 decimal (`IRIS_STOPS_RANGE`) |
+| `LENS CAP` | `camera_idle_s` | `lens` | slider | `0 .. 1800` s, step `10`, 0 decimals (`CAMERA_IDLE_RANGE`): capped time before the shot |
 | `LAYOUT` | `camera_layout` | `split` | choice | `three-tube`, `stripe` (`CAMERA_LAYOUTS`) |
 | `SPECTRAL COLOUR` | `camera_spectral` | `split` | toggle | |
 | `TUBE` | `camera_tube` | `tubes` | choice | `CAMERA_TUBES`, in order |
 | `TUBE TEMP` | `camera_temperature_c` | `tubes` | slider | `0 .. 60` °C, step `1`, 0 decimals (`CAMERA_TEMPERATURE_RANGE`) |
 | `SCAN GEOMETRY` | `camera_geometry` | `tubes` | toggle | |
+| `BEAM` | `camera_beam_ratio` | `tubes` | slider | `0.5 .. 4.0` x white, step `0.1`, 1 decimal (`CAMERA_BEAM_RATIO_RANGE`) |
+| `BLOOMING` | `camera_blooming` | `tubes` | slider | `0 .. 3`, step `0.1`, 1 decimal (`CAMERA_BLOOMING_RANGE`) |
+| `COLD START` | `camera_cold_start` | `tubes` | toggle | |
+| `START TEMP` | `camera_cold_start_c` | `tubes` | slider | `-20 .. 60` °C, step `1`, 0 decimals (`CAMERA_COLD_START_RANGE`); works only while `COLD START` is on |
+| `BEAM OFF` | `camera_beam_off_s` | `tubes` | slider | `0 .. 60` s, step `0.5`, 1 decimal (`CAMERA_BEAM_OFF_RANGE`): the beam is held off for the start of the shot |
 | `ELECTRONICS` | `camera_processing` | `processing` | choice | `studio`, `consumer` (`CAMERA_PROCESSING`) |
 
 Each setting has one line on one page: `TUBE` and `IRIS` moved here from the circuit page's `camera` block. `SPECTRAL COLOUR` sits with the prism because spectral taking is the prism's, the infrared filter's and the targets' colour response; `SCAN GEOMETRY` sits with the tubes because deflection, registration and shading belong to the yokes and targets.
@@ -179,9 +185,9 @@ The other legend lines (`dim`, 11 px, `x = 890`) are fixed physics: `CLICK SCREE
 
 | Glyph | Part depicted | Block | Adjacent controls |
 |---|---|---|---|
-| `lens_iris` | A lit object (`SCENE`), its rays through a biconvex `LENS` and past two iris blades (`IRIS`) to an image point | `lens` | `IRIS` |
+| `lens_iris` | A lit object (`SCENE`), its rays through a biconvex `LENS` and past two iris blades (`IRIS`) to an image point | `lens` | `IRIS`, `LENS CAP` |
 | `prism` / `stripe_filter` | See "The layout switch" | `split` | `LAYOUT`, `SPECTRAL COLOUR` |
-| `tubes_three` / `tube_one` | See "The layout switch"; callouts `TARGETS`, `YOKES`, `GUNS` or `STRIPED TARGET`, `YOKE`, `GUN` | `tubes` | `TUBE`, `TUBE TEMP`, `SCAN GEOMETRY` |
+| `tubes_three` / `tube_one` | See "The layout switch"; callouts `TARGETS`, `YOKES`, `GUNS` or `STRIPED TARGET`, `YOKE`, `GUN` | `tubes` | `TUBE`, `TUBE TEMP`, `SCAN GEOMETRY`, `BEAM`, `BLOOMING`, `COLD START`, `START TEMP`, `BEAM OFF` |
 | `head_amp` | The target's signal lead into a `LOAD` resistor and a `FET` amplifier, with its `NOISE` | `head_amp` | none |
 | `proc_amp` | A chain `CLAMP`, `MATRIX`, `GAMMA`, `DETAIL` with sketches of the black level (`BLACK`, `0 V`), the knee, the gamma curve and the aperture overshoot | `processing` | `ELECTRONICS` |
 | `encoder` | `R G B` into a `MATRIX`, a summing node adding the `BURST` and `SYNC` | `encoder` | none |

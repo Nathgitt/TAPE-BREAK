@@ -38,6 +38,22 @@ DEFAULT_CAMERA_PROCESSING = "studio"
 # range the window offers.
 DEFAULT_CAMERA_TEMPERATURE_C = 25.0
 CAMERA_TEMPERATURE_RANGE = (0.0, 60.0)
+# Beam current of the tubes as a multiple of what peak white needs (`--camera-beam-ratio`): the data
+# sheet's setting and the range the window offers, from a starved beam to a strong one.
+DEFAULT_CAMERA_BEAM_RATIO = 2.0
+CAMERA_BEAM_RATIO_RANGE = (0.5, 4.0)
+# Beam bending (`--camera-blooming`): 0 is off, the engine's default. No measurement sets its scale.
+DEFAULT_CAMERA_BLOOMING = 0.0
+CAMERA_BLOOMING_RANGE = (0.0, 3.0)
+# Faceplate temperature at switch-on (`--camera-cold-start`), deg C, when the cold-start switch is on.
+DEFAULT_CAMERA_COLD_START_C = 10.0
+CAMERA_COLD_START_RANGE = (-20.0, 60.0)
+# Switching the camera on (`--camera-idle`, `--camera-beam-off`), s: lens-capped time before the shot,
+# long enough for a cold camera to warm up, and the beam held off at its start. 0 is none.
+DEFAULT_CAMERA_IDLE_S = 0.0
+CAMERA_IDLE_RANGE = (0.0, 1800.0)
+DEFAULT_CAMERA_BEAM_OFF_S = 0.0
+CAMERA_BEAM_OFF_RANGE = (0.0, 60.0)
 
 # A frame needs two frames of context on each side, so the first frames of a fresh
 # render are not representative. A render that starts mid-file therefore begins this
@@ -206,6 +222,12 @@ class Look:
     camera_temperature_c: float = DEFAULT_CAMERA_TEMPERATURE_C  # within CAMERA_TEMPERATURE_RANGE
     camera_spectral: bool = False  # the prism, filter and target responses instead of ideal colour
     camera_geometry: bool = False  # deflection, registration, shading, flare and corner focus
+    camera_beam_ratio: float = DEFAULT_CAMERA_BEAM_RATIO  # within CAMERA_BEAM_RATIO_RANGE; only matters with a tube
+    camera_blooming: float = DEFAULT_CAMERA_BLOOMING  # within CAMERA_BLOOMING_RANGE; only matters with a tube
+    camera_cold_start: bool = False  # warm up from camera_cold_start_c; only matters with a tube
+    camera_cold_start_c: float = DEFAULT_CAMERA_COLD_START_C  # within CAMERA_COLD_START_RANGE; only matters with cold start
+    camera_idle_s: float = DEFAULT_CAMERA_IDLE_S  # within CAMERA_IDLE_RANGE; only matters with a tube
+    camera_beam_off_s: float = DEFAULT_CAMERA_BEAM_OFF_S  # within CAMERA_BEAM_OFF_RANGE; only matters with a tube
 
 
 @dataclass

@@ -78,7 +78,7 @@
    "x": 310,
    "y": 40,
    "w": 270,
-   "h": 258,
+   "h": 346,
    "frame": "box",
    "caption": "STORE CHARGE, LAG AND SMEAR"
   },
@@ -86,9 +86,9 @@
    "id": "head_amp",
    "title": "HEAD AMPLIFIER",
    "x": 310,
-   "y": 314,
+   "y": 402,
    "w": 270,
-   "h": 206,
+   "h": 188,
    "frame": "box",
    "caption": "LIFTS NANOAMPS TO VOLTS"
   },
@@ -98,7 +98,7 @@
    "x": 600,
    "y": 40,
    "w": 270,
-   "h": 258,
+   "h": 346,
    "frame": "box",
    "caption": "CLAMPS, MATRIXES, KNEES, CORRECTS"
   },
@@ -106,9 +106,9 @@
    "id": "encoder",
    "title": "ENCODER",
    "x": 600,
-   "y": 314,
+   "y": 402,
    "w": 270,
-   "h": 206,
+   "h": 188,
    "frame": "box",
    "caption": "ADDS COLOUR BURST AND SYNC"
   },
@@ -182,7 +182,7 @@
   {
    "glyph": "head_amp",
    "x": 318,
-   "y": 344,
+   "y": 432,
    "scale": 1.0,
    "block": "head_amp"
   },
@@ -196,7 +196,7 @@
   {
    "glyph": "encoder",
    "x": 608,
-   "y": 344,
+   "y": 432,
    "scale": 1.0,
    "block": "encoder"
   },
@@ -263,11 +263,11 @@
    "points": [
     [
      348,
-     298
+     386
     ],
     [
      348,
-     314
+     402
     ]
    ],
    "label": "",
@@ -283,11 +283,11 @@
    "points": [
     [
      580,
-     374
+     462
     ],
     [
      590,
-     374
+     462
     ],
     [
      590,
@@ -311,11 +311,11 @@
    "points": [
     [
      858,
-     298
+     386
     ],
     [
      858,
-     314
+     402
     ]
    ],
    "label": "",
@@ -331,11 +331,11 @@
    "points": [
     [
      870,
-     370
+     458
     ],
     [
      880,
-     370
+     458
     ],
     [
      880,
@@ -467,6 +467,20 @@
    "decimals": 1
   },
   {
+   "id": "camera_idle_s",
+   "block": "lens",
+   "label": "LENS CAP",
+   "x": 26,
+   "y": 200,
+   "w": 258,
+   "kind": "slider",
+   "unit": "s",
+   "min": 0.0,
+   "max": 1800.0,
+   "step": 10.0,
+   "decimals": 0
+  },
+  {
    "id": "camera_layout",
    "block": "split",
    "label": "LAYOUT",
@@ -530,6 +544,71 @@
    "y": 222,
    "w": 258,
    "kind": "toggle"
+  },
+  {
+   "id": "camera_beam_ratio",
+   "block": "tubes",
+   "label": "BEAM",
+   "x": 316,
+   "y": 244,
+   "w": 258,
+   "kind": "slider",
+   "unit": "x white",
+   "min": 0.5,
+   "max": 4.0,
+   "step": 0.1,
+   "decimals": 1
+  },
+  {
+   "id": "camera_blooming",
+   "block": "tubes",
+   "label": "BLOOMING",
+   "x": 316,
+   "y": 266,
+   "w": 258,
+   "kind": "slider",
+   "unit": "",
+   "min": 0.0,
+   "max": 3.0,
+   "step": 0.1,
+   "decimals": 1
+  },
+  {
+   "id": "camera_cold_start",
+   "block": "tubes",
+   "label": "COLD START",
+   "x": 316,
+   "y": 288,
+   "w": 258,
+   "kind": "toggle"
+  },
+  {
+   "id": "camera_cold_start_c",
+   "block": "tubes",
+   "label": "START TEMP",
+   "x": 316,
+   "y": 310,
+   "w": 258,
+   "kind": "slider",
+   "unit": "°C",
+   "min": -20.0,
+   "max": 60.0,
+   "step": 1.0,
+   "decimals": 0
+  },
+  {
+   "id": "camera_beam_off_s",
+   "block": "tubes",
+   "label": "BEAM OFF",
+   "x": 316,
+   "y": 332,
+   "w": 258,
+   "kind": "slider",
+   "unit": "s",
+   "min": 0.0,
+   "max": 60.0,
+   "step": 0.5,
+   "decimals": 1
   },
   {
    "id": "camera_processing",

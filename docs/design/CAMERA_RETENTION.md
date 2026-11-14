@@ -457,7 +457,23 @@ impl CameraTube {
 ```
 
 `CameraTube::seeded` sets `cold_offset_c = cold_start_c - temperature_c` on every channel when
-`cold_start_c` is set. The per-element state may live in the trap-occupancy array widened to
+`cold_start_c` is set.
+
+### Switching on as camera settings
+
+Two more `CameraParams` fields, `#[serde(default)]` as the others, make the switch-on sequence a setting
+(`crates/vhsphys-core/tests/camera_switch_on.rs`):
+
+- `idle_s: f64` (default `0`): lens capped, beam on, before the first frame. `CameraTube::seeded` ends with
+  `idle(idle_s)`, after the dark settle and the cold offset, so a cold camera warms under the cap.
+- `beam_off_s: f64` (default `0`): the beam is off, the lens open, for the first
+  `n = round(beam_off_s * FRAME_RATE)` frames of the shot. The targets store the scene unread; the read of
+  frame `n` is the first with the beam on, and it lands what built up (a Saticon burns, a lead-oxide burn
+  is erased, as the beam-off tests above show).
+
+A negative or non-finite value of either counts as `0`. Each is exactly the hand-driven sequence:
+`idle(idle_s)` right after seeding, `set_beam_on(false)`, and `set_beam_on(true)` before reading frame
+`n` of the shot. A hand call of `set_beam_on` cancels the pending switch-on. The per-element state may live in the trap-occupancy array widened to
 `MAX_TRAPS + 2` or in its own arrays; either way it exists only for channels that need it (traps, a
 collection that is not `FULL`, a burn), so the other kinds cost nothing.
 

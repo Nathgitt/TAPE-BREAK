@@ -757,6 +757,10 @@ Command-line flags:
   (default `25`); warmer tubes have more dark current.
 * `--camera-cold-start <DEG_C>`: faceplate temperature of the camera tubes at switch-on in
   degrees Celsius; the black creeps as they warm to `--camera-temperature` (`WARM_UP_S = 600` s).
+* `--camera-beam-ratio <N>`: beam current as a multiple of what peak white needs (default `2`,
+  the data sheet's); it must be above `0`. A weaker beam leaves more lag and longer comet tails.
+* `--camera-blooming <N>`: beam-bending strength (default `0`, off; `0` or more). No measurement
+  sets its scale (`docs/MEASUREMENTS_WANTED.md`).
 * `--camera-processing <PROFILE>`: camera electronics profile, `studio` (three-tube broadcast,
   default) or `consumer` (home camera).
 * `--camera-layout three-tube|stripe`: how the camera sees colour, `three-tube` (a prism and a
@@ -772,6 +776,7 @@ In a config file:
     tube = "plumbicon"
     iris_stops = 2.0
     beam_ratio = 2.0
+    blooming = 0.0
     temperature_c = 25.0
     processing = "studio"
     layout = "three-tube"
@@ -782,10 +787,11 @@ In a config file:
 In the desktop front end (`python -m vhsgui --page camera`), the **Camera** button in schematic
 mode opens the camera page (`docs/design/SCHEMATIC.md`, "Page 3: The camera"). It draws the
 camera chain ahead of the recorder (`lens` -> `split` -> `tubes` -> `head_amp` -> `processing`
--> `encoder` -> `tv`) with all seven camera controls (`IRIS`, `LAYOUT`, `SPECTRAL COLOUR`, `TUBE`,
-`TUBE TEMP`, `SCAN GEOMETRY`, `ELECTRONICS`). Switching `LAYOUT` switches the `split` and
-`tubes` drawings between a prism with three tubes (`three-tube`) and a stripe filter with one
-tube (`stripe`); while `TUBE` is `off`, the six other camera lines dim and are inert.
+-> `encoder` -> `tv`) with all eleven camera controls (`IRIS`, `LAYOUT`, `SPECTRAL COLOUR`, `TUBE`,
+`TUBE TEMP`, `SCAN GEOMETRY`, `BEAM`, `BLOOMING`, `COLD START`, `START TEMP`, `ELECTRONICS`).
+Switching `LAYOUT` switches the `split` and `tubes` drawings between a prism with three tubes
+(`three-tube`) and a stripe filter with one tube (`stripe`); while `TUBE` is `off`, the ten other
+camera lines dim and are inert, and `START TEMP` works only while `COLD START` is on.
 
 The tube's memory starts after its dark settling scan when a session starts. A render that starts
 part-way into a clip (`--start`) with a tube on therefore needs a few frames of pre-roll

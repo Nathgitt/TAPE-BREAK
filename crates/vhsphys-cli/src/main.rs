@@ -282,6 +282,12 @@ struct RunArgs {
     /// Faceplate temperature of the camera tubes at switch-on in degrees Celsius: the black creeps as they warm to --camera-temperature.
     #[arg(long, value_name = "DEG_C", allow_negative_numbers = true)]
     camera_cold_start: Option<f64>,
+    /// Beam current of the camera tubes as a multiple of what peak white needs (the data sheet's 2.0): a weaker beam leaves more lag and longer tails.
+    #[arg(long, value_name = "N", allow_negative_numbers = true, value_parser = parse_beam_ratio)]
+    camera_beam_ratio: Option<f64>,
+    /// Beam bending in the camera tubes: how strongly a charged highlight pulls the beam towards itself and blooms (0 = off, the default).
+    #[arg(long, value_name = "N", allow_negative_numbers = true, value_parser = parse_blooming)]
+    camera_blooming: Option<f64>,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -684,6 +690,12 @@ fn run(a: RunArgs) -> Result<()> {
     if let Some(c) = a.camera_cold_start {
         sets.push(format!("camera.cold_start_c={c:?}"));
     }
+    if let Some(b) = a.camera_beam_ratio {
+        sets.push(format!("camera.beam_ratio={b:?}"));
+    }
+    if let Some(b) = a.camera_blooming {
+        sets.push(format!("camera.blooming={b:?}"));
+    }
     sets.extend(a.sets.iter().cloned());
     let (text, sets, standard) = assemble_config(&file_text, &sets, a.standard)?;
     // A config with `[[generation]]` tables describes a rack: each generation names its own
@@ -1050,6 +1062,24 @@ fn parse_iris_stops(answer: &str) -> Option<f64> {
     answer.parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
+fn parse_beam_ratio(s: &str) -> Result<f64, String> {
+    let v = s.parse::<f64>().map_err(|_| format!("'{s}' is not a number"))?;
+    if v.is_finite() && v > 0.0 {
+        Ok(v)
+    } else {
+        Err("must be a number above 0".into())
+    }
+}
+
+fn parse_blooming(s: &str) -> Result<f64, String> {
+    let v = s.parse::<f64>().map_err(|_| format!("'{s}' is not a number"))?;
+    if v.is_finite() && v >= 0.0 {
+        Ok(v)
+    } else {
+        Err("must be a number of 0 or more".into())
+    }
+}
+
 /// A number of generations: a whole number from 1 to `MAX_GENERATIONS`.
 fn parse_generations(answer: &str) -> Option<u8> {
     answer.parse::<u8>().ok().filter(|n| (1..=MAX_GENERATIONS).contains(n))
@@ -1346,6 +1376,8 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             camera_spectral: false,
             camera_geometry: false,
             camera_cold_start: None,
+            camera_beam_ratio: None,
+            camera_blooming: None,
             start: None,
             duration: None,
             frames: None,

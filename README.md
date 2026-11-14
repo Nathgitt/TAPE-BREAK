@@ -130,10 +130,11 @@ The camera pickup tube ahead of the recorder works in every standard: `--camera-
 (the default), `plumbicon`, `plumbicon-bias`, `plumbicon-act`, `plumbicon-dbc`, `vidicon`,
 `newvicon`, `saticon` or `chalnicon`; `--iris-stops N` sets the exposure in stops (positive
 overexposes, so highlights leave comet tails). `--camera-layout` chooses `three-tube` or `stripe`,
-`--camera-processing` chooses `studio` or `consumer`, `--camera-temperature DEG_C` and
-`--camera-cold-start DEG_C` set operating and switch-on faceplate temperatures, and
-`--camera-spectral` and `--camera-geometry` enable spectral taking/colour matrixing and scan
-geometry. The model is in `docs/CAMERA.md`.
+`--camera-processing` chooses `studio` or `consumer`, `--camera-beam-ratio N` sets the beam
+current as a multiple of peak white (default 2), `--camera-blooming N` sets beam-bending
+strength (default 0, off), `--camera-temperature DEG_C` and `--camera-cold-start DEG_C` set
+operating and switch-on faceplate temperatures, and `--camera-spectral` and `--camera-geometry`
+enable spectral taking/colour matrixing and scan geometry. The model is in `docs/CAMERA.md`.
 
 ```sh
 vhsphys run in.mp4 out.mp4 --preset worn --standard pal

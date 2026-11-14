@@ -161,6 +161,11 @@ pub struct CameraParams {
     pub temperature_c: f64,
     /// Faceplate temperature at switch-on, deg C (`None` = already at `temperature_c`).
     pub cold_start_c: Option<f64>,
+    /// Lens-capped time with the beam on before the first frame, s (rounded to whole frames; 0 = none).
+    pub idle_s: f64,
+    /// Time the beam is held off at the start of the shot with the lens open, s (rounded to whole
+    /// frames; 0 = on from the start).
+    pub beam_off_s: f64,
     /// Spectral taking through the prism, IR-cut and material responses, with the processing
     /// amplifier's colour matrix when the profile carries one (default `false`: ideal taking).
     pub spectral: bool,
@@ -180,6 +185,8 @@ impl Default for CameraParams {
             processing: Processing::default(),
             temperature_c: 25.0,
             cold_start_c: None,
+            idle_s: 0.0,
+            beam_off_s: 0.0,
             spectral: false,
             geometry: false,
         }
@@ -2128,6 +2135,8 @@ pub struct CameraTube {
     prev_f1_photo: Vec<f64>,
     frame: i64,
     beam_on: bool,
+    /// Frame index at which a pending switch-on turns the beam on.
+    beam_on_at: Option<i64>,
     head_amp: HeadAmplifier,
     processor: VideoProcessor,
     alignment: Option<StripeAlignment>,
@@ -2333,6 +2342,7 @@ impl CameraTube {
             prev_f1_photo,
             frame: 0,
             beam_on: true,
+            beam_on_at: None,
             head_amp,
             processor,
             alignment: None,
@@ -2366,6 +2376,17 @@ impl CameraTube {
             cam.processor = proc;
             cam.alignment = Some(alignment);
             cam.decoder = Some(decoder);
+        }
+        // The switch-on sequence: the lens cap, then the beam held off with the lens open.
+        let idle_s = if params.idle_s.is_finite() { params.idle_s.max(0.0) } else { 0.0 };
+        if idle_s > 0.0 {
+            cam.idle(idle_s);
+        }
+        let off_s = if params.beam_off_s.is_finite() { params.beam_off_s.max(0.0) } else { 0.0 };
+        let off_frames = (off_s * FRAME_RATE).round() as i64;
+        if off_frames > 0 {
+            cam.beam_on = false;
+            cam.beam_on_at = Some(cam.frame + off_frames);
         }
         Some(cam)
     }
@@ -2440,8 +2461,10 @@ impl CameraTube {
         self.black
     }
 
+    /// Switch the electron beam on or off, cancelling any pending switch-on from `beam_off_s`.
     pub fn set_beam_on(&mut self, on: bool) {
         self.beam_on = on;
+        self.beam_on_at = None;
     }
 
     /// Lens capped, beam as set, for `seconds` (rounded to whole frames) without reading.
@@ -3024,6 +3047,12 @@ impl CameraTube {
     /// Scan one frame from pictures (`f0` for field 0, `f1` for field 1), amplify and process
     /// the line signal through the camera electronics.
     pub fn video(&mut self, f0: &Frame, f1: &Frame) -> CameraVideo {
+        if let Some(at) = self.beam_on_at {
+            if self.frame >= at {
+                self.beam_on = true;
+                self.beam_on_at = None;
+            }
+        }
         if self.layout == Layout::Stripe {
             let rows = self.stripe_decode_raw(f0, f1);
             return self.processor.process(&TargetSignal { rows });
