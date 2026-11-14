@@ -54,8 +54,8 @@ after the recorder, as for everything else in the project.
 - Landing on each sub-element is the existing exact scan of `tube.rs`: the whole beam share above
   the cathode potential, then `exp(-q'/K) = exp(-q/K) + left/K` below it, with the share of beam
   charge as `left`.
-- The ACT gun, when fitted, clips each sub-element at the stabilisable charge during the flyback
-  before the line's pass (as now; refined by a later stage).
+- The ACT gun, when fitted, discharges highlights during the line flyback before each pass over a
+  span of lines (see "Highlights"; this replaces the clip at the stabilisable charge).
 - Beam charge is in the same target-equivalent units as the stored charge. With `g` the Gaussian
   and `S_k` the sum of `g` over every pass of a frame (both fields) at sub-row `k`, the pass of row
   `r` offers sub-row `k` the beam charge `I_b * T_frame * g(y_k - c_r) / S_k`.
@@ -297,6 +297,216 @@ pub fn photo_current(ch: &TubeChannel, light: f64) -> f64; // peak * light^ch.ga
 
 `UniformColumn` and `CameraTube` integrate the traps in the same pieces as the light. `GAMMA` stays as
 the PbO value.
+
+## Highlights
+
+Source: `docs/CAMERA_RESEARCH.md`, "Beam capacity of twice peak white turns highlights into comet
+tails". A highlight the read beam cannot take off leaves charge on the target. Three things decide
+what then happens: the gun (a flyback that discharges it, or a beam that rises to meet it), the
+element's potential (an unstabilised element bends the beam towards itself), and the target (how much
+it stores and in which colour). All three act on the target and the beam during the scan; nothing is
+added to the picture.
+
+### Decisions
+
+- **ACT flyback over a span of lines.** The read-time clip of the ACT gun is replaced by a flyback
+  before every pass: a defocused beam spread over a band of lines discharges every element above the
+  cutting level, so it reaches highlights a few lines before the read beam does (US 4,143,305). Only
+  active lines have a pass, so only they have a flyback: an overload at the top of the picture sees one
+  flyback before it is read instead of several.
+- **Dynamic beam control as its own kind.** A diode gun with dynamic beam control joins as
+  `TubeKind::PlumbiconDbc`. Its beam follows the Ampex law (US 4,229,767) along the line. The diode
+  gun's cooler beam, `V_T = 0.10 V`, comes with a target of more capacitance: the XQ3440 (diode) and
+  XQ1520 (ACT triode) print the same low-key lag (Mullard 1987), so `C` is chosen to keep `K = C V_T`.
+- **Beam bending replaces the lateral spill.** The spill moved photocurrent sideways in the input
+  picture before the target. Light does not move; the beam does. The spill was keyed on the light of
+  the moment, so it vanished as soon as the light went although the element stayed charged, and no gun
+  could cut it. Beam bending is keyed on the stored potential of each element (Philips 1963: an
+  unstabilised element "will start to attract electrons towards it when the beam approaches, and
+  continue to do so after the beam should have passed"), so a bloom lasts as long as its comet tail,
+  and ACT and dynamic beam control, which hold the potential down, cut it as the data say. The config
+  key `blooming` stays and now sets the bending strength; `0.0` (the default) is off.
+- **Trail colour needs no new mechanism.** It follows from each channel's capacitance, beam and traps:
+  the red and blue PbO tubes run half the green current with half its beam on targets of about the
+  same capacitance, so they store more overload per unit of beam and their tails outlast green's (red
+  over green, "red-trail", RCA 1977); a Saticon camera has three identical tubes, so its residue is
+  white, and its low lag clears it within about 2 s at a beam of 3 to 4 times the highlight (RCA 1977,
+  Neuhauser 1978). Which of red and blue clears last depends on blue's capacitance (fitted in "Target
+  materials and traps", 1.32 nF with its traps) and is not judged.
+
+### One pass with the highlight physics
+
+Each pass of row `r` in frame `n` (per channel, with `c_r = r + 0.5` and `y_k = (k + 0.5) / SUB_ROWS`
+in frame-line pitches) runs, in this order:
+
+1. **Flyback** (ACT only). At `t_fb = n T_frame + line / FH` (the start of the pass's line, `line` from
+   `row_to_line(r)`, the same for every column), every element whose sub-row lies in the span
+   `|y_k - c_r| <= h_act`, `h_act = ACT_SPAN_PH * ACTIVE_H / 2`, is integrated to `t_fb` by the usual
+   rule (light in held pieces, dark, bias, traps, plate limit) and, if `q > q_act`,
+   `q <- q_act + scan(b_fb, K, q - q_act)`; an element at or below `q_act` is left exactly as it is.
+   The charge landed in flyback goes to the head amplifier during blanking and is not in
+   `TargetSignal`.
+2. **Integration** of every element of the pass's band (the sub-rows with a beam share in this pass)
+   to its read time `read_time_s(n, r, x)`, as now. With bending on, the elements within
+   `ceil(BEND_RADIUS_MAX_LINES * SUB_ROWS)` sub-rows above and below the band are integrated to the same
+   times too (they may capture beam).
+3. **Beam current per column** `I_b(x)`: `beam_na`, or the dynamic beam control's (below).
+4. **Aims.** The beam aimed at element `(x, k)` of the band is `b(x, k) = I_b(x) T_frame w_rk` with
+   `w_rk` the existing share `g(y_k - c_r) / S_k`.
+5. **Capture** (bending on). Each aim lands on its captor (below), otherwise on its own element.
+6. **Landing.** Each element receives `B_e`, the sum of the aims it captures, and lands once:
+   `after = scan(B_e, K, before)`, `landed_e = before - after`. Elements of the band that receive no
+   beam keep their charge.
+7. **Signal.** `landed_e` is shared among the aims `e` captured in proportion to their `b`, and each
+   share counts at the aim's column (the beam was there when it landed). Row `r` at column `x` reads the
+   sum of the shares of the aims at column `x` divided by `SUB_ROWS * T_frame`, and the horizontal spot
+   follows as now.
+
+Without ACT, dynamic beam control or bending, steps 1, 3 and 5 do nothing and the pass is the present
+one, bit for bit. Bending couples the columns of a pass, so with bending on the passes run row by row
+(all columns of a pass, then the next pass); without it the column-by-column engine may stay.
+`UniformColumn` runs the same pass on its one column; its neighbours are lit alike, so a capture by a
+neighbouring column never beats one by its own column, and only captors in its own column count.
+
+### ACT flyback
+
+- Cutting level per channel `[R, G, B]`: `ACT_LEVEL_V = [3.5, 7.0, 3.5]` V, the XQ1520 cathode-pulse
+  presets (Mullard 1987) [DS]. In charge, `q_act = C * act_level_v * 1e9` nA s (green 8.05, red 4.83).
+- Flyback beam: `ACT_BEAM_NA = 100 000` nA, grid 1 raised to about 100 uA (Mullard 1987) [DS], all of it
+  taken to reach the target [est]; for `ACT_FLYBACK_S = 8.0e-6` s [est, inside the 10.9 to 12 us line
+  blanking]; spread evenly over a band of `ACT_SPAN_PH = 1/30` of the picture height [est: "many
+  scanning lines", US 4,143,305; 16 lines at 525, 19.2 at 625]. Each element of the span is offered,
+  per flyback, `b_fb = ACT_BEAM_NA * ACT_FLYBACK_S / ACT_SPAN_PH = 24.0` nA s in target-equivalent
+  units, the same in both standards.
+- Why these sizes [DER]. With `h_act` = 8 lines (525) an element is in the span of 8 passes of each
+  field, 4 before its read and 4 after. A highlight's element is at the plate by the time the span
+  reaches it (32 times peak white fills it in about 5 ms). Four flybacks (96 nA s) bring a full element
+  to the cutting level in every channel (plate less `q_act`: green 43.7, red 57.3, blue at most 73 nA s),
+  so the read beam finds at most `q_act` and the flybacks after it take what the read left: no tail at
+  any overload, which covers the data's 32 times over a spot of 10 % of the picture height (5 stops).
+  One flyback (24 nA s) does not: the first lines of each field are read with their overload in place,
+  which is US 4,143,305's "not pre-discharged" at the top of the picture.
+- With the cutting levels below the 10 V bending onset, ACT also cuts blooming wherever it has
+  pre-discharged the highlight, and not at the top of the picture (US 4,143,305).
+
+### Dynamic beam control
+
+- `TubeKind::PlumbiconDbc` (config `plumbicon-dbc`): the PlumbiconAct channel with `act = false`,
+  `v_t = V_T_DIODE_GUN_V`, `capacitance_f` times `V_T_TRIODE_GUN_V / V_T_DIODE_GUN_V` (1.7), so `k_nas`
+  is unchanged and the plate charge grows by 1.7; `k_nas` and `plate_nas` recomputed from them as for
+  every kind; `dbc = Some(DBC)`. The rest of the PbO material (gamma, dark current, traps) as the other
+  Plumbicon kinds.
+- The Ampex law: the beam stays at `beam_na` until the video passes `beam_na - headroom` and then
+  stays `headroom` above it, up to the gun's largest beam. `DBC.headroom = 0.5` of `beam_na` (300 nA
+  over a 600 nA base, US 4,229,767) [DS], `DBC.max_ratio = 17` times `peak_signal_na` [DER: 16 times
+  peak white handled (Mullard 1987, 4 stops) needs a beam of 16 times peak plus the headroom of one
+  peak]. The loop is taken as fast as the scan [est]; its delay is out of scope.
+- Per column `x` of the pass, with the band's charges after step 2:
+  `I_v(I) = sum_k (q_k - scan(I T_frame w_rk, K, q_k)) / (SUB_ROWS T_frame)` (the column's own reading,
+  before any capture), `head = headroom * beam_na`, `max = max(max_ratio * peak_signal_na, beam_na)`,
+  `g(I) = I - head - I_v(I)`. If `g(beam_na) >= 0`, `I_b = beam_na`; else if `g(max) <= 0`,
+  `I_b = max`; else bisect on `[beam_na, max]` keeping `g(lo) < 0 <= g(hi)` until
+  `hi - lo <= DBC_TOLERANCE_NA` (0.01 nA) and take `I_b = hi`.
+- Consequence: a steady light reads linearly to 16 times peak white, a highlight up to 16 times leaves
+  no tail, and beyond it the beam stops at `max`. In red and blue a full element holds more than one
+  pass of the largest beam takes, so a stop beyond (32 times) leaves a tail; a green element at the
+  plate fits in one pass and is cleared (the plate caps what it can store).
+
+### Beam bending
+
+- An element's potential above the cathode is `V = q / (capacitance_f * 1e9)` V (`q` in nA s). Above
+  the onset `V_BEND_ONSET_V = 10` V (Philips kept the swing within about 10 V because more "deflects
+  the approaching beam excessively", Philips 1963) [DS], it captures the beam aimed within its radius
+  `rho(V) = min(bending * (V - V_BEND_ONSET_V) / V_BEND_ONSET_V, BEND_RADIUS_MAX_LINES)` frame-line
+  pitches, `0` at or below the onset. `bending` is the free strength (no extent data exist, research
+  "Open gaps"); at `bending = 1` an element at the 45 V plate reaches 3.5 lines. `BEND_RADIUS_MAX_LINES
+  = 4` bounds the search [est].
+- Distance between element `(x', k')` and aim `(x, k)`:
+  `d = sqrt(((x' - x) p_h)^2 + ((k' - k) / SUB_ROWS)^2)`, `p_h = TARGET_ASPECT * ACTIVE_H / ACTIVE_W`
+  (`sample_pitch_lines()`; 0.849 at 525, 1.038 at 625), `TARGET_ASPECT = 4/3`.
+- The captor of an aim is, among the elements with `V > V_BEND_ONSET_V` and `d <= rho(V)` (an aim's own
+  element if it is above the onset, at `d = 0`), the nearest; ties go to the higher `V`, then the smaller
+  `x'`, then the smaller `k'`. An aim with no such element lands on its own element. The potentials are
+  those after steps 1 and 2: each element's own read-time charge stands for its potential both as the
+  beam approaches and after it has passed [est; an element that bends the beam is beyond what one pass
+  stabilises, so it is still positive after the pass].
+- `CameraParams.blooming` sets `bending` on every channel (negative values count as 0). `TubeKind`
+  channels carry `bending = 0.0`.
+
+### Defaults and what stays
+
+- The camera off is untouched (the golden test). The default `blooming = 0.0` leaves `Plumbicon`,
+  `PlumbiconBias` and the material kinds bit-identical to the engine before this stage. `PlumbiconAct`
+  changes where highlights exceed the cutting level; below it, its readings are the plain gun's up to
+  rounding, so its lag is unchanged.
+- `apply_blooming`, `BLOOMING_MAX`, `BLOOM_NEAR_SHARE` and `BLOOM_FAR_SHARE` go; `frame_photo` maps
+  levels to photocurrent only. `docs/CAMERA.md`'s paragraphs on ACT and blooming are rewritten to match.
+  The command line and GUI learn `plumbicon-dbc` in "Front ends".
+- Cost: the ACT flyback integrates about four times as many elements per pass; bending runs row by row.
+
+### Interfaces
+
+In `tube.rs`:
+
+```rust
+/// ACT cutting level per channel `[R, G, B]`, V (XQ1520 cathode-pulse presets).
+pub const ACT_LEVEL_V: [f64; 3] = [3.5, 7.0, 3.5];
+pub const ACT_BEAM_NA: f64 = 100_000.0;
+pub const ACT_FLYBACK_S: f64 = 8.0e-6;
+/// Height of the flyback band, as a fraction of the picture height.
+pub const ACT_SPAN_PH: f64 = 1.0 / 30.0;
+pub const V_BEND_ONSET_V: f64 = 10.0;
+pub const BEND_RADIUS_MAX_LINES: f64 = 4.0;
+pub const TARGET_ASPECT: f64 = 4.0 / 3.0;
+pub const DBC_TOLERANCE_NA: f64 = 0.01;
+/// Dynamic beam control: `headroom` as a fraction of `beam_na`, the largest beam as a multiple of
+/// `peak_signal_na`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dbc { pub headroom: f64, pub max_ratio: f64 }
+pub const DBC: Dbc = Dbc { headroom: 0.5, max_ratio: 17.0 };
+// TubeKind gains (config name in brackets):
+//     PlumbiconDbc ("plumbicon-dbc"): diode gun with dynamic beam control.
+// TubeChannel gains:
+//     act_level_v: f64   // ACT_LEVEL_V[k] for PlumbiconAct, 0.0 for every other kind
+//     dbc: Option<Dbc>   // Some(DBC) for PlumbiconDbc only
+//     bending: f64       // 0.0 from TubeKind; set by CameraTube from CameraParams::blooming
+impl TubeChannel {
+    /// `q / (capacitance_f * 1e9)`, V.
+    pub fn potential_v(&self, q_nas: f64) -> f64;
+    /// `capacitance_f * act_level_v * 1e9`, nA s.
+    pub fn act_level_nas(&self) -> f64;
+    /// `rho(V)` of this channel's `bending`, frame-line pitches.
+    pub fn bend_radius_lines(&self, potential_v: f64) -> f64;
+}
+```
+
+In `camera.rs` (both engines):
+
+```rust
+/// Charge offered to each element of the span per flyback, nA s:
+/// `ACT_BEAM_NA * ACT_FLYBACK_S / ACT_SPAN_PH`.
+pub fn act_flyback_nas() -> f64;
+/// Horizontal sample pitch in frame-line pitches: `TARGET_ASPECT * ACTIVE_H / ACTIVE_W`.
+pub fn sample_pitch_lines() -> f64;
+impl UniformColumn {
+    /// Read the next frame with photocurrent `photo(r, t)`, nA, the light of frame row `r` (each
+    /// sub-row takes its row's light, as `CameraTube`), held within each field's interval. `read(p)`
+    /// is `read_rows(|_, t| p(t))`.
+    pub fn read_rows(&mut self, photo: &dyn Fn(usize, f64) -> f64) -> Vec<f64>;
+}
+```
+
+`CameraParams.blooming` keeps its name and type; its doc becomes the bending strength.
+
+### Out of scope
+
+- The loop delay of dynamic beam control; spot growth, geometry shift and lag from a raised beam; the
+  flyback current seen by the head amplifier; the ACT on vertical retrace lines (there is none).
+- Bending's displacement of landing energy and any asymmetry between approach and departure; bending
+  across channels.
+- A red-specific trail mechanism (no data); highlight burn and sticking (Retention); optical flare and
+  the anti-halation disc (Geometry).
+- Highlight guns on the non-PbO kinds; return-beam tubes (ABO).
 
 ## Stages
 
