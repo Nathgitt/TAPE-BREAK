@@ -2,7 +2,7 @@
 
 ## Intent
 
-The vhs-phys interface replaces a multi-group parameter form with a two-page `1180 x 620` technical schematic rendered in the style of a monochrome green-phosphor cathode-ray monitor and a 1980s vector explainer diagram. The first page (`python/vhsgui/schematic/`) depicts the internal helical-scan NTSC signal chain (`22` controls across `8` blocks); the second page (`python/vhsgui/schematic/outside/`) depicts external physical interference sources acting on the deck and picture tube from outside the circuit (`18` controls across `7` blocks). Both pages share the same canvas, phosphor palette, font stack, animation parameters, bottom hint bar, and right-hand television monitor preview, so turning any control shows its effect on the live picture immediately. Each adjustable parameter sits directly below the physical assembly it governs as a monospace row (`LABEL ........ VALUE`) underlined by a 1 px proportional gauge. Hierarchy is established through phosphor brightness and stroke weight rather than colour variety or type scale.
+The vhs-phys interface replaces a multi-group parameter form with a three-page `1180 x 620` technical schematic rendered in the style of a monochrome green-phosphor cathode-ray monitor and a 1980s vector explainer diagram. The first page (`python/vhsgui/schematic/`) depicts the internal helical-scan NTSC signal chain (`20` controls across `8` blocks); the camera page (`python/vhsgui/schematic/camera/`) depicts the camera ahead of the recorder, from the lens to the encoder (`7` controls across `7` blocks); the outside page (`python/vhsgui/schematic/outside/`) depicts external physical interference sources acting on the deck and picture tube from outside the circuit (`18` controls across `7` blocks). All three pages share the same canvas, phosphor palette, font stack, animation parameters, bottom hint bar, and right-hand television monitor preview, so turning any control shows its effect on the live picture immediately. Each adjustable parameter sits directly below the physical assembly it governs as a monospace row (`LABEL ........ VALUE`) underlined by a 1 px proportional gauge. Hierarchy is established through phosphor brightness and stroke weight rather than colour variety or type scale.
 
 ## Palette
 
@@ -69,7 +69,7 @@ The circuit page divides the `1180 x 620 px` canvas into five vertical columns s
 | Glyph | Physical part depicted | Block | Adjacent controls |
 |---|---|---|---|
 | `source_gate` | 35 mm 4:3 film aperture with sprocket holes, lens reticle, and 1 Vpp sync step waveform | `source` | `PRESET`, `SEED` |
-| `pickup_tube` | Camera pickup tube showing lens, photoconductive target, deflection yoke, and electron gun | `camera` | `TUBE`, `IRIS` |
+| `pickup_tube` | Camera pickup tube showing lens, photoconductive target, deflection yoke, and electron gun | `camera` | none: a `dim` label `SET ON THE CAMERA PAGE` at `(246, 142)` |
 | `rec_deck` | Top view of VCR cassette throat, `REC` counter window, `FM MOD` modulator, and record head amp | `record_deck` | `REC AGE`, `REC TEMP` |
 | `dub_loop` | Coaxial dubbing input jack and `COPY N+1` cascade feedback loop (`DUB`) | `record_deck` | `GENERATIONS` |
 | `cassette` | 188 x 104 mm VHS shell (`1.86:1`) with turning supply/take-up reels, window, write-protect tab, and `T-120 VHS` label | `cassette` | `SPEED`, `PLAYS`, `POSITION` |
@@ -93,7 +93,7 @@ The circuit page divides the `1180 x 620 px` canvas into five vertical columns s
 
 ### Camera block and standard labels
 
-The `camera` block sits at the top of column 2, between the input `source` and the recording deck, modelling camera pickup tube lag and highlight smearing (`TUBE`, `IRIS`) with a video feed (`w_camera`) into the recorder. In the `tv` block, `STANDARD` selects `ntsc`, `pal`, or `pal60`. The technical spec labels along the right column and top header switch dynamically using `when: {"standard": [...]}` to display the exact parameters of the active television standard: raster line count and frame rate, luma FM carrier band (3.4-4.4 MHz vs 3.8-4.8 MHz), colour-under subcarrier (629 kHz vs 627 kHz), drum speed (1800 rpm vs 1500 rpm), and tape speeds (SP/EP vs SP/LP).
+The `camera` block sits at the top of column 2, between the input `source` and the recording deck, with a video feed (`w_camera`) into the recorder. It keeps its `pickup_tube` drawing and caption but no control rows: the camera's seven settings live on the camera page, and the block says so with the `dim` 11 px label `SET ON THE CAMERA PAGE` at `(246, 142)` where its `TUBE` and `IRIS` rows were. In the `tv` block, `STANDARD` selects `ntsc`, `pal`, or `pal60`. The technical spec labels along the right column and top header switch dynamically using `when: {"standard": [...]}` to display the exact parameters of the active television standard: raster line count and frame rate, luma FM carrier band (3.4-4.4 MHz vs 3.8-4.8 MHz), colour-under subcarrier (629 kHz vs 627 kHz), drum speed (1800 rpm vs 1500 rpm), and tape speeds (SP/EP vs SP/LP).
 
 ## Page 2: Outside the circuit (`python/vhsgui/schematic/outside/`)
 
@@ -129,6 +129,73 @@ The outside-world page uses four equal columns of `270 px` width separated by `2
 - **Wires**: Electromagnetic and magnetic fields (`phone`, `radio`, `crt_magnet`, `head_magnet`) act across free space and are depicted by radiated wavefront arcs and dashed flux loops rather than schematic wires. Only the physical AC supply and ground-loop connection is wired: a `power` bus (`w_mains`, labelled `MAINS`) exits the right side of `mains` at `(580, 306)`, runs along the center of the `y = 306` horizontal gutter between `crt_magnet` and `head_magnet`, drops down the `x = 880` vertical gutter to `y = 424`, and enters the bottom center of `tv` at `(1025, 400)`.
 - **Motion**: Shares the exact `animation` object of the circuit page (`pulse_speed: 90`, `pulse_spacing: 70`, `reel_rpm: 12`, `flicker: 0.03`, `boot_ms: 1800`, `refresh_flash_ms: 250`). Signal pulses travel along `w_mains` from `mains` into `tv`; no `reel` primitives are used on the outside page.
 
+## Page 3: The camera (`python/vhsgui/schematic/camera/`)
+
+The camera page draws the camera ahead of the recorder in the order the light and then the signal travel through it: scene and lens with its iris, the colour split (a dichroic prism, or a stripe filter), the pickup tube(s), the head amplifier, the processing amplifier, the encoder, and the TV that shows the result. It holds every camera setting of the window and nothing else; the circuit page keeps only the drawing of its `camera` block. The data files are `docs/design/camera_page/layout.json` and `docs/design/camera_page/glyphs.json`, copied unchanged to `python/vhsgui/schematic/camera/`; the tables below say what they contain.
+
+### Grid
+
+The camera page uses the outside page's grid: four `270 px` columns at `x = 20, 310, 600, 890` with `20 px` gutters, a `16 px` vertical gutter between the upper and lower block of each of the first three columns, control rows at `block.x + 6`, `w = 258`, and the same `tv` block, `tv` glyph, `VIDEO` wire route and legend positions as the outside page.
+
+| Column | Blocks (`y .. y+h`) | Drawings (`x, y`) | Control rows (`y`) |
+|---|---|---|---|
+| 1 | `lens` LENS AND IRIS (`40..254`), `split` COLOUR SPLIT (`270..520`) | `lens_iris` (`28, 70`); `prism` or `stripe_filter` (`28, 300`) | `IRIS` 178; `LAYOUT` 444, `SPECTRAL COLOUR` 466 |
+| 2 | `tubes` PICKUP TUBES (`40..298`), `head_amp` HEAD AMPLIFIER (`314..520`) | `tubes_three` or `tube_one` (`318, 70`); `head_amp` (`318, 344`) | `TUBE` 178, `TUBE TEMP` 200, `SCAN GEOMETRY` 222; none |
+| 3 | `processing` PROCESSING AMP (`40..298`), `encoder` ENCODER (`314..520`) | `proc_amp` (`608, 70`); `encoder` (`608, 344`) | `ELECTRONICS` 178; none |
+| 4 | `tv` (`40..400`) + `VIDEO` wire (`424`) + legend (`450..530`) | `tv` (`898, 48`) | none (preview screen) |
+
+- **Flow**: `w_light` drops from `lens` into `split` (`x = 127`); `w_targets` leaves `split` on the right (`y = 352`), climbs the `x = 300` gutter and enters `tubes` at the targets (`y = 114`); `w_signal` drops from the targets' signal lead into `head_amp` (`x = 348`); `w_head` leaves `head_amp` on the right (`y = 374`), climbs the `x = 590` gutter and enters `processing` (`y = 100`); `w_proc` drops into `encoder` (`x = 858`); `w_out` (`VIDEO`) leaves `encoder` at `y = 370`, runs down the `x = 880` gutter and along `y = 424` into the bottom centre of `tv` (`1025, 400`). Every wire is of kind `video`.
+- **Block centres** read left to right: `lens` = `split` < `tubes` = `head_amp` < `processing` = `encoder` < `tv`.
+- **Captions** (at most `35` characters): `EXPOSES THE TARGETS IN STOPS`, `SPLITS THE LIGHT INTO COLOURS`, `STORE CHARGE, LAG AND SMEAR`, `LIFTS NANOAMPS TO VOLTS`, `CLAMPS, MATRIXES, KNEES, CORRECTS`, `ADDS COLOUR BURST AND SYNC`.
+
+### Controls (camera page)
+
+| Line | id | Block | Kind | Range or choices |
+|---|---|---|---|---|
+| `IRIS` | `iris_stops` | `lens` | slider | `-2 .. 6` stops, step `0.5`, 1 decimal (`IRIS_STOPS_RANGE`) |
+| `LAYOUT` | `camera_layout` | `split` | choice | `three-tube`, `stripe` (`CAMERA_LAYOUTS`) |
+| `SPECTRAL COLOUR` | `camera_spectral` | `split` | toggle | |
+| `TUBE` | `camera_tube` | `tubes` | choice | `CAMERA_TUBES`, in order |
+| `TUBE TEMP` | `camera_temperature_c` | `tubes` | slider | `0 .. 60` °C, step `1`, 0 decimals (`CAMERA_TEMPERATURE_RANGE`) |
+| `SCAN GEOMETRY` | `camera_geometry` | `tubes` | toggle | |
+| `ELECTRONICS` | `camera_processing` | `processing` | choice | `studio`, `consumer` (`CAMERA_PROCESSING`) |
+
+Each setting has one line on one page: `TUBE` and `IRIS` moved here from the circuit page's `camera` block. `SPECTRAL COLOUR` sits with the prism because spectral taking is the prism's, the infrared filter's and the targets' colour response; `SCAN GEOMETRY` sits with the tubes because deflection, registration and shading belong to the yokes and targets.
+
+**Without a tube the camera's lines are inert**, as the window disables its own camera controls: while `camera_tube` is `off`, the window calls `set_enabled(id, False)` for the six other lines. A disabled line is drawn in the `dim` tier (label, leader, value and gauge; no edited mark, no hover brightening), ignores clicks, drags, the wheel, the keys and double clicks, and still shows its help in the hint band when hovered, so the user reads why nothing happens. `TUBE` itself is always live.
+
+### The layout switch
+
+The layout is drawn, not only printed. Two pairs of instances share a place and carry `when: {"camera_layout": [...]}` (see `docs/design/FORMAT.md`):
+
+| `camera_layout` | `split` block | `tubes` block | Top-right label (`1160, 24`, right aligned) | Legend line at `y = 510` |
+|---|---|---|---|---|
+| `three-tube` | `prism`: infrared cut filter, pentagonal dichroic prism with crossed `hot` layers, three exits `R`, `G`, `B` | `tubes_three`: three small tubes (target, envelope, yoke, gun) with their targets' leads joined into one signal lead | `THREE TUBES BEHIND A PRISM` | `PRISM: ONE TUBE PER COLOUR` |
+| `stripe` | `stripe_filter`: optical low-pass plate and a faceplate of alternating `norm`/`dim` stripes (`CY / YE`), one exit (`1 TARGET`) | `tube_one`: one larger tube with a striped target, its beam drawn to the target | `ONE TUBE BEHIND A STRIPE FILTER` | `STRIPES CODE COLOUR AT 3.58 MHZ` |
+
+The other legend lines (`dim`, 11 px, `x = 890`) are fixed physics: `CLICK SCREEN TO ENLARGE` (450), `1 STOP = 2X LIGHT ON TARGET` (470), `DARK CURRENT DOUBLES WITH HEAT` (490), `THE BEAM READS EACH LINE'S CHARGE` (530). No static text names a tube, a profile or a temperature, so nothing printed can disagree with a control.
+
+### Symbol vocabulary (camera page)
+
+| Glyph | Part depicted | Block | Adjacent controls |
+|---|---|---|---|
+| `lens_iris` | A lit object (`SCENE`), its rays through a biconvex `LENS` and past two iris blades (`IRIS`) to an image point | `lens` | `IRIS` |
+| `prism` / `stripe_filter` | See "The layout switch" | `split` | `LAYOUT`, `SPECTRAL COLOUR` |
+| `tubes_three` / `tube_one` | See "The layout switch"; callouts `TARGETS`, `YOKES`, `GUNS` or `STRIPED TARGET`, `YOKE`, `GUN` | `tubes` | `TUBE`, `TUBE TEMP`, `SCAN GEOMETRY` |
+| `head_amp` | The target's signal lead into a `LOAD` resistor and a `FET` amplifier, with its `NOISE` | `head_amp` | none |
+| `proc_amp` | A chain `CLAMP`, `MATRIX`, `GAMMA`, `DETAIL` with sketches of the black level (`BLACK`, `0 V`), the knee, the gamma curve and the aperture overshoot | `processing` | `ELECTRONICS` |
+| `encoder` | `R G B` into a `MATRIX`, a summing node adding the `BURST` and `SYNC` | `encoder` | none |
+| `tv` | The outside page's TV, unchanged | `tv` | live preview window |
+
+All callouts are 11 px in the `dim` or `norm` tier; nothing is `faint` or scaled below 1.0.
+
+### Reaching the page
+
+- A checkable `Camera` button (object name `cameraButton`) joins `Circuit` and `Outside` in the exclusive page group, in the order Camera, Circuit, Outside (the order the signal travels). Like them it is visible in schematic mode only.
+- `MainWindow.camera` is the page's `SchematicView` (object name `cameraView`); `set_schematic_page("camera")` shows it; the window still starts on `circuit`. Each page plays its start-up sequence on its first visit only.
+- `python -m vhsgui --page camera` starts on the camera page (`--page` takes `camera`, `circuit` or `outside`).
+- The camera page's TV shows the same picture as the other two.
+
 ## Rules
 
 - **Do**:
@@ -156,3 +223,5 @@ The outside-world page uses four equal columns of `270 px` width separated by `2
 9. **Miniature second CRT silhouette inside `mains_dimmer`**: Considered drawing a small 18 px picture tube beside the audio head in `mains` to illustrate stray hum deflection; rejected because it read as visual clutter at 60% zoom and duplicated the large `crt_tube` side-elevation drawing immediately to the right in `crt_magnet`.
 10. **Static numeric distance or frequency readouts on dimension lines**: Considered printing `20 CM` on the phone distance line or `3.8 MHZ` on the radio carrier; rejected because fixed numbers would contradict the live `DISTANCE` and `FREQUENCY` sliders, whereas physical constants (`217 HZ`, `577 US // 1/8`, `0.63 C`, `3.4-4.4 Y FM`, `59.94 HZ`, `GUN 0 .. 35 CM`) remain true at every setting.
 11. **Uniform heavy silhouettes across all seven outside blocks**: Considered giving `radio_rf`, `mains_ground`, `mains_dimmer`, and `shield_cage` closed `bold` frames with fills; rejected so that in the squint test the `tv` monitor and the three primary assemblies (`crt_tube`, `drum_magnet`, `phone_gsm`) read in strict visual order without secondary blocks competing.
+12. **The camera's new settings in the circuit page's camera block**: Considered growing the `camera` block to take `LAYOUT`, `ELECTRONICS`, `TUBE TEMP`, `SPECTRAL COLOUR` and `SCAN GEOMETRY`; rejected because column 2 is full (`cassette` fills `196..571`) and its drawings carry 11 px text that cannot be scaled down, so the camera got a page of its own.
+13. **`TUBE` and `IRIS` on both the circuit and the camera page**: Considered keeping them on the circuit page as well; rejected so that every setting has exactly one line on one page, and the circuit's `camera` block points to the camera page instead.

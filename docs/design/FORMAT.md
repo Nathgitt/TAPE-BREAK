@@ -1,7 +1,7 @@
 # Schematic data format (version 1)
 
 The schematic is drawn from two JSON files in `python/vhsgui/schematic/`: `layout.json`
-(what is where) and `glyphs.json` (the drawings). The designer owns both; the engine only
+(what is where) and `glyphs.json` (the drawings). Each page of the schematic is such a pair in its own folder: `schematic/` (the circuit), `schematic/camera/` and `schematic/outside/`. The designer owns both; the engine only
 reads them. Coordinates are canvas pixels, origin top left, y down; the canvas is 1180 x 620
 and the view scales it to the widget. Everything is monochrome phosphor: brightness is the
 only colour.
@@ -43,7 +43,7 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
             "font": {"family": ["JetBrains Mono", "DejaVu Sans Mono", "monospace"], "size": 12, "tracking": 0.6}},
   "title": {"text": "...", "x": 20, "y": 14, "size": 14},
   "blocks": [{"id": "head_drum", "title": "HEAD DRUM", "x": 500, "y": 20, "w": 220, "h": 110, "frame": "box", "caption": ""}],
-  "instances": [{"glyph": "drum", "x": 520, "y": 40, "scale": 1.0, "block": "head_drum"}],
+  "instances": [{"glyph": "drum", "x": 520, "y": 40, "scale": 1.0, "block": "head_drum"}, {"glyph": "prism", "x": 28, "y": 300, "scale": 1.0, "block": "split", "when": {"camera_layout": ["three-tube"]}}],
   "wires": [{"id": "w1", "kind": "video", "points": [[250, 60], [300, 60]], "label": "", "label_at": [0, 0], "arrow": true}],
   "labels": [{"text": "NTSC 525", "x": 20, "y": 600, "size": 11, "align": "l", "b": "dim", "when": {"standard": ["ntsc"]}}],
   "hint": {"x": 20, "y": 606, "w": 1140, "size": 12, "default": "HOVER A LINE. DRAG TO SET. WHEEL TO STEP. DOUBLE CLICK TO RESET."},
@@ -67,7 +67,7 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
 | block | controls |
 |---|---|
 | `source` | `preset` (choice), `seed` (stepper) |
-| `camera` | `camera_tube` (choice off, plumbicon, plumbicon-bias, plumbicon-act), `iris_stops` (slider -2..6, step 0.5) |
+| `camera` (circuit page) | none: the drawing stays and a label points to the camera page |
 | `record_deck` | `rec_deck_age_years`, `rec_deck_temp_c`, `generations` (stepper 1..8) |
 | `cassette` | `tape_age_years`, `tape_storage`, `tape_quality`, `tape_passes`, `tape_speed` (choice sp, lp, ep), `tape_stretch`, `tape_position_m` |
 | `head_drum` | `head_wear`, `head_clog`, `drum_wear` |
@@ -75,13 +75,21 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
 | `power` | `deck_age_years`, `deck_temp_c`, `deck_humidity`, `psu_smps` (toggle), `mains_hz`, `mains_sag` |
 | `output` | `signal` (choice svideo, notch, comb1h, comb2h), `audio` (choice process, copy, none) |
 | `tv` | `standard` (choice ntsc, pal, pal60); the TV shows the picture (a glyph with a `screen`) |
+| `lens` (camera page) | `iris_stops` (slider -2..6, step 0.5) |
+| `split` (camera page) | `camera_layout` (choice three-tube, stripe), `camera_spectral` (toggle) |
+| `tubes` (camera page) | `camera_tube` (choice), `camera_temperature_c` (slider 0..60 °C, step 1), `camera_geometry` (toggle) |
+| `processing` (camera page) | `camera_processing` (choice studio, consumer) |
 
   The numeric ranges, steps and choices of the condition controls are those of
-  `python/vhsgui/model.py` (`CONDITION_FIELDS`); a test keeps the two in step. The choices of `standard` and
-  `camera_tube` and the range of `iris_stops` are `STANDARDS`, `CAMERA_TUBES` and `IRIS_STOPS_RANGE` there.
+  `python/vhsgui/model.py` (`CONDITION_FIELDS`); a test keeps the two in step. The choices of `standard`,
+  `camera_tube`, `camera_layout` and `camera_processing` and the ranges of `iris_stops` and `camera_temperature_c` are
+  `STANDARDS`, `CAMERA_TUBES`, `CAMERA_LAYOUTS`, `CAMERA_PROCESSING`, `IRIS_STOPS_RANGE` and `CAMERA_TEMPERATURE_RANGE` there.
 - `labels.when` (optional): `{control_id: [values]}`, one choice control of the same page. The label is drawn only
   while that control has one of the values, so labels for different values may share a place. The circuit page
   uses it to print the figures of the chosen standard (lines and frame rate, FM band, colour-under, drum, tape speeds).
+- `instances.when` (optional): the same form as `labels.when`. The instance is drawn only while that control has one
+  of the values; the camera page draws a prism and three tubes or a stripe filter and one tube this way. Text checks
+  consider only the instances drawn together.
 - `hint`: one line of text (baseline at `y`, at most `w` wide) in which the engine prints the explanation of the
   line under the pointer, or `default` when there is none. Nothing else may be drawn in that band.
 - `font.family` is one name or a list of names tried in order (the last should be the generic `monospace`);
@@ -102,6 +110,7 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
 
 Hover brightens a row; dragging along a row sets its value from the position along the row;
 the wheel and the arrow keys step it; a double click asks for a reset; an edited value (one that
-differs from the preset's) is marked. All of it is drawn with layered strokes (no blur filters):
+differs from the preset's) is marked. A line can be disabled by the window (the camera's lines while no tube is
+chosen): it is drawn dim, ignores the mouse, the wheel and the keys, and still shows its help when hovered. All of it is drawn with layered strokes (no blur filters):
 each stroke is painted once per `glow` entry from the widest to the narrowest, then at full
 brightness.

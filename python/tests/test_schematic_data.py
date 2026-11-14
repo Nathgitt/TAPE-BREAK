@@ -1,8 +1,9 @@
 # CONTRACT
 """The design data of the schematic: complete, on the canvas, readable, disciplined.
 
-There are two pages, each a pair of files: the circuit (`schematic/`) and the outside world
-(`schematic/outside/`: phone, radio, mains, magnets). Every check runs against both; the format is
+There are three pages, each a pair of files: the circuit (`schematic/`), the camera
+(`schematic/camera/`: lens, colour split, tubes, head amplifier, processing, encoder) and the outside
+world (`schematic/outside/`: phone, radio, mains, magnets). Every check runs against each; the format is
 in docs/design/FORMAT.md. `test_the_design_is_rich_enough` fails on a plain skeleton on purpose.
 """
 from __future__ import annotations
@@ -14,21 +15,38 @@ from pathlib import Path
 
 import pytest
 
-from vhsgui.model import AUDIO_MODES, CAMERA_TUBES, CONDITION_FIELDS, IRIS_STOPS_RANGE, MAX_GENERATIONS, SIGNALS, STANDARDS
+from vhsgui.model import (
+    AUDIO_MODES,
+    CAMERA_LAYOUTS,
+    CAMERA_PROCESSING,
+    CAMERA_TEMPERATURE_RANGE,
+    CAMERA_TUBES,
+    CONDITION_FIELDS,
+    IRIS_STOPS_RANGE,
+    MAX_GENERATIONS,
+    SIGNALS,
+    STANDARDS,
+)
 
 DATA = Path(__file__).resolve().parents[1] / "vhsgui" / "schematic"
-PAGE_DIRS = {"circuit": DATA, "outside": DATA / "outside"}
+PAGE_DIRS = {"circuit": DATA, "camera": DATA / "camera", "outside": DATA / "outside"}
 LAYOUT = json.loads((DATA / "layout.json").read_text())
 GLYPHS = json.loads((DATA / "glyphs.json").read_text())["glyphs"]
 
 ROW_H = 18  # a control row: 16 px of text plus its gauge line
 ADVANCE = 0.602  # advance of a monospace character in em (DejaVu Sans Mono 0.602; Hack, JetBrains Mono 0.600)
 MARGIN = 4
-LOOK_IDS = {"preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops"}
+# The settings of the look that are not condition fields, by the page that holds their line.
+LOOK_IDS_OF_PAGE = {
+    "circuit": {"preset", "seed", "generations", "signal", "audio", "standard"},
+    "camera": {"camera_tube", "iris_stops", "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry"},
+    "outside": set(),
+}
+LOOK_IDS = set().union(*LOOK_IDS_OF_PAGE.values())
 BLOCKS_OF_PAGE = {
     "circuit": {
         "source": ["preset", "seed"],
-        "camera": ["camera_tube", "iris_stops"],
+        "camera": [],  # the drawing stays; its settings have their own page
         "record_deck": ["rec_deck_age_years", "rec_deck_temp_c", "generations"],
         "cassette": ["tape_age_years", "tape_storage", "tape_quality", "tape_passes", "tape_speed", "tape_stretch", "tape_position_m"],
         "head_drum": ["head_wear", "head_clog", "drum_wear"],
@@ -36,6 +54,15 @@ BLOCKS_OF_PAGE = {
         "power": ["deck_age_years", "deck_temp_c", "deck_humidity", "psu_smps"],
         "output": ["signal", "audio"],
         "tv": ["standard"],
+    },
+    "camera": {
+        "lens": ["iris_stops"],
+        "split": ["camera_layout", "camera_spectral"],
+        "tubes": ["camera_tube", "camera_temperature_c", "camera_geometry"],
+        "head_amp": [],
+        "processing": ["camera_processing"],
+        "encoder": [],
+        "tv": [],
     },
     "outside": {
         "phone": ["phone_mode", "phone_distance_cm"],
@@ -108,18 +135,19 @@ def test_every_control_is_on_the_schematic_exactly_once(page):
     assert len(ids) == len(set(ids)), "duplicate control ids"
     expected = {cid for block in BLOCK_OF.values() for cid in block}
     assert set(ids) == expected
-    assert (set(ids) & LOOK_IDS) == (LOOK_IDS if page == "circuit" else set())
+    assert (set(ids) & LOOK_IDS) == LOOK_IDS_OF_PAGE[page]
 
 
-def test_the_two_pages_hold_every_control_of_the_window_between_them():
+def test_the_pages_hold_every_control_of_the_window_between_them():
     ids = [c["id"] for d in PAGE_DIRS.values() for c in json.loads((d / "layout.json").read_text())["controls"]]
-    assert len(ids) == len(set(ids)), "a control is on both pages"
+    assert len(ids) == len(set(ids)), "a control is on two pages"
     assert set(ids) == {f.key for f in CONDITION_FIELDS} | LOOK_IDS
 
 
-def test_the_two_pages_share_one_theme_one_font_and_one_set_of_animation_numbers():
-    a, b = (json.loads((d / "layout.json").read_text()) for d in PAGE_DIRS.values())
-    assert a["theme"] == b["theme"] and a["animation"] == b["animation"] and a["canvas"] == b["canvas"] and a["hint"]["size"] == b["hint"]["size"]
+def test_the_pages_share_one_theme_one_font_and_one_set_of_animation_numbers():
+    first, *rest = (json.loads((d / "layout.json").read_text()) for d in PAGE_DIRS.values())
+    for b in rest:
+        assert first["theme"] == b["theme"] and first["animation"] == b["animation"] and first["canvas"] == b["canvas"] and first["hint"]["size"] == b["hint"]["size"]
 
 
 def test_every_control_lives_in_the_block_of_its_part_of_the_machine():
@@ -141,6 +169,15 @@ def test_the_controls_describe_the_same_ranges_as_the_window(page):
                 assert c["kind"] == "toggle", cid
             else:
                 assert c["kind"] == "choice" and c["choices"] == list(f.choices), cid
+    if page == "camera":
+        assert CONTROLS["camera_tube"]["kind"] == "choice" and CONTROLS["camera_tube"]["choices"] == list(CAMERA_TUBES)
+        iris = CONTROLS["iris_stops"]
+        assert iris["kind"] == "slider" and (iris["min"], iris["max"]) == IRIS_STOPS_RANGE and math.isclose(iris["step"], 0.5)
+        assert CONTROLS["camera_layout"]["kind"] == "choice" and CONTROLS["camera_layout"]["choices"] == list(CAMERA_LAYOUTS)
+        assert CONTROLS["camera_processing"]["kind"] == "choice" and CONTROLS["camera_processing"]["choices"] == list(CAMERA_PROCESSING)
+        temp = CONTROLS["camera_temperature_c"]
+        assert temp["kind"] == "slider" and (temp["min"], temp["max"]) == CAMERA_TEMPERATURE_RANGE and math.isclose(temp["step"], 1.0) and temp["unit"] == "°C"
+        assert CONTROLS["camera_spectral"]["kind"] == "toggle" and CONTROLS["camera_geometry"]["kind"] == "toggle"
     if page != "circuit":
         return
     assert CONTROLS["generations"]["kind"] == "stepper" and (CONTROLS["generations"]["min"], CONTROLS["generations"]["max"]) == (1, MAX_GENERATIONS)
@@ -149,22 +186,29 @@ def test_the_controls_describe_the_same_ranges_as_the_window(page):
     assert CONTROLS["audio"]["kind"] == "choice" and CONTROLS["audio"]["choices"] == list(AUDIO_MODES)
     assert CONTROLS["preset"]["kind"] == "choice" and {"pristine", "worn", "ruined"} <= set(CONTROLS["preset"]["choices"])
     assert CONTROLS["standard"]["kind"] == "choice" and CONTROLS["standard"]["choices"] == list(STANDARDS)
-    assert CONTROLS["camera_tube"]["kind"] == "choice" and CONTROLS["camera_tube"]["choices"] == list(CAMERA_TUBES)
-    iris = CONTROLS["iris_stops"]
-    assert iris["kind"] == "slider" and (iris["min"], iris["max"]) == IRIS_STOPS_RANGE and math.isclose(iris["step"], 0.5)
 
 
 def test_labels_that_depend_on_a_setting_name_a_real_one():
     """A label may carry `when: {control: [values]}`: it is shown only while that control has one of the values.
-    The circuit page says what the standard changes: lines and frame rate, the FM band, the drum, the tape speeds."""
-    for t in LAYOUT.get("labels", []):
+    The circuit page says what the standard changes: lines and frame rate, the FM band, the drum, the tape speeds.
+    An instance of a glyph may carry a `when` of the same form: the camera page draws a prism and three tubes, or a
+    stripe filter and one tube, as its layout says."""
+    conditional = [(t["text"], t) for t in LAYOUT.get("labels", [])] + [(f"instance of {i['glyph']}", i) for i in LAYOUT["instances"]]
+    for name, t in conditional:
         when = t.get("when")
         if when is None:
             continue
-        assert isinstance(when, dict) and len(when) == 1, t["text"]
+        assert isinstance(when, dict) and len(when) == 1, name
         (cid, values), = when.items()
-        assert cid in CONTROLS and CONTROLS[cid]["kind"] == "choice", t["text"]
-        assert values and set(values) <= set(CONTROLS[cid]["choices"]), t["text"]
+        assert cid in CONTROLS and CONTROLS[cid]["kind"] == "choice", name
+        assert values and set(values) <= set(CONTROLS[cid]["choices"]), name
+    if page_name() == "camera":
+        for block in ("split", "tubes"):
+            drawn = {layout: {i["glyph"] for i in LAYOUT["instances"] if i["block"] == block and _shown(i, {"camera_layout": layout})} for layout in CAMERA_LAYOUTS}
+            assert all(drawn.values()), f"{block}: every layout has a drawing"
+            assert drawn["three-tube"].isdisjoint(drawn["stripe"]), f"{block}: the layout switch changes the drawing"
+        said = {layout: " / ".join(t["text"] for t in LAYOUT["labels"] if _shown(t, {"camera_layout": layout})) for layout in CAMERA_LAYOUTS}
+        assert "PRISM" in said["three-tube"] and "PRISM" not in said["stripe"] and "STRIPE" in said["stripe"], said
     if page_name() != "circuit":
         return
     for std, must in {"ntsc": ["525", "3.4-4.4"], "pal": ["625", "3.8-4.8"], "pal60": ["525", "PAL"]}.items():
@@ -304,6 +348,8 @@ def test_the_signal_flow_reads_from_left_to_right(page):
         assert cx["source"] < cx["cassette"] and cx["record_deck"] < cx["cassette"] < cx["head_drum"] <= cx["power"] < cx["tv"]
         assert cx["camera"] < cx["cassette"], "the camera feeds the recorder: it sits on the left with the source"
         assert cx["output"] < cx["tv"]
+    if page == "camera":
+        assert cx["lens"] == cx["split"] < cx["tubes"] == cx["head_amp"] < cx["processing"] == cx["encoder"] < cx["tv"], "light, tubes, electronics, picture"
     assert all(cx[k] < cx["tv"] for k in cx if k != "tv"), "the TV is the right-most block, where the picture arrives"
 
 
@@ -365,6 +411,8 @@ def _text_items(values=None):
             continue
         items.append((f"label {t['text']!r}", _box(t["x"], t["y"], t["text"], t["size"], t.get("align", "l")), t.get("b", "norm"), t["size"]))
     for i in LAYOUT["instances"]:
+        if values is not None and not _shown(i, values):
+            continue
         for p in GLYPHS[i["glyph"]]["prims"]:
             if p[0] == "text":
                 style = p[-1] if isinstance(p[-1], dict) else {}
@@ -399,8 +447,9 @@ def test_captions_fit_inside_their_block():
 
 
 @pytest.mark.parametrize("standard", STANDARDS)
-def test_no_two_pieces_of_text_overlap(standard):
-    items = [(n, b) for n, b, _, _ in _text_items({"standard": standard})] + [(f"the row of {c['id']}", rect_of(c, ROW_H)) for c in LAYOUT["controls"]]
+@pytest.mark.parametrize("layout", CAMERA_LAYOUTS)
+def test_no_two_pieces_of_text_overlap(standard, layout):
+    items = [(n, b) for n, b, _, _ in _text_items({"standard": standard, "camera_layout": layout})] + [(f"the row of {c['id']}", rect_of(c, ROW_H)) for c in LAYOUT["controls"]]
     h = LAYOUT["hint"]
     items.append(("the hint band", (h["x"], h["y"] - h["size"], h["w"], h["size"] + 5)))
     problems = [f"{na} overlaps {nb}" for i, (na, a) in enumerate(items) for nb, b in items[i + 1 :] if overlap(a, b)]
@@ -455,21 +504,24 @@ def test_the_animation_is_calm():
     assert 0 <= a["flicker"] <= 0.08 and 600 <= a["boot_ms"] <= 4000 and 100 <= a["refresh_flash_ms"] <= 800
 
 
+# What each page must at least draw: kinds of glyph, instances, primitives, texts and labelled wires.
+RICHNESS = {"circuit": (8, 12, 120, 8, 3), "camera": (8, 9, 120, 8, 1), "outside": (6, 8, 90, 6, 0)}
+
+
 def test_the_design_is_rich_enough(page):
     """Every part is drawn, not just labelled (red on a plain skeleton)."""
-    outside = page == "outside"
+    kinds, instances, prims, callouts, labelled = RICHNESS[page]
     drawn = {i["block"] for i in LAYOUT["instances"]}
     assert set(BLOCK_OF) <= drawn, f"blocks without a drawing: {sorted(set(BLOCK_OF) - drawn)}"
-    assert len({i["glyph"] for i in LAYOUT["instances"]}) >= (6 if outside else 8), "the vocabulary of symbols is too small"
-    assert len(LAYOUT["instances"]) >= (8 if outside else 12)
-    assert sum(len(g["prims"]) for g in GLYPHS.values()) >= (90 if outside else 120), "the drawings are too thin"
-    if not outside:
+    assert len({i["glyph"] for i in LAYOUT["instances"]}) >= kinds, "the vocabulary of symbols is too small"
+    assert len(LAYOUT["instances"]) >= instances
+    assert sum(len(g["prims"]) for g in GLYPHS.values()) >= prims, "the drawings are too thin"
+    if page == "circuit":
         assert any(p[0] == "reel" for g in GLYPHS.values() for p in g["prims"]), "the cassette needs its reels"
     texts = [p for g in GLYPHS.values() for p in g["prims"] if p[0] == "text"] + LAYOUT.get("labels", [])
-    assert len(texts) >= (6 if outside else 8), "callouts and legends are part of the look"
+    assert len(texts) >= callouts, "callouts and legends are part of the look"
     assert all(b["caption"] for b in LAYOUT["blocks"] if b["id"] != "tv"), "every block carries a one-line caption of what it does"
-    if not outside:
-        assert len([w for w in LAYOUT["wires"] if w["label"]]) >= 3, "label the signal paths"
+    assert len([w for w in LAYOUT["wires"] if w["label"]]) >= labelled, "label the signal paths"
     tv = next(i for i in LAYOUT["instances"] if i["block"] == "tv" and any(p[0] == "screen" for p in GLYPHS[i["glyph"]]["prims"]))
     screen = next(p for p in GLYPHS[tv["glyph"]]["prims"] if p[0] == "screen")
     w, h = screen[3] * tv["scale"], screen[4] * tv["scale"]

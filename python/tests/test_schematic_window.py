@@ -8,12 +8,15 @@ every change made on it goes through them. The surface fixed here:
     MainWindow.schematic_mode            True while the schematic is shown (read only)
     MainWindow.set_schematic_mode(on)    what the two buttons call
     MainWindow.schematic                 the SchematicView of the circuit, also found by the object name "schematicView"
+    MainWindow.camera                    the SchematicView of the camera (lens, colour split, tubes, electronics),
+                                         object name "cameraView"
     MainWindow.outside                   the SchematicView of the outside world (phone, radio, mains, magnets),
-                                         object name "outsideView"; both mirror the same editors, both show the picture on their TV
-    MainWindow.schematic_page            "circuit" or "outside": which of the two is shown in schematic mode
-    MainWindow.set_schematic_page(name)  what the two page buttons call
+                                         object name "outsideView"; all three mirror the same editors and show the picture on their TV
+    MainWindow.schematic_page            "camera", "circuit" or "outside": which page is shown in schematic mode
+    MainWindow.set_schematic_page(name)  what the page buttons call
     "panelsButton", "schematicButton"    checkable, exclusive, visible in both modes
-    "circuitButton", "outsideButton"     checkable, exclusive, visible in schematic mode only
+    "cameraButton", "circuitButton", "outsideButton"
+                                         checkable, exclusive, visible in schematic mode only
     python -m vhsgui                     starts in schematic mode (as does --schematic; --panels starts with the
                                          panels); with --screenshot the picture shows the settled drawing (no
                                          half-drawn boot); `--page outside` shows the other page
@@ -163,11 +166,17 @@ def shown_look(window):
     """The schematic's idea of the look, as the window's own look() would say it."""
     look = window.look()
     return {**look.condition, "preset": look.preset, "seed": look.seed, "generations": look.generations, "signal": look.signal, "audio": look.audio,
-            "standard": look.standard, "camera_tube": look.camera_tube, "iris_stops": look.iris_stops}
+            "standard": look.standard, "camera_tube": look.camera_tube, "iris_stops": look.iris_stops, "camera_layout": look.camera_layout,
+            "camera_processing": look.camera_processing, "camera_temperature_c": look.camera_temperature_c, "camera_spectral": look.camera_spectral,
+            "camera_geometry": look.camera_geometry}
 
 
 def views(window):
-    return [window.schematic, window.outside]
+    return [window.schematic, window.camera, window.outside]
+
+
+def page_of_view(window, view):
+    return {id(window.schematic): "circuit", id(window.camera): "camera", id(window.outside): "outside"}[id(view)]
 
 
 def view_of(window, cid):
@@ -180,7 +189,7 @@ def view_of(window, cid):
 def show_page_of(app, window, cid):
     """Go to the page that holds `cid` and return its view."""
     v = view_of(window, cid)
-    window.set_schematic_page("outside" if v is window.outside else "circuit")
+    window.set_schematic_page(page_of_view(window, v))
     app.processEvents()
     return v
 
@@ -272,10 +281,12 @@ def test_the_schematic_only_draws_while_it_is_shown_and_boots_once(app, window):
 
 
 def test_the_schematic_starts_as_the_window_does(app, window):
-    assert set(window.schematic.control_ids()) | set(window.outside.control_ids()) == {f.key for f in CONDITION_FIELDS} | {
-        "preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops"
+    pages = [set(v.control_ids()) for v in views(window)]
+    assert set().union(*pages) == {f.key for f in CONDITION_FIELDS} | {
+        "preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops",
+        "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry",
     }
-    assert not set(window.schematic.control_ids()) & set(window.outside.control_ids())
+    assert sum(len(p) for p in pages) == len(set().union(*pages)), "every line is on one page only"
     combo = child(window, QComboBox, "presetCombo")
     assert window.schematic.choices("preset") == [combo.itemText(i) for i in range(combo.count())], "the presets are the ones the program has"
     assert_mirrors(window)
@@ -426,7 +437,7 @@ def test_every_line_has_a_help_text_from_the_window(app, window):
         v = show_page_of(app, window, spec.key)
         hover(v, v.control_rect(spec.key).center())
         assert v.hint_text() == spec.help, spec.key
-    for cid in ("preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops"):
+    for cid in ("preset", "seed", "generations", "signal", "audio", "standard"):
         hover(view, view.control_rect(cid).center())
         assert view.hint_text() not in ("", default), cid
 
@@ -578,11 +589,13 @@ def test_the_standard_and_the_camera_drive_and_follow_the_editors(app, window):
     tube = child(window, QComboBox, "field_camera_tube")
     click(view, at(view, "standard"))
     assert std.currentData() == "pal" and window.look().standard == "pal"
-    click(view, at(view, "camera_tube"))
+    window.set_schematic_page("camera")
+    app.processEvents()
+    click(window.camera, at(window.camera, "camera_tube"))
     assert tube.currentData() == "plumbicon"
     std.setCurrentIndex(std.findData("pal60"))
     tube.setCurrentIndex(tube.findData("plumbicon-act"))
     app.processEvents()
-    assert view.value("standard") == "pal60" and view.value("camera_tube") == "plumbicon-act"
+    assert view.value("standard") == "pal60" and window.camera.value("camera_tube") == "plumbicon-act"
     assert_mirrors(window)
 
