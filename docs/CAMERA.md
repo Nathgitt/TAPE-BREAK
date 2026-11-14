@@ -602,6 +602,81 @@ the non-geometry path. Positions `(x, y)` are measured from picture centre in pi
 - Whole camera on a `0.5` linear grey field (`8` frames): studio corners match centre within
   `FLAT = 0.01` linear light; consumer left corners sit at least `0.03` above centre.
 
+## Retention
+
+Target retention, reversible burn, beam switching, lens-capped idle time and cold warm-up all
+act per sub-element inside `integrate_sub_row` (`tube.rs`, `camera.rs`; contract in
+`docs/design/CAMERA_RETENTION.md`, checks in `tests/camera_retention.rs`). Nothing is applied
+to the picture after scanning. Channels with `Collection::FULL`, `Burn::NONE` and
+`cold_offset_c == 0` (`newvicon` and `chalnicon` by default) run the unsplit rule bit-for-bit;
+otherwise each held piece of length `dt` is cut into `n = ceil(dt / RETENTION_STEP_S)` equal
+sub-steps (`RETENTION_STEP_S = 0.5e-3` s `[est]`) when collection is not `FULL` and either
+held charge `h > 0` or `q + (j + dark) dt > q_knee` (`q_knee = C (target_voltage_v - knee_v)`),
+and `n = 1` otherwise. When geometry black shading is enabled, `bias_na` and `dark_na_at(t)`
+both carry the element's `shade` factor.
+
+**Held charge (`Collection`).** For lead oxide (all four Plumbicon kinds) and the Saticon,
+the layer voltage `V_l(q) = target_voltage_v - q / (capacitance_f * 1e9)` (`layer_voltage_v`)
+sets the carrier collection efficiency `eta(V)` (`0` at or below `zero_v`, `1` at or above
+`knee_v`, `(1 - exp(-(V - zero_v) / scale_v)) / (1 - exp(-(knee_v - zero_v) / scale_v))`
+between them). The uncollected share `(1 - eta) j` fills a held-charge population `h` (`0 <= h <= H`)
+via `dh/dt = (1 - eta) j (1 - h / H) - h / tau_h` with `j = (p + bias_na * shade) * s`, and
+what `h` takes is released back onto the element so total charge is conserved and passes through
+the beam's bottleneck. `vidicon`, `newvicon` and `chalnicon` use `Collection::FULL`
+(`knee_v = -inf`, `eta = 1` everywhere).
+
+| Constant | `zero_v` (V) | `scale_v` (V) | `knee_v` (V) | `capacity_nas` (nA s) | `release_s` (s) | Sources |
+|---|---:|---:|---:|---:|---:|---|
+| `PBO_COLLECTION[R/G]` | 5 | 10 | 45 | 10 `[est]` | 2 `[est]` | RCA AN-5042 Fig. 2 red; XQ1020 high key (Philips 5b 1975) |
+| `PBO_COLLECTION[B]` | 3 | 6 | 45 | 1 `[est]` | 2 `[est]` | RCA AN-5042 Fig. 2 blue ("almost negligible in the blue") |
+| `SATICON_COLLECTION` | 8 | 8 | 38 | 14 `[est]` | 0.25 `[est]` | Hitachi Hyoron 1976 Fig. 8; US 4,330,733 Fig. 6 |
+
+**Lead-oxide high key, highlight burn and erasure.** At low key (`20/300` and `40/600` nA,
+50 Hz), `V_l` stays above `45 V` so lag matches `Collection::FULL` within `1e-3` relative
+(`< 1e-4` on prototype). At high key (`300/600` nA, XQ1020), green decay at `60 / 200 ms`
+rises from `1.04 / 0.19 %` to `1.23 / 0.42 %` (Philips 5b 1975 data `1.2 / 0.4 %`, checked
+within factor `1.3`). A `20x` peak-white spot held `5 s` leaves a positive burn `3 s` later
+primarily in red and green (`0.78 %` and `0.39 %` of peak; bound `>= 0.2 %` `[est]`) and less
+in blue (`0.09 %`; bound `<= 1/3` of green). Exposing to `1x` white for `3 s` with the beam off
+takes all elements to the `45 V` plate and saturates `h` uniformly, erasing the contrast
+(`0.000 %` against `0.18 %`; bound `<= 10 %` `[est]`, RCA AN-5042).
+
+**Saticon sticking and beam-off burn.** Normal `0.2 uA` white reaches `39.6 V`, above the
+`38 V` knee, leaving under `2 %` (`0.5 %` prototype) at the 10th field (`3.5x` beam, `30 C`).
+After `20x` peak white (`4 uA` for `10 s`), the field collapses and the 10th-field residual is
+about `15 %` of `0.2 uA` (inside the `8` to `27 %` band of US 4,330,733 Fig. 6; ratio `>= 8`).
+With the beam on, a `1x` spot for `10 s` leaves `0.17 %` of peak (`< 0.5 %`) `0.5 s` later;
+with the beam off, elements climb to `50 V` and fill `h`, leaving `3.1 %` (`>= 1 %` and `>= 5x`
+beam-on `[est]`, RCA 1978, US 4,492,982). Nothing makes lag rise with signal: at a fixed
+`800 nA` beam (BC4908, Neuhauser 1978 Fig. 12), `50 ms` lag falls across `30 / 50 / 200 nA`
+(`8.6 / 5.3 / 1.39 %`, data `12.4 / 8.7 / 3.6 %`; ratio `>= 1.7`).
+
+**Antimony trisulphide burn (`VIDICON_BURN`).** Only `vidicon` carries reversible burn
+(`rate_per_s = 5.5e-6`, `recovery_s = 600.0` s, `dark_gain = 0.75`; `Burn::NONE` for all
+other kinds). Burn `b` (`0 <= b < 1`) evolves per sub-step under photocurrent only via
+`db/dt = r (p / peak_signal_na) (1 - b) - b / tau_b`, scaling light sensitivity by `1 - b_m`
+and dark current by `1 + dark_gain * b_m` (midpoint `b_m = (b0 + b1) / 2`). Exposed to a
+`3500x` `[est]` lamp (`60 W` frosted lamp at `152 cm`, `f/1.5`, US 3,546,520) for `120 s`,
+sensitivity drops to `0.888` (`0.875 +- 0.03`) and dark current rises `+8.4 %` (`5` to `12 %`);
+after `1800 s` (`30 min`) idle, both recover within `1 %` (`0.995` sensitivity, `+0.4 %` dark).
+
+**Beam off, idle and warm-up.** `UniformColumn::set_beam_on` and `CameraTube::set_beam_on`
+turn the beam off: read beam, ACT flyback, DBC bisection and beam bending all become zero
+(`TargetSignal` and `UniformColumn` return `0` on every row) while elements still integrate
+light and dark current up to `plate_nas`. `idle(seconds)` caps the lens for
+`round(seconds * FRAME_RATE)` whole frames (`UniformColumn::frame` advances by `n`): with the
+beam on, traps, `h` and `b` evolve with `p = 0` and charge/timestamps shift to dark equilibrium;
+with the beam off, elements integrate dark current (in sub-steps of at most `1 s` when warming,
+midpoint dark current) up to the plate. `CameraParams::cold_start_c: Option<f64>` (default
+`None`) sets `cold_offset_c = cold_start_c - temperature_c` on every channel in
+`CameraTube::seeded`. Session time `t` relaxes the faceplate offset as
+`T(t) - T_op = cold_offset_c * exp(-max(t, 0) / WARM_UP_S)` with `WARM_UP_S = 600.0` s `[est]`,
+evaluated by `TubeChannel::dark_na_at(t)` at each sub-step midpoint while the black clamp keeps
+the switch-on (`t <= 0`) dark level. Checked on a `Newvicon` (`dark_doubling_c = 7.5 C`)
+switched on at `10 C` in a `35 C` camera: dark readings match `dark_at(Newvicon, T(t))`
+within `3 %` at `0`, `WARM_UP_S` and `2 * WARM_UP_S`, and `50 ms` `200 nA` lag stays within
+`10 %` of the steady tube at `T(t)` with cold lag `>= 1.2x` warm lag.
+
 ## Known limits
 
 * The slow tail with light bias is too short: at 200 ms the model leaves under 1 % where the

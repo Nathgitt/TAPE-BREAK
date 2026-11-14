@@ -36,7 +36,19 @@ pub const SUB_ROWS: usize = 4;
 
 /// Dark scanning time before frame 0; exceeds 30 times the slowest dark settling constant.
 const DARK_SETTLE_S: f64 = 10.0;
+/// Sub-step size (s) when integrating held charge below the layer collection knee.
+pub const RETENTION_STEP_S: f64 = 0.5e-3;
+const STATE_LEN: usize = MAX_TRAPS + 2;
+const HELD_IDX: usize = MAX_TRAPS;
+const BURN_IDX: usize = MAX_TRAPS + 1;
 const IDENTITY_MATRIX: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+#[inline]
+fn needs_element_state(ch: &TubeChannel) -> bool {
+    ch.traps.iter().any(|t| t.capture > 0.0)
+        || !ch.collection.is_full()
+        || ch.burn.rate_per_s > 0.0
+}
 
 /// Signal currents read from the targets in one frame: per active frame row, per channel, one
 /// value per baseband sample of the active line, nA (before the head amplifier).
@@ -132,6 +144,8 @@ pub struct CameraParams {
     pub processing: Processing,
     /// Target temperature in degrees Celsius (default 25.0).
     pub temperature_c: f64,
+    /// Faceplate temperature at switch-on, deg C (`None` = already at `temperature_c`).
+    pub cold_start_c: Option<f64>,
     /// Spectral taking through the prism, IR-cut and material responses, with the processing
     /// amplifier's colour matrix when the profile carries one (default `false`: ideal taking).
     pub spectral: bool,
@@ -150,6 +164,7 @@ impl Default for CameraParams {
             blooming: 0.0,
             processing: Processing::default(),
             temperature_c: 25.0,
+            cold_start_c: None,
             spectral: false,
             geometry: false,
         }
@@ -547,8 +562,8 @@ fn convolve_horizontal_geom(
 }
 
 /// Integrate one sub-element `(x, k)` from its last-landed timestamp to `t_now`, updating
-/// stored charge, timestamp and trap occupancies in place, and return the integrated charge
-/// capped at `ch.plate_nas`.
+/// stored charge, timestamp and slow states (traps, held charge, burn) in place, and return the
+/// integrated charge capped at `ch.plate_nas`.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn integrate_sub_row<F>(
@@ -561,7 +576,7 @@ fn integrate_sub_row<F>(
     t_now: f64,
     q: &mut f64,
     t_prev_ref: &mut f64,
-    mut trap_occ: Option<&mut [f64; MAX_TRAPS]>,
+    mut trap_occ: Option<&mut [f64; STATE_LEN]>,
     photo: &F,
     field_s: f64,
 ) -> f64
@@ -584,41 +599,140 @@ where
         .div_euclid(SUB_ROWS as isize)
         .clamp(0, (ACTIVE_H - 1) as isize) as usize;
     let bias_na = ch.bias_na * shade;
-    let dark_plus_bias = (ch.dark_na + ch.bias_na) * shade;
     let plate_nas = ch.plate_nas;
+
+    if ch.collection.is_full() && ch.burn.rate_per_s <= 0.0 && ch.cold_offset_c == 0.0 {
+        let dark_plus_bias = (ch.dark_na + ch.bias_na) * shade;
+        let mut t0 = t_prev;
+        let mut m = (t0 / field_s).floor() as i64;
+        let mut photo_nas = 0.0;
+        let mut trap_dn = 0.0;
+        while t0 < t_now {
+            let t_end = ((m + 1) as f64 * field_s).min(t_now);
+            let dt_piece = t_end - t0;
+            if dt_piece > 0.0 {
+                let t_mid = 0.5 * (t0 + t_end);
+                let p_na = photo(ch_idx, r_pic, x_pic, t_mid).max(0.0);
+                photo_nas += p_na * dt_piece;
+                if let Some(occ) = trap_occ.as_deref_mut() {
+                    let j_light = p_na + bias_na;
+                    for (p, trap) in ch.traps.iter().enumerate() {
+                        if trap.capture > 0.0 {
+                            let b =
+                                trap.capture * j_light / trap.capacity_nas + 1.0 / trap.release_s;
+                            let n_inf = trap.capture * j_light / b;
+                            let n_0 = occ[p];
+                            let n_1 = n_inf + (n_0 - n_inf) * (-b * dt_piece).exp();
+                            trap_dn += n_1 - n_0;
+                            occ[p] = n_1;
+                        }
+                    }
+                }
+            }
+            t0 = t_end;
+            m += 1;
+        }
+        let dt = t_now - t_prev;
+        let before = (*q + photo_nas + dark_plus_bias * dt - trap_dn).min(plate_nas);
+        *q = before;
+        *t_prev_ref = t_now;
+        return before;
+    }
+
+    let has_traps = trap_occ.is_some() && ch.traps.iter().any(|t| t.capture > 0.0);
+    let has_collection = !ch.collection.is_full();
+    let has_burn = ch.burn.rate_per_s > 0.0;
+    let q_knee = if has_collection {
+        ch.capacitance_f * (ch.target_voltage_v - ch.collection.knee_v) * 1e9
+    } else {
+        f64::INFINITY
+    };
+
+    let mut q_cur = *q;
     let mut t0 = t_prev;
     let mut m = (t0 / field_s).floor() as i64;
-    let mut photo_nas = 0.0;
-    let mut trap_dn = 0.0;
     while t0 < t_now {
         let t_end = ((m + 1) as f64 * field_s).min(t_now);
         let dt_piece = t_end - t0;
         if dt_piece > 0.0 {
             let t_mid = 0.5 * (t0 + t_end);
             let p_na = photo(ch_idx, r_pic, x_pic, t_mid).max(0.0);
-            photo_nas += p_na * dt_piece;
-            if let Some(occ) = trap_occ.as_deref_mut() {
-                let j_light = p_na + bias_na;
-                for (p, trap) in ch.traps.iter().enumerate() {
-                    if trap.capture > 0.0 {
-                        let b = trap.capture * j_light / trap.capacity_nas + 1.0 / trap.release_s;
-                        let n_inf = trap.capture * j_light / b;
-                        let n_0 = occ[p];
-                        let n_1 = n_inf + (n_0 - n_inf) * (-b * dt_piece).exp();
-                        trap_dn += n_1 - n_0;
-                        occ[p] = n_1;
+
+            let (h_cur, b_cur) = match trap_occ.as_deref() {
+                Some(st) => (st[HELD_IDX], st[BURN_IDX]),
+                None => (0.0, 0.0),
+            };
+            let s_est = if has_burn { 1.0 - b_cur } else { 1.0 };
+            let j_est = (p_na + bias_na) * s_est;
+            let dark_est = ch.dark_na_at(t_mid)
+                * shade
+                * if has_burn { 1.0 + ch.burn.dark_gain * b_cur } else { 1.0 };
+            let n_sub = if has_collection
+                && (h_cur > 0.0 || q_cur + (j_est + dark_est) * dt_piece > q_knee)
+            {
+                (dt_piece / RETENTION_STEP_S).ceil().max(1.0) as usize
+            } else {
+                1
+            };
+            let ds = dt_piece / n_sub as f64;
+
+            for sub in 0..n_sub {
+                let t_sub_mid = t0 + (sub as f64 + 0.5) * ds;
+                let (s, dark_burn) = if has_burn {
+                    let st = trap_occ.as_deref_mut().expect("burn state");
+                    let drive = ch.burn.rate_per_s * (p_na / ch.peak_signal_na);
+                    let beta = drive + 1.0 / ch.burn.recovery_s;
+                    let b_inf = drive / beta;
+                    let b_0 = st[BURN_IDX];
+                    let b_1 = b_inf + (b_0 - b_inf) * (-beta * ds).exp();
+                    st[BURN_IDX] = b_1;
+                    let b_m = 0.5 * (b_0 + b_1);
+                    (1.0 - b_m, 1.0 + ch.burn.dark_gain * b_m)
+                } else {
+                    (1.0, 1.0)
+                };
+                let j_light = (p_na + bias_na) * s;
+
+                let mut trap_dn = 0.0;
+                if has_traps {
+                    let st = trap_occ.as_deref_mut().expect("trap state");
+                    for (p, trap) in ch.traps.iter().enumerate() {
+                        if trap.capture > 0.0 {
+                            let b =
+                                trap.capture * j_light / trap.capacity_nas + 1.0 / trap.release_s;
+                            let n_inf = trap.capture * j_light / b;
+                            let n_0 = st[p];
+                            let n_1 = n_inf + (n_0 - n_inf) * (-b * ds).exp();
+                            trap_dn += n_1 - n_0;
+                            st[p] = n_1;
+                        }
                     }
                 }
+
+                let held_dn = if has_collection {
+                    let eta = ch.collection.efficiency(ch.layer_voltage_v(q_cur));
+                    let a = (1.0 - eta) * j_light;
+                    let beta = a / ch.collection.capacity_nas + 1.0 / ch.collection.release_s;
+                    let h_inf = a / beta;
+                    let st = trap_occ.as_deref_mut().expect("held state");
+                    let h_0 = st[HELD_IDX];
+                    let h_1 = h_inf + (h_0 - h_inf) * (-beta * ds).exp();
+                    st[HELD_IDX] = h_1;
+                    h_1 - h_0
+                } else {
+                    0.0
+                };
+
+                let dark_na = ch.dark_na_at(t_sub_mid) * shade * dark_burn;
+                q_cur = (q_cur + j_light * ds - trap_dn - held_dn + dark_na * ds).min(plate_nas);
             }
         }
         t0 = t_end;
         m += 1;
     }
-    let dt = t_now - t_prev;
-    let before = (*q + photo_nas + dark_plus_bias * dt - trap_dn).min(plate_nas);
-    *q = before;
+    *q = q_cur;
     *t_prev_ref = t_now;
-    before
+    q_cur
 }
 
 /// Step 1 (ACT only): integrate elements in `fb_range` to `t_fb` and discharge those above
@@ -635,7 +749,7 @@ fn act_flyback_step<F>(
     t_fb: f64,
     q_col: &mut [f64],
     t_col: &mut [f64],
-    traps_col: &mut [[f64; MAX_TRAPS]],
+    traps_col: &mut [[f64; STATE_LEN]],
     photo: &F,
     field_s: f64,
     b_fb: f64,
@@ -726,18 +840,19 @@ fn prepare_column<F>(
     int_end: usize,
     q_col: &mut [f64],
     t_col: &mut [f64],
-    traps_col: &mut [[f64; MAX_TRAPS]],
+    traps_col: &mut [[f64; STATE_LEN]],
     photo: &F,
     frame_s: f64,
     field_s: f64,
     b_fb: f64,
     q_act: f64,
+    beam_on: bool,
 ) -> (f64, bool)
 where
     F: Fn(usize, usize, usize, f64) -> f64 + ?Sized,
 {
     let has_traps = !traps_col.is_empty();
-    if ch.act {
+    if ch.act && beam_on {
         let t_fb = flyback_time_s(frame, r);
         act_flyback_step(
             ch_idx,
@@ -757,7 +872,7 @@ where
         );
     }
     let t_now = read_time_s_f64(frame, r, s_sample);
-    let check_hot = ch.bending > 0.0;
+    let check_hot = beam_on && ch.bending > 0.0;
     let mut hot = false;
     for k in int_start..int_end {
         let trap_occ = if has_traps { Some(&mut traps_col[k]) } else { None };
@@ -780,9 +895,13 @@ where
         }
     }
     let band_end = k_start + shares.len();
-    let i_b = match ch.dbc {
-        Some(dbc) => dbc_beam(ch, dbc, &q_col[k_start..band_end], shares, frame_s),
-        None => ch.beam_na,
+    let i_b = if !beam_on {
+        0.0
+    } else {
+        match ch.dbc {
+            Some(dbc) => dbc_beam(ch, dbc, &q_col[k_start..band_end], shares, frame_s),
+            None => ch.beam_na,
+        }
     };
     (i_b, hot)
 }
@@ -865,9 +984,10 @@ fn scan_column<'a, F, P: PassLookup<'a>>(
     black_shading: Option<(&Shading, f64)>,
     q_col: &mut [f64],
     t_col: &mut [f64],
-    traps_col: &mut [[f64; MAX_TRAPS]],
+    traps_col: &mut [[f64; STATE_LEN]],
     raw_col: &mut [f64],
     photo: &F,
+    beam_on: bool,
 ) where
     F: Fn(usize, usize, usize, f64) -> f64 + ?Sized,
 {
@@ -881,15 +1001,15 @@ fn scan_column<'a, F, P: PassLookup<'a>>(
     let dk_max = pad;
     let p_h = sample_pitch_lines();
 
-    let max_band = if bending {
+    let max_band = if beam_on && bending {
         (0..ACTIVE_H).map(|r| passes.pass(r).1.len()).max().unwrap_or(0)
     } else {
         0
     };
     let max_int = max_band + 2 * pad;
-    let mut captors = if bending { vec![0usize; max_band] } else { Vec::new() };
-    let mut b_received = if bending { vec![0.0; max_int] } else { Vec::new() };
-    let mut landed_elem = if bending { vec![0.0; max_int] } else { Vec::new() };
+    let mut captors = if beam_on && bending { vec![0usize; max_band] } else { Vec::new() };
+    let mut b_received = if beam_on && bending { vec![0.0; max_int] } else { Vec::new() };
+    let mut landed_elem = if beam_on && bending { vec![0.0; max_int] } else { Vec::new() };
 
     for field in 0..2 {
         for r in (field..ACTIVE_H).step_by(2) {
@@ -924,7 +1044,12 @@ fn scan_column<'a, F, P: PassLookup<'a>>(
                 field_s,
                 b_fb,
                 q_act,
+                beam_on,
             );
+            if !beam_on {
+                raw_col[r] = 0.0;
+                continue;
+            }
             let beam_frame_nas = i_b * frame_s;
             if !hot {
                 let mut landed_sum = 0.0;
@@ -998,7 +1123,7 @@ fn scan_channel_row_by_row<F>(
     frame: i64,
     q_all: &mut [f64],
     t_all: &mut [f64],
-    traps_all: &mut [[f64; MAX_TRAPS]],
+    traps_all: &mut [[f64; STATE_LEN]],
     raw_all: &mut [f64],
     photo: &F,
 ) where
@@ -1070,7 +1195,7 @@ fn scan_channel_row_by_row<F>(
             let prepare_col = |jx: usize,
                                q_col: &mut [f64],
                                t_col: &mut [f64],
-                               trap_col: &mut [[f64; MAX_TRAPS]]|
+                               trap_col: &mut [[f64; STATE_LEN]]|
              -> (f64, bool) {
                 let (k_start, shares, fb_range, s_sample) = match geom_scan {
                     None => UniformPasses { weights, x: jx }.pass(r),
@@ -1107,6 +1232,7 @@ fn scan_channel_row_by_row<F>(
                     field_s,
                     b_fb,
                     q_act,
+                    true,
                 )
             };
 
@@ -1264,15 +1390,267 @@ fn scan_channel_row_by_row<F>(
     }
 }
 
+fn idle_slow_states_beam_on(
+    ch: &TubeChannel,
+    dt: f64,
+    black_shading: Option<&Shading>,
+    pad_y: usize,
+    x_elem: f64,
+    state_col: &mut [[f64; STATE_LEN]],
+) {
+    let has_traps = ch.traps.iter().any(|t| t.capture > 0.0);
+    let has_collection = !ch.collection.is_full();
+    let has_burn = ch.burn.rate_per_s > 0.0;
+    let h_decay = if has_collection { (-dt / ch.collection.release_s).exp() } else { 1.0 };
+    let b_decay = if has_burn { (-dt / ch.burn.recovery_s).exp() } else { 1.0 };
+    for (k, st) in state_col.iter_mut().enumerate() {
+        let shade = match black_shading {
+            Some(sh) => {
+                let k_signed = k as isize - pad_y as isize;
+                let y_elem = (k_signed as f64 + 0.5) / (SUB_ROWS * ACTIVE_H) as f64 - 0.5;
+                1.0 + black_shading_factor(sh, x_elem, y_elem)
+            }
+            None => 1.0,
+        };
+        let bias_na = ch.bias_na * shade;
+        if has_traps {
+            for (p, trap) in ch.traps.iter().enumerate() {
+                if trap.capture > 0.0 {
+                    if bias_na == 0.0 {
+                        st[p] *= (-dt / trap.release_s).exp();
+                    } else {
+                        let b = trap.capture * bias_na / trap.capacity_nas + 1.0 / trap.release_s;
+                        let n_inf = trap.capture * bias_na / b;
+                        st[p] = n_inf + (st[p] - n_inf) * (-b * dt).exp();
+                    }
+                }
+            }
+        }
+        if has_collection {
+            st[HELD_IDX] *= h_decay;
+        }
+        if has_burn {
+            st[BURN_IDX] *= b_decay;
+        }
+    }
+}
+
+fn idle_dark_element(
+    ch: &TubeChannel,
+    shade: f64,
+    dt: f64,
+    q: &mut f64,
+    t_prev_ref: &mut f64,
+    mut state: Option<&mut [f64; STATE_LEN]>,
+) {
+    if dt <= 0.0 {
+        return;
+    }
+    let t_prev = *t_prev_ref;
+    let has_traps = state.is_some() && ch.traps.iter().any(|t| t.capture > 0.0);
+    let has_collection = !ch.collection.is_full();
+    let has_burn = ch.burn.rate_per_s > 0.0;
+    let warming = ch.cold_offset_c != 0.0 && !ch.dark_doubling_c.is_infinite();
+    let bias_na = ch.bias_na * shade;
+    let plate_nas = ch.plate_nas;
+
+    let q_knee = if has_collection {
+        ch.capacitance_f * (ch.target_voltage_v - ch.collection.knee_v) * 1e9
+    } else {
+        f64::INFINITY
+    };
+    let h_0 = state.as_deref().map_or(0.0, |st| st[HELD_IDX]);
+    let b_0 = state.as_deref().map_or(0.0, |st| st[BURN_IDX]);
+    let step_max = if has_collection
+        && bias_na > 0.0
+        && (h_0 > 0.0 || *q + (bias_na + ch.dark_na_at(t_prev) * shade) * dt > q_knee)
+    {
+        RETENTION_STEP_S
+    } else if warming || (has_burn && b_0 > 0.0) {
+        1.0
+    } else {
+        dt
+    };
+
+    let n_steps = (dt / step_max).ceil().max(1.0) as usize;
+    let ds = dt / n_steps as f64;
+    let mut q_cur = *q;
+    for step in 0..n_steps {
+        if !warming && !has_burn && q_cur >= plate_nas {
+            let rem_dt = (n_steps - step) as f64 * ds;
+            if has_traps {
+                let st = state.as_deref_mut().expect("trap state");
+                for (p, trap) in ch.traps.iter().enumerate() {
+                    if trap.capture > 0.0 {
+                        let n_0 = st[p];
+                        st[p] = if bias_na == 0.0 {
+                            n_0 * (-rem_dt / trap.release_s).exp()
+                        } else {
+                            let b = trap.capture * bias_na / trap.capacity_nas + 1.0 / trap.release_s;
+                            let n_inf = trap.capture * bias_na / b;
+                            n_inf + (n_0 - n_inf) * (-b * rem_dt).exp()
+                        };
+                    }
+                }
+            }
+            if has_collection {
+                let eta = ch.collection.efficiency(ch.layer_voltage_v(plate_nas));
+                let a = (1.0 - eta) * bias_na;
+                let st = state.as_deref_mut().expect("held state");
+                let h_cur = st[HELD_IDX];
+                st[HELD_IDX] = if a == 0.0 {
+                    h_cur * (-rem_dt / ch.collection.release_s).exp()
+                } else {
+                    let beta = a / ch.collection.capacity_nas + 1.0 / ch.collection.release_s;
+                    let h_inf = a / beta;
+                    h_inf + (h_cur - h_inf) * (-beta * rem_dt).exp()
+                };
+            }
+            break;
+        }
+        let t_mid = t_prev + (step as f64 + 0.5) * ds;
+        let (s, dark_burn) = if has_burn {
+            let st = state.as_deref_mut().expect("burn state");
+            let b0 = st[BURN_IDX];
+            let b1 = b0 * (-ds / ch.burn.recovery_s).exp();
+            st[BURN_IDX] = b1;
+            let b_m = 0.5 * (b0 + b1);
+            (1.0 - b_m, 1.0 + ch.burn.dark_gain * b_m)
+        } else {
+            (1.0, 1.0)
+        };
+        let j_light = bias_na * s;
+
+        let mut trap_dn = 0.0;
+        if has_traps {
+            let st = state.as_deref_mut().expect("trap state");
+            for (p, trap) in ch.traps.iter().enumerate() {
+                if trap.capture > 0.0 {
+                    let n_0 = st[p];
+                    let n_1 = if j_light == 0.0 {
+                        n_0 * (-ds / trap.release_s).exp()
+                    } else {
+                        let b = trap.capture * j_light / trap.capacity_nas + 1.0 / trap.release_s;
+                        let n_inf = trap.capture * j_light / b;
+                        n_inf + (n_0 - n_inf) * (-b * ds).exp()
+                    };
+                    trap_dn += n_1 - n_0;
+                    st[p] = n_1;
+                }
+            }
+        }
+
+        let held_dn = if has_collection {
+            let st = state.as_deref_mut().expect("held state");
+            let h_cur = st[HELD_IDX];
+            let h_1 = if j_light == 0.0 {
+                h_cur * (-ds / ch.collection.release_s).exp()
+            } else {
+                let eta = ch.collection.efficiency(ch.layer_voltage_v(q_cur));
+                let a = (1.0 - eta) * j_light;
+                let beta = a / ch.collection.capacity_nas + 1.0 / ch.collection.release_s;
+                let h_inf = a / beta;
+                h_inf + (h_cur - h_inf) * (-beta * ds).exp()
+            };
+            st[HELD_IDX] = h_1;
+            h_1 - h_cur
+        } else {
+            0.0
+        };
+
+        let dark_na = ch.dark_na_at(t_mid) * shade * dark_burn;
+        q_cur = (q_cur + j_light * ds - trap_dn - held_dn + dark_na * ds).min(plate_nas);
+    }
+    *q = q_cur;
+    *t_prev_ref = t_prev + dt;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn idle_dark_column(
+    ch: &TubeChannel,
+    dt: f64,
+    black_shading: Option<&Shading>,
+    pad_y: usize,
+    x_elem: f64,
+    q_col: &mut [f64],
+    t_col: &mut [f64],
+    state_col: &mut [[f64; STATE_LEN]],
+) {
+    let has_state = !state_col.is_empty();
+    for k in 0..q_col.len() {
+        let shade = match black_shading {
+            Some(sh) => {
+                let k_signed = k as isize - pad_y as isize;
+                let y_elem = (k_signed as f64 + 0.5) / (SUB_ROWS * ACTIVE_H) as f64 - 0.5;
+                1.0 + black_shading_factor(sh, x_elem, y_elem)
+            }
+            None => 1.0,
+        };
+        let state_opt = if has_state { Some(&mut state_col[k]) } else { None };
+        idle_dark_element(ch, shade, dt, &mut q_col[k], &mut t_col[k], state_opt);
+    }
+}
+
+fn reset_geom_charge_and_time(
+    ch: &TubeChannel,
+    gs: &GeomScan,
+    frame: i64,
+    settled_q: &[f64],
+    charge_k: &mut [f64],
+    last_t_k: &mut [f64],
+) {
+    let n_sub = SUB_ROWS * ACTIVE_H;
+    let h_sub_tgt = gs.h_sub_tgt;
+    let pad_y = gs.pad_y as isize;
+    let bend_pad = if ch.bending > 0.0 {
+        (BEND_RADIUS_MAX_LINES * SUB_ROWS as f64).ceil() as usize + 2
+    } else {
+        0
+    };
+    let f_prev = frame - 1;
+    let t_shift = frame as f64 / FRAME_RATE;
+    last_t_k.fill(-DARK_SETTLE_S + t_shift);
+    for (jx, col) in gs.cols.iter().enumerate() {
+        let off = jx * h_sub_tgt;
+        for ks in 0..h_sub_tgt {
+            let k_pic = (ks as isize - pad_y).clamp(0, n_sub as isize - 1) as usize;
+            charge_k[off + ks] = settled_q[k_pic];
+        }
+        for field in 0..2 {
+            for r in (field..ACTIVE_H).step_by(2) {
+                let sp = &col.spans[r];
+                if ch.act {
+                    let t_fb = flyback_time_s(f_prev, r);
+                    for k in sp.fb_range.clone() {
+                        last_t_k[off + k] = t_fb;
+                    }
+                }
+                let t_now = read_time_s_f64(f_prev, r, sp.s_sample);
+                let band_len = sp.share_end - sp.share_start;
+                if band_len > 0 {
+                    let int_start = sp.k_start.saturating_sub(bend_pad);
+                    let int_end = (sp.k_start + band_len + bend_pad).min(h_sub_tgt);
+                    for k in int_start..int_end {
+                        last_t_k[off + k] = t_now;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One uniformly lit target column scanned by the same row passes as the full camera.
 pub struct UniformColumn {
     ch: TubeChannel,
     weights: Vec<RowWeights>,
     charge: Vec<f64>,
     last_t: Vec<f64>,
-    traps: Vec<[f64; MAX_TRAPS]>,
+    traps: Vec<[f64; STATE_LEN]>,
+    settled_charge: Vec<f64>,
+    settled_last_t: Vec<f64>,
     dark: Vec<f64>,
     frame: i64,
+    beam_on: bool,
 }
 
 impl UniformColumn {
@@ -1282,8 +1660,8 @@ impl UniformColumn {
         let n_sub = SUB_ROWS * ACTIVE_H;
         let mut charge = vec![0.0; n_sub];
         let mut last_t = vec![-DARK_SETTLE_S; n_sub];
-        let has_traps = ch.traps.iter().any(|t| t.capture > 0.0);
-        let mut traps = if has_traps { vec![[0.0; MAX_TRAPS]; n_sub] } else { Vec::new() };
+        let has_state = needs_element_state(ch);
+        let mut traps = if has_state { vec![[0.0; STATE_LEN]; n_sub] } else { Vec::new() };
         let mut raw = vec![0.0; ACTIVE_H];
         let dark = |_: usize, _: usize, _: usize, _: f64| 0.0;
         let settle_frames = (DARK_SETTLE_S * FRAME_RATE).ceil() as i64;
@@ -1302,9 +1680,64 @@ impl UniformColumn {
                 &mut traps,
                 &mut raw,
                 &dark,
+                true,
             );
         }
-        Self { ch: *ch, weights, charge, last_t, traps, dark: raw, frame: 0 }
+        let settled_charge = charge.clone();
+        let settled_last_t = last_t.clone();
+        Self {
+            ch: *ch,
+            weights,
+            charge,
+            last_t,
+            traps,
+            settled_charge,
+            settled_last_t,
+            dark: raw,
+            frame: 0,
+            beam_on: true,
+        }
+    }
+
+    /// Index of the next frame to be read.
+    pub fn frame(&self) -> i64 {
+        self.frame
+    }
+
+    pub fn set_beam_on(&mut self, on: bool) {
+        self.beam_on = on;
+    }
+
+    /// Lens capped, beam as set, for `seconds` (rounded to whole frames) without reading.
+    pub fn idle(&mut self, seconds: f64) {
+        let n = (seconds * FRAME_RATE).round().max(0.0) as i64;
+        if n <= 0 {
+            return;
+        }
+        let dt = n as f64 / FRAME_RATE;
+        if self.beam_on {
+            if !self.traps.is_empty() {
+                idle_slow_states_beam_on(&self.ch, dt, None, 0, 0.0, &mut self.traps);
+            }
+            self.frame += n;
+            let t_shift = self.frame as f64 / FRAME_RATE;
+            self.charge.copy_from_slice(&self.settled_charge);
+            for (dst, &t0) in self.last_t.iter_mut().zip(&self.settled_last_t) {
+                *dst = t0 + t_shift;
+            }
+        } else {
+            idle_dark_column(
+                &self.ch,
+                dt,
+                None,
+                0,
+                0.0,
+                &mut self.charge,
+                &mut self.last_t,
+                &mut self.traps,
+            );
+            self.frame += n;
+        }
     }
 
     /// Read the next frame with photocurrent `photo(r, t)`, nA, the light of frame row `r`
@@ -1326,6 +1759,7 @@ impl UniformColumn {
             &mut self.traps,
             &mut raw,
             &current,
+            self.beam_on,
         );
         self.frame += 1;
         raw
@@ -1347,13 +1781,14 @@ fn scan_channel_dispatch<F>(
     frame: i64,
     q_all: &mut [f64],
     t_all: &mut [f64],
-    traps_all: &mut [[f64; MAX_TRAPS]],
+    traps_all: &mut [[f64; STATE_LEN]],
     raw_all: &mut [f64],
     photo: &F,
+    beam_on: bool,
 ) where
     F: Fn(usize, usize, usize, f64) -> f64 + Sync + ?Sized,
 {
-    if ch.bending > 0.0 {
+    if ch.bending > 0.0 && beam_on {
         scan_channel_row_by_row(
             ch_idx,
             ch,
@@ -1403,6 +1838,7 @@ fn scan_channel_dispatch<F>(
                         &mut [],
                         raw_col,
                         photo,
+                        beam_on,
                     );
                 });
         } else {
@@ -1434,6 +1870,7 @@ fn scan_channel_dispatch<F>(
                         trap_col,
                         raw_col,
                         photo,
+                        beam_on,
                     );
                 });
         }
@@ -1462,6 +1899,7 @@ fn scan_channel_dispatch<F>(
                     &mut [],
                     raw_col,
                     photo,
+                    beam_on,
                 );
             });
     } else {
@@ -1486,6 +1924,7 @@ fn scan_channel_dispatch<F>(
                     trap_col,
                     raw_col,
                     photo,
+                    beam_on,
                 );
             });
     }
@@ -1589,14 +2028,19 @@ pub struct CameraTube {
     charge: [Vec<f64>; 3],
     /// Last-landed timestamp per sub-element in seconds, column-major.
     last_t: [Vec<f64>; 3],
-    /// Trap occupancies per sub-element in nA s, column-major; empty when the channel has no traps.
-    traps: [Vec<[f64; MAX_TRAPS]>; 3],
+    /// Slow states (trap occupancies, held charge, burn) per sub-element, column-major; empty when
+    /// the channel needs none.
+    traps: [Vec<[f64; STATE_LEN]>; 3],
+    /// Dark-settled column charge and timestamps per channel, used to reset target after beam-on `idle`.
+    settled_col_q: [Vec<f64>; 3],
+    settled_col_t: [Vec<f64>; 3],
     /// Pre-spot signal scratch per channel, column-major (`x * ACTIVE_H + r`).
     raw_cols: [Vec<f64>; 3],
     /// Held photocurrent map of the previous frame's field 1 (`ACTIVE_H x ACTIVE_W x 3` for
     /// `ThreeTube`, `ACTIVE_H x ACTIVE_W` for `Stripe`), nA. Empty before the first `read`.
     prev_f1_photo: Vec<f64>,
     frame: i64,
+    beam_on: bool,
     head_amp: HeadAmplifier,
     processor: VideoProcessor,
     alignment: Option<StripeAlignment>,
@@ -1614,8 +2058,10 @@ impl CameraTube {
         let mut channels = params.tube.channels_at(params.beam_ratio, params.temperature_c)?;
         let materials = params.tube.materials()?;
         let bending = params.blooming.max(0.0);
+        let cold_offset_c = params.cold_start_c.map_or(0.0, |c| c - params.temperature_c);
         for ch in &mut channels {
             ch.bending = bending;
+            ch.cold_offset_c = cold_offset_c;
         }
         if params.layout == Layout::Stripe {
             channels = [channels[STRIPE_SLOT]; 3];
@@ -1669,14 +2115,18 @@ impl CameraTube {
         let mut photo = [[0.0; 256]; 3];
         let mut charge: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut last_t: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        let mut traps: [Vec<[f64; MAX_TRAPS]>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut traps: [Vec<[f64; STATE_LEN]>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut settled_col_q: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut settled_col_t: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut raw_cols: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
 
         let init_slot = |ch: &TubeChannel,
                          gs_opt: Option<&GeomScan>,
                          charge_k: &mut Vec<f64>,
                          last_t_k: &mut Vec<f64>,
-                         traps_k: &mut Vec<[f64; MAX_TRAPS]>,
+                         traps_k: &mut Vec<[f64; STATE_LEN]>,
+                         settled_q_k: &mut Vec<f64>,
+                         settled_t_k: &mut Vec<f64>,
                          raw_k: &mut Vec<f64>|
          -> f64 {
             let settled = UniformColumn::new(ch);
@@ -1689,7 +2139,7 @@ impl CameraTube {
                     *charge_k = vec![0.0; ACTIVE_W * n_sub];
                     *last_t_k = vec![0.0; ACTIVE_W * n_sub];
                     if !tr_col.is_empty() {
-                        *traps_k = vec![[0.0; MAX_TRAPS]; ACTIVE_W * n_sub];
+                        *traps_k = vec![[0.0; STATE_LEN]; ACTIVE_W * n_sub];
                     }
                     *raw_k = vec![0.0; ACTIVE_W * ACTIVE_H];
                     for x in 0..ACTIVE_W {
@@ -1708,50 +2158,25 @@ impl CameraTube {
                     let w_tgt = gs.w_tgt;
                     let h_sub_tgt = gs.h_sub_tgt;
                     let pad_y = gs.pad_y as isize;
-                    let bend_pad = if ch.bending > 0.0 {
-                        (BEND_RADIUS_MAX_LINES * SUB_ROWS as f64).ceil() as usize + 2
-                    } else {
-                        0
-                    };
                     *charge_k = vec![0.0; w_tgt * h_sub_tgt];
                     *last_t_k = vec![-DARK_SETTLE_S; w_tgt * h_sub_tgt];
                     if !tr_col.is_empty() {
-                        *traps_k = vec![[0.0; MAX_TRAPS]; w_tgt * h_sub_tgt];
-                    }
-                    *raw_k = vec![0.0; w_tgt * ACTIVE_H];
-                    for (jx, col) in gs.cols.iter().enumerate() {
-                        let off = jx * h_sub_tgt;
-                        for ks in 0..h_sub_tgt {
-                            let k_pic = (ks as isize - pad_y).clamp(0, n_sub as isize - 1) as usize;
-                            charge_k[off + ks] = q_col[k_pic];
-                            if !tr_col.is_empty() {
+                        *traps_k = vec![[0.0; STATE_LEN]; w_tgt * h_sub_tgt];
+                        for jx in 0..w_tgt {
+                            let off = jx * h_sub_tgt;
+                            for ks in 0..h_sub_tgt {
+                                let k_pic =
+                                    (ks as isize - pad_y).clamp(0, n_sub as isize - 1) as usize;
                                 traps_k[off + ks] = tr_col[k_pic];
                             }
                         }
-                        for field in 0..2 {
-                            for r in (field..ACTIVE_H).step_by(2) {
-                                let sp = &col.spans[r];
-                                if ch.act {
-                                    let t_fb = flyback_time_s(-1, r);
-                                    for k in sp.fb_range.clone() {
-                                        last_t_k[off + k] = t_fb;
-                                    }
-                                }
-                                let t_now = read_time_s_f64(-1, r, sp.s_sample);
-                                let band_len = sp.share_end - sp.share_start;
-                                if band_len > 0 {
-                                    let int_start = sp.k_start.saturating_sub(bend_pad);
-                                    let int_end =
-                                        (sp.k_start + band_len + bend_pad).min(h_sub_tgt);
-                                    for k in int_start..int_end {
-                                        last_t_k[off + k] = t_now;
-                                    }
-                                }
-                            }
-                        }
                     }
+                    *raw_k = vec![0.0; w_tgt * ACTIVE_H];
+                    reset_geom_charge_and_time(ch, gs, 0, &q_col, charge_k, last_t_k);
                 }
             }
+            *settled_q_k = q_col;
+            *settled_t_k = t_col;
             dark
         };
 
@@ -1764,6 +2189,8 @@ impl CameraTube {
                         &mut charge[k],
                         &mut last_t[k],
                         &mut traps[k],
+                        &mut settled_col_q[k],
+                        &mut settled_col_t[k],
                         &mut raw_cols[k],
                     );
                 }
@@ -1775,6 +2202,8 @@ impl CameraTube {
                     &mut charge[STRIPE_SLOT],
                     &mut last_t[STRIPE_SLOT],
                     &mut traps[STRIPE_SLOT],
+                    &mut settled_col_q[STRIPE_SLOT],
+                    &mut settled_col_t[STRIPE_SLOT],
                     &mut raw_cols[STRIPE_SLOT],
                 );
                 black = [dark; 3];
@@ -1811,9 +2240,12 @@ impl CameraTube {
             charge,
             last_t,
             traps,
+            settled_col_q,
+            settled_col_t,
             raw_cols,
             prev_f1_photo,
             frame: 0,
+            beam_on: true,
             head_amp,
             processor,
             alignment: None,
@@ -1921,6 +2353,152 @@ impl CameraTube {
         self.black
     }
 
+    pub fn set_beam_on(&mut self, on: bool) {
+        self.beam_on = on;
+    }
+
+    /// Lens capped, beam as set, for `seconds` (rounded to whole frames) without reading.
+    pub fn idle(&mut self, seconds: f64) {
+        let n = (seconds * FRAME_RATE).round().max(0.0) as i64;
+        if n <= 0 {
+            return;
+        }
+        let dt = n as f64 / FRAME_RATE;
+        let active_slots: &[usize] = match self.layout {
+            Layout::ThreeTube => &[0, 1, 2],
+            Layout::Stripe => &[STRIPE_SLOT],
+        };
+        let n_sub = SUB_ROWS * ACTIVE_H;
+        let shading = &self.geom.black_shading;
+        let use_black = *shading != Shading::NONE;
+
+        if self.beam_on {
+            self.frame += n;
+            let frame = self.frame;
+            let t_shift = frame as f64 / FRAME_RATE;
+            for &slot in active_slots {
+                let ch = &self.channels[slot];
+                let gs_opt = self.geom_scans[slot].as_ref();
+                let sq = &self.settled_col_q[slot];
+                let st = &self.settled_col_t[slot];
+                match gs_opt {
+                    None => {
+                        if !self.traps[slot].is_empty() {
+                            self.traps[slot]
+                                .par_chunks_mut(n_sub)
+                                .for_each(|state_col| {
+                                    idle_slow_states_beam_on(ch, dt, None, 0, 0.0, state_col);
+                                });
+                        }
+                        self.charge[slot]
+                            .par_chunks_mut(n_sub)
+                            .zip(self.last_t[slot].par_chunks_mut(n_sub))
+                            .enumerate()
+                            .for_each(|(x, (q_col, t_col))| {
+                                q_col.copy_from_slice(sq);
+                                let dx_s = (x as f64 - (ACTIVE_W / 2) as f64) / FS_BB;
+                                for i in 0..n_sub {
+                                    t_col[i] = st[i] + dx_s + t_shift;
+                                }
+                            });
+                    }
+                    Some(gs) => {
+                        let h_sub_tgt = gs.h_sub_tgt;
+                        let pad_x = gs.pad_x;
+                        let pad_y = gs.pad_y;
+                        if !self.traps[slot].is_empty() {
+                            let sh_opt = use_black.then_some(shading);
+                            self.traps[slot]
+                                .par_chunks_mut(h_sub_tgt)
+                                .enumerate()
+                                .for_each(|(jx, state_col)| {
+                                    let j_signed = jx as isize - pad_x as isize;
+                                    let x_elem = ((j_signed as f64 + 0.5) / ACTIVE_W as f64 - 0.5)
+                                        * TARGET_ASPECT;
+                                    idle_slow_states_beam_on(
+                                        ch, dt, sh_opt, pad_y, x_elem, state_col,
+                                    );
+                                });
+                        }
+                        reset_geom_charge_and_time(
+                            ch,
+                            gs,
+                            frame,
+                            sq,
+                            &mut self.charge[slot],
+                            &mut self.last_t[slot],
+                        );
+                    }
+                }
+            }
+        } else {
+            for &slot in active_slots {
+                let ch = &self.channels[slot];
+                let gs_opt = self.geom_scans[slot].as_ref();
+                match gs_opt {
+                    None => {
+                        if self.traps[slot].is_empty() {
+                            self.charge[slot]
+                                .par_chunks_mut(n_sub)
+                                .zip(self.last_t[slot].par_chunks_mut(n_sub))
+                                .for_each(|(q_col, t_col)| {
+                                    idle_dark_column(ch, dt, None, 0, 0.0, q_col, t_col, &mut []);
+                                });
+                        } else {
+                            self.charge[slot]
+                                .par_chunks_mut(n_sub)
+                                .zip(self.last_t[slot].par_chunks_mut(n_sub))
+                                .zip(self.traps[slot].par_chunks_mut(n_sub))
+                                .for_each(|((q_col, t_col), state_col)| {
+                                    idle_dark_column(
+                                        ch, dt, None, 0, 0.0, q_col, t_col, state_col,
+                                    );
+                                });
+                        }
+                    }
+                    Some(gs) => {
+                        let h_sub_tgt = gs.h_sub_tgt;
+                        let pad_x = gs.pad_x;
+                        let pad_y = gs.pad_y;
+                        let sh_opt = use_black.then_some(shading);
+                        if self.traps[slot].is_empty() {
+                            self.charge[slot]
+                                .par_chunks_mut(h_sub_tgt)
+                                .zip(self.last_t[slot].par_chunks_mut(h_sub_tgt))
+                                .enumerate()
+                                .for_each(|(jx, (q_col, t_col))| {
+                                    let j_signed = jx as isize - pad_x as isize;
+                                    let x_elem = ((j_signed as f64 + 0.5) / ACTIVE_W as f64 - 0.5)
+                                        * TARGET_ASPECT;
+                                    idle_dark_column(
+                                        ch, dt, sh_opt, pad_y, x_elem, q_col, t_col, &mut [],
+                                    );
+                                });
+                        } else {
+                            self.charge[slot]
+                                .par_chunks_mut(h_sub_tgt)
+                                .zip(self.last_t[slot].par_chunks_mut(h_sub_tgt))
+                                .zip(self.traps[slot].par_chunks_mut(h_sub_tgt))
+                                .enumerate()
+                                .for_each(|(jx, ((q_col, t_col), state_col))| {
+                                    let j_signed = jx as isize - pad_x as isize;
+                                    let x_elem = ((j_signed as f64 + 0.5) / ACTIVE_W as f64 - 0.5)
+                                        * TARGET_ASPECT;
+                                    idle_dark_column(
+                                        ch, dt, sh_opt, pad_y, x_elem, q_col, t_col, state_col,
+                                    );
+                                });
+                        }
+                    }
+                }
+            }
+            self.frame += n;
+        }
+        if !self.prev_f1_photo.is_empty() {
+            self.prev_f1_photo.fill(0.0);
+        }
+    }
+
     /// Update the iris exposure setting for subsequent frames.
     pub fn set_iris_stops(&mut self, iris_stops: f64) {
         let exposure = iris_stops.exp2();
@@ -1981,6 +2559,7 @@ impl CameraTube {
         F: Fn(usize, usize, usize, f64) -> f64 + Sync + ?Sized,
     {
         let frame = self.frame;
+        let beam_on = self.beam_on;
         let channels = &self.channels;
         let weights = &self.weights;
         let horiz = &self.horiz;
@@ -2002,6 +2581,7 @@ impl CameraTube {
                 &mut self.traps[STRIPE_SLOT],
                 &mut raw_cols[STRIPE_SLOT],
                 photo,
+                beam_on,
             );
             let (radius, ref kernel) = horiz[STRIPE_SLOT];
             let raw_ch = &raw_cols[STRIPE_SLOT];
@@ -2011,21 +2591,23 @@ impl CameraTube {
                 .map_init(
                     || vec![0.0; w_tgt],
                     |scratch, r| {
-                        for x in 0..w_tgt {
-                            scratch[x] = raw_ch[x * ACTIVE_H + r];
-                        }
                         let mut out = vec![0.0f32; ACTIVE_W];
-                        match gs_opt {
-                            Some(gs) => convolve_horizontal_geom(
-                                scratch,
-                                r,
-                                gs.pad_x,
-                                STRIPE_SLOT,
-                                channels[STRIPE_SLOT].sigma_h_s,
-                                geom,
-                                &mut out,
-                            ),
-                            None => convolve_horizontal(scratch, radius, kernel, &mut out),
+                        if beam_on {
+                            for x in 0..w_tgt {
+                                scratch[x] = raw_ch[x * ACTIVE_H + r];
+                            }
+                            match gs_opt {
+                                Some(gs) => convolve_horizontal_geom(
+                                    scratch,
+                                    r,
+                                    gs.pad_x,
+                                    STRIPE_SLOT,
+                                    channels[STRIPE_SLOT].sigma_h_s,
+                                    geom,
+                                    &mut out,
+                                ),
+                                None => convolve_horizontal(scratch, radius, kernel, &mut out),
+                            }
                         }
                         let mut chans = [Vec::new(), Vec::new(), Vec::new()];
                         chans[STRIPE_SLOT] = out;
@@ -2056,6 +2638,7 @@ impl CameraTube {
                     traps_all,
                     raw_all,
                     photo,
+                    beam_on,
                 );
             });
 
@@ -2070,8 +2653,11 @@ impl CameraTube {
                 || vec![0.0; scratch_len],
                 |scratch, r| {
                     std::array::from_fn(|ch| {
-                        let raw_ch = &raw_cols[ch];
                         let mut out = vec![0.0f32; ACTIVE_W];
+                        if !beam_on {
+                            return out;
+                        }
+                        let raw_ch = &raw_cols[ch];
                         match geom_scans[ch].as_ref() {
                             Some(gs) => {
                                 let w_tgt = gs.w_tgt;

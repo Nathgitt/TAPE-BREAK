@@ -155,6 +155,77 @@ pub const SATICON_TRAPS: [Trap; MAX_TRAPS] = [
     Trap { capture: 0.54, capacity_nas: 0.066, release_s: 0.061 },
     Trap { capture: 0.09, capacity_nas: 0.40, release_s: 0.82 },
 ];
+
+/// How completely the layer sweeps out its carriers as its field falls, and the carriers it holds
+/// when it does not. `FULL`: complete collection, no held charge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Collection {
+    pub zero_v: f64,
+    pub scale_v: f64,
+    pub knee_v: f64,
+    /// Held-charge capacity, target-equivalent nA s.
+    pub capacity_nas: f64,
+    /// Release time of the held charge, s.
+    pub release_s: f64,
+}
+
+impl Collection {
+    pub const FULL: Collection = Collection {
+        zero_v: 0.0,
+        scale_v: 1.0,
+        knee_v: f64::NEG_INFINITY,
+        capacity_nas: 0.0,
+        release_s: 1.0,
+    };
+
+    pub fn is_full(&self) -> bool {
+        !self.knee_v.is_finite()
+    }
+
+    /// `eta(V)`, 0 to 1.
+    pub fn efficiency(&self, layer_v: f64) -> f64 {
+        if self.is_full() || layer_v >= self.knee_v {
+            return 1.0;
+        }
+        if layer_v <= self.zero_v {
+            return 0.0;
+        }
+        let num = 1.0 - (-(layer_v - self.zero_v) / self.scale_v).exp();
+        let den = 1.0 - (-(self.knee_v - self.zero_v) / self.scale_v).exp();
+        num / den
+    }
+}
+
+/// Lead-oxide collection laws `[R, G, B]` (RCA AN-5042 Fig. 2, Philips 5b 1975 XQ1020 high key).
+pub const PBO_COLLECTION: [Collection; 3] = [
+    Collection { zero_v: 5.0, scale_v: 10.0, knee_v: 45.0, capacity_nas: 10.0, release_s: 2.0 },
+    Collection { zero_v: 5.0, scale_v: 10.0, knee_v: 45.0, capacity_nas: 10.0, release_s: 2.0 },
+    Collection { zero_v: 3.0, scale_v: 6.0, knee_v: 45.0, capacity_nas: 1.0, release_s: 2.0 },
+];
+
+/// Saticon Te-doped layer collection law (Hitachi Hyoron 1976 Fig. 8, US 4,330,733 Fig. 6).
+pub const SATICON_COLLECTION: Collection =
+    Collection { zero_v: 8.0, scale_v: 8.0, knee_v: 38.0, capacity_nas: 14.0, release_s: 0.25 };
+
+/// Reversible burn: drive per second per unit of `p / peak_signal_na`, recovery time, and the dark
+/// current's relative rise per unit of burn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Burn {
+    pub rate_per_s: f64,
+    pub recovery_s: f64,
+    pub dark_gain: f64,
+}
+
+impl Burn {
+    pub const NONE: Burn = Burn { rate_per_s: 0.0, recovery_s: 1.0, dark_gain: 0.0 };
+}
+
+/// Antimony trisulphide temporary burn (US 3,546,520).
+pub const VIDICON_BURN: Burn =
+    Burn { rate_per_s: 5.5e-6, recovery_s: 600.0, dark_gain: 0.75 };
+
+/// Faceplate warm-up time constant, s (`docs/design/CAMERA_RETENTION.md`) [est].
+pub const WARM_UP_S: f64 = 600.0;
 /// Vertical beam spot width (Gaussian sigma) in frame-line pitches [est].
 /// Source: `docs/CAMERA_RESEARCH.md` ("Interlaced readout"), 0.55 to 0.73 across tube formats,
 /// derived from Philips T10 and RCA 1977 400 TVL modulation depths.
@@ -257,12 +328,32 @@ pub struct TubeChannel {
     pub dark_doubling_c: f64,
     /// Photoconductor trap populations on this channel.
     pub traps: [Trap; MAX_TRAPS],
+    /// Layer collection efficiency and held-charge parameters.
+    pub collection: Collection,
+    /// Reversible burn parameters.
+    pub burn: Burn,
+    /// Faceplate temperature at switch-on less operating temperature, deg C (`0.0` for none).
+    pub cold_offset_c: f64,
 }
 
 impl TubeChannel {
     /// Element potential above cathode for stored charge `q_nas` (nA s), V: `q / (capacitance_f * 1e9)`.
     pub fn potential_v(&self, q_nas: f64) -> f64 {
         q_nas / (self.capacitance_f * 1e9)
+    }
+
+    /// `target_voltage_v - q / (capacitance_f * 1e9)`, V.
+    pub fn layer_voltage_v(&self, q_nas: f64) -> f64 {
+        self.target_voltage_v - self.potential_v(q_nas)
+    }
+
+    /// Dark current at session time `t_s` (the warm-up law), nA.
+    pub fn dark_na_at(&self, t_s: f64) -> f64 {
+        if self.cold_offset_c == 0.0 || self.dark_doubling_c.is_infinite() {
+            return self.dark_na;
+        }
+        let dt = self.cold_offset_c * (-t_s.max(0.0) / WARM_UP_S).exp();
+        self.dark_na * (dt / self.dark_doubling_c).exp2()
     }
 
     /// ACT cutting level in target-equivalent charge, nA s: `capacitance_f * act_level_v * 1e9`.
@@ -314,7 +405,9 @@ impl TubeKind {
                             gamma: f64,
                             linearise: bool,
                             target_voltage_v: f64,
-                            traps: [Trap; MAX_TRAPS]| {
+                            traps: [Trap; MAX_TRAPS],
+                            collection: Collection,
+                            burn: Burn| {
             let ch = TubeChannel {
                 peak_signal_na: peak,
                 beam_na: beam_ratio * peak,
@@ -335,6 +428,9 @@ impl TubeKind {
                 target_voltage_v,
                 dark_doubling_c,
                 traps,
+                collection,
+                burn,
+                cold_offset_c: 0.0,
             };
             [ch, ch, ch]
         };
@@ -380,6 +476,9 @@ impl TubeKind {
                         target_voltage_v: TARGET_VOLTAGE_V,
                         dark_doubling_c,
                         traps: if k == 2 { PBO_BLUE_TRAPS } else { [Trap::NONE; MAX_TRAPS] },
+                        collection: PBO_COLLECTION[k],
+                        burn: Burn::NONE,
+                        cold_offset_c: 0.0,
                     }
                 }))
             }
@@ -390,6 +489,8 @@ impl TubeKind {
                 true,
                 VIDICON_TARGET_VOLTAGE_V,
                 VIDICON_TRAPS,
+                Collection::FULL,
+                VIDICON_BURN,
             )),
             TubeKind::Newvicon => Some(make_uniform(
                 NEW_PEAK_SIGNAL_NA,
@@ -398,6 +499,8 @@ impl TubeKind {
                 false,
                 NEWVICON_TARGET_VOLTAGE_V,
                 [Trap::NONE; MAX_TRAPS],
+                Collection::FULL,
+                Burn::NONE,
             )),
             TubeKind::Saticon => Some(make_uniform(
                 NEW_PEAK_SIGNAL_NA,
@@ -406,6 +509,8 @@ impl TubeKind {
                 false,
                 SATICON_TARGET_VOLTAGE_V,
                 SATICON_TRAPS,
+                SATICON_COLLECTION,
+                Burn::NONE,
             )),
             TubeKind::Chalnicon => Some(make_uniform(
                 NEW_PEAK_SIGNAL_NA,
@@ -414,6 +519,8 @@ impl TubeKind {
                 false,
                 CHALNICON_TARGET_VOLTAGE_V,
                 [Trap::NONE; MAX_TRAPS],
+                Collection::FULL,
+                Burn::NONE,
             )),
         }
     }
