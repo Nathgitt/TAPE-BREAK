@@ -508,6 +508,491 @@ impl UniformColumn {
   the anti-halation disc (Geometry).
 - Highlight guns on the non-PbO kinds; return-beam tubes (ABO).
 
+## Spectral taking and the colour matrix
+
+Source: `docs/CAMERA_RESEARCH.md`, "Six photoconductors differ in gamma, dark current and lag
+mechanism" (the spectral response of each material and the IR-cut filter it needs) and "Head-amplifier
+noise and processing lie mostly above 2.5 MHz" (US 4032974's order; the linear matrix before gamma
+with rows summing to 1; the BBC's Plumbicon matrix, Jones 1968). ITU-R BT.709 for the primaries, the
+white and the luminance shares [DS]. The CIE 1931 2 degree observer through the analytic fit of Wyman,
+Sloan and Shirley 2013 (JCGT 2(2), "multi-lobe"), within about 1 % of the tabulated functions [DS].
+
+A camera does not see red, green and blue. Each tube sees the scene's light through the lens's IR-cut
+filter and its arm of the prism, weighted by its photoconductor's spectral response; the processing
+amplifier's linear matrix turns the three readings back into the system's primaries. Taking curves
+are positive and overlap, so without the matrix a saturated colour is read partly in the wrong
+channels: it comes out paler and turned toward its neighbour in the spectrum. This stage puts the
+spectra on the light before the target and the matrix in the processing amplifier.
+
+### Decisions
+
+- **The scene is three spectra.** The input holds three numbers per element, so the scene has three
+  degrees of freedom: the light of an element is `E(l) = sum_c L_c E_c(l)` over wavelength `l`, with
+  `L_c` the linear light of primary `c` as now (`oetf_inverse(v / 255) * 2^iris_stops`). Each `E_c` is a
+  smooth, non-negative spectrum with the CIE chromaticity of its BT.709 primary, scaled so that its
+  luminance is the primary's share of white; the three then add to a white of D65's chromaticity.
+  Light outside 380 to 780 nm is not in the picture and is not invented [est]: the IR-cut filter acts
+  only on the far red inside the grid. A 3 x 3 matrix therefore inverts the taking exactly; there is no
+  metameric residual (out of scope).
+- **Shapes** [DER]: red is a long-pass (a red surface reflects from the orange on) on a small floor that
+  pulls its chromaticity off the spectral locus to the primary's, green a Gaussian band, blue a
+  short-pass. Each has two free numbers, solved so its `(x, y)` is the primary's (residual below
+  0.0003).
+- **Taking.** Channel `ch` with material `m`: `tau_ch(l) = ir_cut(l) prism_ch(l) response_m(l)`. No
+  prism or IR-cut curve is in the research: the dichroic edges (480 and 580 nm, 5 nm wide) and the
+  IR-cut (680 nm, 10 nm wide) are fitted so the Plumbicon camera's matrix comes out near the BBC's
+  (within 0.075 in every term) [est, fitted to DS].
+- **The red Plumbicon carries the red-extended layer** [DER]. With the standard layer, which is dark by
+  650 nm, the red arm sees only 580 to 650 nm and needs a red row of `[1.69, -0.83, 0.14]`; with the
+  extended-red layer it needs `[1.19, -0.23, 0.04]`, beside the BBC's `[1.14, -0.18, 0.04]` for the
+  Plumbicon cameras of the day. Only the spectral response changes: the red channel keeps its fitted
+  capacitance and no traps.
+- **White balance on the light.** The operating point is set on white, as now: each row of the taking
+  matrix is divided by its sum, so white (`L = (1, 1, 1)`) gives every tube its peak current. The
+  absolute sensitivity (a Newvicon is 3 to 4 times a Plumbicon behind an IR filter) only sets the
+  exposure needed and is out of scope.
+- **The matrix is the inverse of the taking** and sits in the processing amplifier after the clamp, the
+  gain, the correctors of "Geometry" and the linearising of a vidicon, before the knee and the gamma
+  corrector (US 4032974: matrix before gamma; the knee then acts on matrixed channels). Its rows sum to
+  1 because the taking's do. The studio profile carries it (US 4032974, Jones 1968); the consumer
+  profile does not [est: the WV-3110 signal path has no linear matrix, and its decoder's
+  `G = Y - (R + B) / 2` only separates the colours].
+- **Off by default.** With `CameraParams.spectral = false` (the default) the taking is ideal (`T = I`,
+  each channel sees its own primary, as now) and the matrix is the identity, which is not applied: the
+  engine is bit for bit the one before this stage.
+
+### Spectra
+
+All spectra live on a grid of `N_LAMBDA = 81` wavelengths, `l_i = 380 + 5 i` nm, and every integral is
+a sum over it. `long_pass(l, e, w) = 1 / (1 + exp(-(l - e) / w))`, `short_pass = 1 - long_pass`.
+
+- Scene shapes: `S_R = 0.0118 + 0.9882 long_pass(l, 619.0, 15.0)`,
+  `S_G = exp(-((l - 539.1) / 33.2)^2 / 2)`, `S_B = short_pass(l, 474.2, 18.8)`. Chromaticities (Wyman
+  fit) `(0.6400, 0.3300)`, `(0.3002, 0.6001)`, `(0.1500, 0.0601)` against BT.709's `(0.64, 0.33)`,
+  `(0.30, 0.60)`, `(0.15, 0.06)`.
+- `E_c(l) = Y_c S_c(l) / sum_i ybar(l_i) S_c(l_i)` with `Y = BT709_LUMINANCE = [0.2126, 0.7152, 0.0722]`
+  and `ybar` the Wyman fit's: white `sum_c E_c` sits at `(0.3129, 0.3292)` against D65's
+  `(0.3127, 0.3290)`.
+- Prism: `prism_R = long_pass(l, 580, 5)`, `prism_G = long_pass(l, 480, 5) short_pass(l, 580, 5)`,
+  `prism_B = short_pass(l, 480, 5)`. IR-cut: `short_pass(l, 680, 10)`.
+- Material responses, relative to their peak, linear between knots and 0 outside them (nm, response).
+  Knots marked [FIG] are read from the research's figures (about +-10 nm); the rest are [est] fills of
+  the curves' shape:
+
+| Material (`Material`) | Knots |
+|---|---|
+| PbO (`Pbo`) | 380 0.55, 400 0.70, 450 0.92, **490 1.00** [FIG, peak 485-500], 550 0.72, 600 0.35, 630 0.10, **650 0.00** [FIG] |
+| PbO, red-extended (`PboExtendedRed`) | 380 0.55, 400 0.70, 450 0.92, 490 1.00, 550 0.80, 600 0.55, 650 0.38, 700 0.25, **780 0.10** [FIG: tails to 850-950] |
+| Sb2S3 (`Sb2s3`) | 380 0.40, 400 0.55, 450 0.80, **550 1.00** [FIG], 600 0.88, **675 0.50** [FIG], 700 0.36, 750 0.12, 780 0.05 |
+| Newvicon (`Newvicon`) | 380 0.36, **400 0.38** [FIG, 220 of 575 mA/W], 500 0.55, 600 0.78, 700 0.96, **735 1.00** [FIG, 730-740], 780 0.92 |
+| Saticon (`Saticon`) | 380 0.65, 400 0.80, **430 1.00**, **450 1.00** [FIG], 500 0.82, 550 0.62, **595 0.40** [FIG], 650 0.12, **700 0.03** [FIG], 750 0.00 |
+| Chalnicon (`Chalnicon`) | 380 0.60, **400 0.64** [FIG, 0.30 of 0.47 uA/uW], 500 0.75, 600 0.87, **710 1.00** [FIG], 740 0.50, **770 0.02** [FIG], 780 0.00 |
+
+- Materials of the kinds `[R, G, B]`: every Plumbicon kind `[PboExtendedRed, Pbo, Pbo]`; `Vidicon` Sb2S3,
+  `Newvicon`, `Saticon` and `Chalnicon` their own material in all three.
+
+### Equations
+
+- Taking matrix: `T_raw[ch][c] = sum_i tau_ch(l_i) E_c(l_i)`, `T[ch][c] = T_raw[ch][c] / sum_c' T_raw[ch][c']`.
+- Light on target `ch` (before the optics of "Geometry"): `l_ch = sum_c T[ch][c] L_c`; photocurrent
+  `photo_current(ch, l_ch)` as now. White and every grey reach the targets exactly as with ideal taking.
+- Colour matrix: `M = T^-1`. In the processing amplifier the linear signals `L'_ch` (after clamp, gain,
+  correctors and linearising) become `L''_ch = sum_j M[ch][j] L'_j` before the knee.
+- Resulting values (for the record; the tests judge them against the data, not these digits). Taking
+  `T` of the Plumbicon camera `[[0.846, 0.153, 0.001], [0.032, 0.803, 0.165], [0.016, 0.043, 0.940]]`;
+  its matrix `[[1.191, -0.229, 0.039], [-0.044, 1.265, -0.222], [-0.019, -0.054, 1.073]]`. Red
+  primary read on its own channel without a matrix (`T[R][R]`): Saticon 0.766, Plumbicon 0.846, vidicon
+  0.854, Chalnicon 0.898, Newvicon 0.903.
+
+### What follows from it (and the tests check)
+
+- White balance holds for every material; a grey scene is read exactly as with ideal taking.
+- No material's matrix is diagonal: the Plumbicon camera needs about the BBC's off-diagonal terms.
+- Without the matrix, saturated primaries lose saturation and turn toward their spectral neighbours:
+  red toward yellow (its green reading exceeds its blue), green toward yellow, blue toward cyan. The
+  readings of a Plumbicon camera without matrix are close to the inverse of the BBC matrix.
+- Each material needs its own matrix. A Newvicon, whose response rises to 735 nm, keeps red the most
+  saturated of the materials; behind a matrix made for lead oxide its reds come out over-saturated. A
+  Saticon, at 3 % by 700 nm, desaturates red the most and comes out under-corrected behind the
+  lead-oxide matrix.
+
+### Interfaces
+
+A new shared module `spectral.rs` (no raster constant; both engines use it):
+
+```rust
+pub const N_LAMBDA: usize = 81;
+pub const LAMBDA_MIN_NM: f64 = 380.0;
+pub const LAMBDA_STEP_NM: f64 = 5.0;
+/// `LAMBDA_MIN_NM + LAMBDA_STEP_NM * i`.
+pub fn wavelength_nm(i: usize) -> f64;
+pub const BT709_LUMINANCE: [f64; 3] = [0.2126, 0.7152, 0.0722];
+/// CIE 1931 2 degree `[xbar, ybar, zbar]` at `nm`, Wyman, Sloan and Shirley 2013 multi-lobe fit.
+pub fn cie_1931(nm: f64) -> [f64; 3];
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Material { Pbo, PboExtendedRed, Sb2s3, Newvicon, Saticon, Chalnicon }
+pub const MATERIALS: [Material; 6];
+impl Material {
+    /// The knots of the table, `(nm, relative response)`.
+    pub fn knots(self) -> &'static [(f64, f64)];
+    /// Linear between knots, 0 outside them.
+    pub fn response(self, nm: f64) -> f64;
+}
+/// `E_c(nm)` of primary `c` (`[R, G, B]`) at unit linear light.
+pub fn primary_spectrum(c: usize, nm: f64) -> f64;
+pub fn ir_cut(nm: f64) -> f64;
+/// Prism transmission into channel `ch`.
+pub fn prism(ch: usize, nm: f64) -> f64;
+/// `ir_cut(nm) * prism(ch, nm) * m.response(nm)`.
+pub fn taking(ch: usize, m: Material, nm: f64) -> f64;
+/// `T[ch][c]`, rows summing to 1.
+pub fn taking_matrix(materials: [Material; 3]) -> [[f64; 3]; 3];
+/// `T^-1`.
+pub fn colour_matrix(materials: [Material; 3]) -> [[f64; 3]; 3];
+```
+
+In `tube.rs`: `impl TubeKind { pub fn materials(self) -> Option<[Material; 3]>; }` (`None` for `Off`).
+
+In `camera_processing.rs`: `ProcessingSpec` gains `matrix: bool` (studio `true`, consumer `false`).
+
+```rust
+impl VideoProcessor {
+    /// The colour matrix the processor applies after linearising; `new` starts with the identity,
+    /// which is not applied.
+    pub fn with_matrix(self, m: [[f64; 3]; 3]) -> Self;
+    pub fn matrix(&self) -> [[f64; 3]; 3];
+}
+```
+
+In `camera.rs`: `CameraParams` gains `spectral: bool` (config key `spectral`, default `false`).
+
+```rust
+impl CameraTube {
+    /// The taking matrix in use: `taking_matrix(kind.materials())` with `spectral`, else the identity.
+    pub fn taking(&self) -> [[f64; 3]; 3];
+    /// The processor's colour matrix: `colour_matrix(..)` with `spectral` and a profile that has one,
+    /// else the identity.
+    pub fn colour_matrix(&self) -> [[f64; 3]; 3];
+    /// The photocurrent the picture `f` drives on each target element, nA, indexed
+    /// `(r * ACTIVE_W + x) * 3 + ch`: the light through the taking and the optics of "Geometry", then the
+    /// target's sensitivity and transfer. What `read` integrates for a picture held over a field.
+    pub fn photo_currents(&self, f: &Frame) -> Vec<f64>;
+}
+```
+
+`frame_photo` mixes the three linear lights through `T` per element before the transfer, so its
+per-level table becomes a table of linear light per level.
+
+### Out of scope
+
+- Metameric failure (scene spectra outside the three) and scene IR; the illuminant and colour-temperature
+  filters (the scene's white is the camera's white).
+- The matrix's cost in luminance S/N: Jones's 0.3 to 0.7 dB rests on channel noise the research does not
+  give (the BBC matrix itself costs 0.83 dB with equal noise in the channels [DER]); it is not judged,
+  but it follows, since the matrix acts on the noisy line signals.
+- The extended-red layer's own lag (fits of `K` 0.31 to 0.57 nC and its traps) and a choice of layer.
+- The stripe camera's spectra: when the stripe tube is joined, the cyan and yellow stripes'
+  transmissions and the lens's IR-cut take the prism's place on its one material, and a Newvicon's
+  luminance then weights red by its response (its "red sensitivity" in the picture).
+
+## Geometry
+
+Source: `docs/CAMERA_RESEARCH.md`, "Interlaced readout with an oversized spot blurs, skews and twitters"
+(signal current proportional to scan speed, Philips T10 4.2; deflection distortion of 0.5 % of the
+picture height inside a circle of diameter H and 1 % outside, 2 % for vidicon coil units; matched
+triplets registered to 25-40, 40-80 and 80-120 ns by zone, 1 ns about 0.00256 % of the picture height;
+black shading of up to 12.5 % at the corners with parabolic and sawtooth components in both directions;
+white shading of a few per cent in PbO red and green, blue flat, up to 15 % on the RCA Saticon; corner
+limiting resolution), "Beam capacity of twice peak white turns highlights into comet tails" (the
+black-square flare test, Saticon 1 % / 0.5 %, vidicon 5 % / 1 %; PbO's reflectance, highest in red, and
+its 6 mm anti-halation disc), "Single-tube camcorders trade colour bandwidth for a striped carrier" (a
+deliberately non-linear deflection, colour shading from focus, dark shading), "Head-amplifier noise and
+processing lie mostly above 2.5 MHz" (US 4032974's order, US 4001502's flare correction) and "A
+physically grounded camera model" (C: the scan path is a ramp plus a low-order distortion field and a
+per-tube registration offset).
+
+Every error of the picture's field acts where it happens. The lens's veiling glare and the faceplate's
+halation act on the light before the target. Shading of sensitivity and of dark current is the target's.
+Deflection decides where and when the beam lands, and with it the read time, the charge read per unit of
+time and the spot's width in time. Corner focus is the spot's. Corrections are the processing
+amplifier's, on the line signal.
+
+### Decisions
+
+- **One displacement field per tube.** The beam of tube `ch`, aimed at the nominal raster position
+  `(x, y)`, lands at `(x + dx_ch, y + dy_ch)`: a sweep linearity and a pincushion shared by the tubes, and
+  per tube a residual size and pincushion against green (registration). A target element is read when
+  the beam passes it, and the line signal is the charge read per unit of time: where the beam moves fast
+  it reads more current and its spot is shorter in time. Nothing is resampled in the picture.
+- **The target runs past the picture.** With geometry on, the target grid extends beyond the active
+  picture on every side, at least as far as any landing plus four spot widths. Elements there are lit as
+  their nearest picture element (the scene goes on as its edge) [est]; they are read only by displaced
+  passes.
+- **Black shading is the target's dark current**, uneven over the target (bias light and dark current
+  alike); **white shading is its sensitivity**, uneven over the target. Both are tube properties scaled to
+  the data.
+- **Flare is a veil and a ring.** The veil is light spread by the lens and by reflections between target
+  and lens, a shift-invariant exponential kernel fitted per material to the black-square data. The ring is
+  PbO's halation: light the target reflects into the faceplate comes back from the glass's front face by
+  total reflection, as a ring around every light; the anti-halation disc moves it out of the picture.
+- **Corrections are aligned once.** The studio profile fits US 4032974's black and white shading
+  correctors and US 4001502's flare corrector; each is set at alignment (25 deg C, a capped target, a
+  flat white field, the black-square chart) and then stays, so what changes later (temperature, the
+  scene's average level) shows. The consumer profile fits none [est: its manual names dark shading and
+  edge shading as visible faults].
+- **Off by default.** `CameraParams.geometry = false` (the default) is `GeometrySpec::NONE`: no
+  displacement, shading, flare, focus growth or corrector, and the engine is bit for bit the one before
+  this stage. With `geometry = true` the profile's spec for the tube kind applies
+  (`Processing::geometry(kind)`).
+
+### Coordinates
+
+- Positions are in picture heights (PH) from the picture centre, `x` to the right, `y` down:
+  `x` in `[-X_EDGE_PH, X_EDGE_PH]`, `X_EDGE_PH = TARGET_ASPECT / 2 = 2/3`, `y` in `[-1/2, 1/2]`,
+  `rho = sqrt(x^2 + y^2)`, `RHO_CORNER_PH = 5/6`. `u = x / X_EDGE_PH`, `v = 2 y` run from -1 to 1.
+- Sample `s` (fractional) of active row `r`, and target element `(r, s)`, sit at
+  `picture_position_ph(r, s) = (((s + 0.5) / ACTIVE_W - 0.5) TARGET_ASPECT, (r + 0.5) / ACTIVE_H - 0.5)`.
+- Where data are in ns of line time: `PH_PER_NS = 2.56e-5` (the research's 0.00256 %).
+- Zones [est: the research gives the registration bands by zone but not the zones]: A inside the circle of
+  diameter H (`rho <= 0.5`, the deflection data's circle), B inside the circle of the picture width
+  (`rho <= 2/3`), C the corners beyond.
+
+### Deflection and registration
+
+- Displacement of tube `ch`, PH, at nominal `(x, y)`:
+  `dx = kappa (x^2 - X_EDGE_PH^2) / (2 X_EDGE_PH) + p x rho^2 + s_ch x + q_ch x rho^2`,
+  `dy = p y rho^2 + s_ch y + q_ch y rho^2`. `kappa` is the sweep's linearity: the scan speed along the line
+  is `1 + kappa x / X_EDGE_PH` (negative: the sweep slows along the line, as an inductive coil's does),
+  with the ends of the line in place. `p` is the pincushion (positive pulls the corners out). `s_ch`,
+  `q_ch` are tube `ch`'s size and pincushion against green: `s_G = q_G = 0`, red `(+s, +q)`, blue
+  `(-s, -q)` [est: the signs].
+- Local scan gain `J_ch = (1 + d(dx)/dx) (1 + d(dy)/dy)` at the nominal position: the area the beam
+  sweeps per unit of time, against nominal. Signal current is proportional to it [DS: Philips T10 4.2,
+  "signal current is a function of target illumination and of scanning speed"].
+- **The scan with geometry** (replacing the read times, beam centres and horizontal spot of "Beam" and
+  "Highlights"; ACT flyback spans and bending distances stay on the target grid):
+  1. For row `r` and target column `j`, the nominal sample `s_j` at which the beam lands on the column:
+     `x(s_j) + dx_ch(x(s_j), y_r) = x(j)` (one root: the speed stays positive; solved to 1e-6 sample).
+     The column is read at `read_time_s` of `(n, r)` at the fractional sample `s_j`
+     (`n / FRAME_RATE + line / FH + (ACTIVE_START + s_j) / FS_BB`).
+  2. The pass's centre over column `j` is `c_r + dy_ch(x(s_j), y_r) ACTIVE_H` frame-line pitches and its
+     vertical sigma `sigma_v F_ch(x(s_j), y_r)` (corner focus, below). Shares are normalised per column:
+     `w_rk(j) = g_rj(y_k) / S_k(j)`, `S_k(j)` the sum over the frame's passes at sub-row `k` of column `j`,
+     truncated at 3 sigma as now. Each element is still offered `I_b T_frame` per frame.
+  3. The landed charge of column `j` gives `raw_j = landed / (SUB_ROWS T_frame)` as now.
+  4. The line signal at sample `s`: the beam is at column position
+     `X(s) = s + dx_ch(x(s), y_r) ACTIVE_W / TARGET_ASPECT` moving at `X'(s) = dX / ds`, with spot sigma
+     `sigma_x = sigma_h_s FS_BB F_ch(x(s), y_r)` columns:
+     `signal(s) = X'(s) sum_j raw_j G(X(s) - j) / sum_j G(X(s) - j)`, `G` the Gaussian of `sigma_x` over
+     the target's columns within 4 sigma. Without geometry `X(s) = s`, `X' = 1`, `F = 1`: the present
+     spot, renormalised at the line ends.
+  A uniform target thus reads `J_ch` times its current, and the spot is `sigma_x / X'` long in time.
+- The deflection data bound the total displacement; registration data the difference between tubes.
+
+### Shading
+
+- **Black.** The dark and bias currents of an element at `(x, y)` are multiplied by `1 + b(u, v)`,
+  `b = h_saw u + h_par (u^2 - 1/3) + v_saw v + v_par (v^2 - 1/3)` (mean zero over the picture). Both
+  profiles: `h_saw = v_saw = 0.0125`, `h_par = v_par = 0.075`: `+12.5 %` at the bottom-right corner,
+  `+7.5 %` top-left, `-5 %` at the centre [DS: up to 12.5 % at the corners, parabolic and sawtooth in both
+  directions; the split est]. It follows the dark current with temperature.
+- **White.** The light an element converts is multiplied by `1 + w_ch`, `w_ch = -fall_ch (rho / RHO_CORNER_PH)^2`
+  (centre-high). `fall`: every Plumbicon kind `[0.03, 0.03, 0.0]` [DS: "a few per cent" in red and green,
+  blue flat; 3 est]; Saticon `0.15` [DS: up to 15 %]; vidicon, Newvicon, Chalnicon 0 [no data].
+- The target starts at its uniform dark equilibrium; a shaded target settles in the first frames, as a
+  camera switched on.
+
+### Flare
+
+- **Veil.** Light reaching target `ch`: `l' = (1 - f_ch) l + f_ch (K * l)`,
+  `K(d) = exp(-d / a_ch) / (2 pi a_ch^2)` per PH^2 (`d` in PH), the convolution over the picture only
+  (light spread beyond the target is lost; nothing enters from outside the picture).
+- **The black-square chart** (`BLACK_SQUARE_PH = 0.1`): a white picture (`L = 1`, a 200 nA field on a
+  2/3-inch tube) with a black square of side 0.1 PH, centred at the picture centre, or flush with a
+  corner [est: "corner"]. The reading is the photocurrent at the square's centre as a share of peak.
+- Fits [DER on DS]: Saticon `f = 0.0215`, `a = 0.40` PH: 1.00 % at the centre and 0.50 % at the corner.
+  Vidicon `f = 0.0116`, `a = 0.15` PH: 5.0 % at the centre through its 0.65 transfer (1.0 % of light).
+  Through that transfer no width of a shift-invariant veil reads a corner square below 0.51 of the centre
+  square (this width is the lowest [DER]): the vidicon's corner reads 2.6 % against the data's 1 % (open). PbO,
+  Newvicon and Chalnicon take the Saticon's veil [est: no data].
+- **Halation** (the PbO kinds). `l' += h_ch (K_h * l)`, `h_ch = reflectance_ch (1 - 1 / n^2)` (the share
+  of a diffuse reflection beyond the critical angle), with the ring kernel
+  `K_h(d) = (1 + tan^2 theta_c) / (pi (2 t)^2) / (1 + (d / 2t)^2)^2` for `d >= 2 t tan theta_c`, 0 inside,
+  `sin theta_c = 1 / n`, `t = (faceplate_mm + disc_mm) / target_height_mm` PH [DER: light reflected
+  diffusely by the target is totally reflected by the glass's front face beyond `theta_c` and lands
+  `2 t tan theta` away; per unit area `cos^4 theta`]. `n = GLASS_INDEX = 1.5` [est], reflectance
+  `[0.15, 0.08, 0.05]` [est: "highest in PbO, especially in red"], faceplate 1.5 mm [est],
+  `disc_mm = ANTI_HALATION_DISC_MM = 6.0` [DS], target height 12.8 mm (30 mm tube) [DS]. Without the disc
+  the ring's inner edge is at 0.21 PH; the disc puts it at 1.05 PH, past the picture's half-diagonal, so a
+  highlight inside the picture's middle has no halo and the rest of the ring is 25 times thinner. Other
+  materials: no halation.
+- Order on the light: taking (spectral), veil, halation, white shading, transfer. The optics act on each
+  held picture (per field), so `photo_currents` and `read` see them. They may be computed on a coarser
+  grid than the picture, to 1e-4 of peak light.
+
+### Corner focus
+
+- Both spot sigmas of tube `ch` at `(x, y)` are multiplied by `F_ch = 1 + focus_ch (rho / RHO_CORNER_PH)^2`.
+  With the Gaussian response `exp(-2 pi^2 sigma^2 f^2)` the limiting resolution (a fixed small modulation)
+  falls as `1 / F`: at the corner by `1 - 1 / (1 + focus)`.
+- `focus`: vidicon and Newvicon 0.45 (31 %: XQ1274 650 to 450 TVL, within 25-35 %) [DS]; Chalnicon 0.25
+  (20 %) [DS]; PbO kinds and Saticon 0.25 [est: no corner figure; the low end for magnetic-focus studio
+  tubes].
+
+### Corrections
+
+The processing amplifier's order becomes (US 4032974, with the knee of "Camera electronics" and the matrix
+of "Spectral taking and the colour matrix"): clamp with flare correction, gain, black shading correction,
+white shading correction, linearise, matrix, knee, gamma, aperture correction, clip. Per channel, at
+`(x, y) = picture_position_ph(r, s)`:
+
+1. `L1 = (I - black) / peak` (clamp and gain as now).
+2. Flare: `L2 = L1 - c_ch APL_ch`, `APL_ch` the mean of `L1` over the frame's active samples, `c_ch` the
+   black-square chart's centre reading (through the camera's own optics) divided by the chart's mean
+   light `1 - BLACK_SQUARE_PH^2 / TARGET_ASPECT`: aligned so the chart's centre square reads black
+   (US 4001502 feeds the integrated picture level into the clamp) [est: the frame's own mean stands for the
+   integrator].
+3. Black shading: `L3 = L2 - beta_ch`, `beta_ch = ref_ch (J_ch (1 + b) - 1) / peak_ch`, `ref_ch` the dark
+   plus bias current at 25 deg C (`black_reference_na`): the capped reading at alignment.
+4. White shading: `L4 = L3 / (J_ch (1 + w_ch)^gamma_ch)`: the flat-field reading at alignment.
+5. Linearise, matrix, knee, gamma, aperture correction, clip as before.
+
+Without a corrector the step is skipped. `CameraTube` measures the chart reading at construction on its
+own optics; the processor takes it as `flare_reading`.
+
+### Profiles
+
+| | studio | consumer |
+|---|---|---|
+| linearity `kappa`, pincushion `p` | -0.012, 0.0155: at most 0.48 % inside the circle of diameter H and 0.90 % outside (Philips deflection units, 0.5 % and 1 %) [DS bounds] | -0.045, 0.031: 1.6 % and 1.8 % (vidicon coil units, 2 %) [DS bound] |
+| registration `s`, `q` (red; blue negated) | 8.7e-4, 3.2e-3: up to 33, 60 and 101 ns in zones A, B, C (matched triplets 25-40, 40-80, 80-120 ns) [DS bands] | 1.12e-3, 3.69e-3: 40, 72 and 120 ns, the bands' upper ends [est] |
+| black shading | as above [DS] | as above [DS] |
+| correctors | flare, black shading, white shading (US 4032974, US 4001502) | none [est] |
+| matrix | yes | no |
+
+White shading, veil, halation and corner focus are the tube kind's, in both profiles.
+
+### The single-tube camera
+
+The stripe camera has one target: no registration. Deflection, shading, flare and corner focus act on its
+target as above; its veil acts on the scene's light before the optical low-pass and the stripes, and
+corner focus lowers the carrier's modulation toward the corners, which is the WV-3110's "colour shading"
+from focus with no further mechanism.
+
+### Defaults and what stays
+
+- The camera off is untouched (the golden test). `geometry = false` builds `GeometrySpec::NONE` and the
+  engine before this stage, bit for bit. `UniformColumn` (the data sheets' measurement surface) has no
+  geometry.
+- Cost: per-column vertical shares; two picture convolutions per held picture for the optics.
+
+### Interfaces
+
+A new shared module `geometry.rs` (positions in PH; no raster constant):
+
+```rust
+pub const X_EDGE_PH: f64 = TARGET_ASPECT / 2.0;
+pub const RHO_CORNER_PH: f64 = 5.0 / 6.0;
+pub const PH_PER_NS: f64 = 2.56e-5;
+pub const BLACK_SQUARE_PH: f64 = 0.1;
+pub const GLASS_INDEX: f64 = 1.5;
+pub const ANTI_HALATION_DISC_MM: f64 = 6.0;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Deflection { pub linearity: f64, pub pincushion: f64 }
+/// A tube's size and pincushion against green.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Registration { pub size: f64, pub pincushion: f64 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shading { pub h_saw: f64, pub h_par: f64, pub v_saw: f64, pub v_par: f64 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Veil { pub fraction: f64, pub scale_ph: f64 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Halation { pub reflectance: f64, pub faceplate_mm: f64, pub disc_mm: f64, pub target_height_mm: f64 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeometrySpec {
+    pub deflection: Deflection,
+    pub registration: [Registration; 3],
+    pub black_shading: Shading,
+    /// Dark plus bias current at 25 deg C per channel, nA: the black corrector's reference.
+    pub black_reference_na: [f64; 3],
+    /// White shading: the fall of sensitivity at the corner per channel.
+    pub white_fall: [f64; 3],
+    pub veil: [Veil; 3],
+    pub halation: [Halation; 3],
+    pub corner_focus: [f64; 3],
+}
+impl Deflection { pub const NONE: Deflection; }
+impl Registration { pub const NONE: Registration; }
+impl Shading { pub const NONE: Shading; }
+impl Veil { pub const NONE: Veil; }
+impl Halation { pub const NONE: Halation; }   // reflectance 0
+impl GeometrySpec { pub const NONE: GeometrySpec; }
+/// `(dx, dy)` of tube `ch`, PH, at nominal `(x, y)`.
+pub fn displacement_ph(g: &GeometrySpec, ch: usize, x: f64, y: f64) -> (f64, f64);
+/// `J_ch` at nominal `(x, y)`.
+pub fn scan_gain(g: &GeometrySpec, ch: usize, x: f64, y: f64) -> f64;
+/// `b(u, v)` at `(x, y)`.
+pub fn black_shading_factor(s: &Shading, x: f64, y: f64) -> f64;
+/// `1 + w` for a corner fall `fall`.
+pub fn white_shading_factor(fall: f64, x: f64, y: f64) -> f64;
+/// `F` for `focus`.
+pub fn focus_factor(focus: f64, x: f64, y: f64) -> f64;
+/// `K(d)`, per PH^2.
+pub fn veil_kernel(v: &Veil, d_ph: f64) -> f64;
+/// `h` and `K_h(d)` (per PH^2, unit integral over the plane), and the ring's inner radius, PH.
+pub fn halation_share(h: &Halation) -> f64;
+pub fn halation_kernel(h: &Halation, d_ph: f64) -> f64;
+pub fn halation_radius_ph(h: &Halation) -> f64;
+```
+
+In `camera_processing.rs`:
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Corrections { pub flare: bool, pub black_shading: bool, pub white_shading: bool }
+// ProcessingSpec gains `corrections: Corrections` (studio all true, consumer all false) beside `matrix`.
+impl Processing {
+    /// The profile's spec for a tube kind (`GeometrySpec::NONE` for `Off`).
+    pub fn geometry(self, kind: TubeKind) -> GeometrySpec;
+}
+impl VideoProcessor {
+    /// Fit the profile's correctors, aligned to `geometry`; `flare_reading` is the black-square chart's
+    /// centre reading per channel, a share of peak.
+    pub fn with_geometry(self, geometry: &GeometrySpec, flare_reading: [f64; 3]) -> Self;
+    /// `c_ch` of the flare corrector (0 without it).
+    pub fn flare_coefficient(&self) -> [f64; 3];
+}
+```
+
+In `camera.rs`:
+
+```rust
+/// `(x, y)` in PH from the picture centre of fractional sample `s` of active row `r`.
+pub fn picture_position_ph(r: usize, s: f64) -> (f64, f64);
+// CameraParams gains `geometry: bool` (config key `geometry`, default false).
+impl CameraTube {
+    /// The camera with an explicit spec; `seeded(p, seed)` is
+    /// `seeded_geometry(p, seed, &if p.geometry { p.processing.geometry(p.tube) } else { GeometrySpec::NONE })`.
+    pub fn seeded_geometry(params: &CameraParams, seed: u64, geometry: &GeometrySpec) -> Option<Self>;
+    pub fn geometry(&self) -> &GeometrySpec;
+    pub fn processor(&self) -> &VideoProcessor;
+}
+```
+
+`read_currents`' callback keeps its picture indices: elements beyond the picture call it with their nearest
+picture element.
+
+### Out of scope
+
+- Lens distortion and vignetting; raster skew (0.4 to 1 %, vidicon 4 %); dynamic focus; the electronic
+  registration correction of 1984 (Iwabe et al.) and the operator's alignment of centring, size and
+  linearity beyond the residuals above.
+- The beam reserve's change with scan speed and line density (each element is still offered
+  `I_b T_frame`); spot growth with beam current (H8397A 58 % to 37 %).
+- Flare from outside the picture; the vidicon's corner flare (above); glare ghosts; the halation of
+  rays inside the critical angle.
+- Blemishes, mesh microphonics; burn and its shading (Retention).
+
 ## Stages
 
 | Stage | Content |
