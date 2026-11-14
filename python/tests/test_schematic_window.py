@@ -168,7 +168,8 @@ def shown_look(window):
     return {**look.condition, "preset": look.preset, "seed": look.seed, "generations": look.generations, "signal": look.signal, "audio": look.audio,
             "standard": look.standard, "camera_tube": look.camera_tube, "iris_stops": look.iris_stops, "camera_layout": look.camera_layout,
             "camera_processing": look.camera_processing, "camera_temperature_c": look.camera_temperature_c, "camera_spectral": look.camera_spectral,
-            "camera_geometry": look.camera_geometry}
+            "camera_geometry": look.camera_geometry, "camera_beam_ratio": look.camera_beam_ratio, "camera_blooming": look.camera_blooming,
+            "camera_cold_start": look.camera_cold_start, "camera_cold_start_c": look.camera_cold_start_c}
 
 
 def views(window):
@@ -285,6 +286,7 @@ def test_the_schematic_starts_as_the_window_does(app, window):
     assert set().union(*pages) == {f.key for f in CONDITION_FIELDS} | {
         "preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops",
         "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry",
+        "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c",
     }
     assert sum(len(p) for p in pages) == len(set().union(*pages)), "every line is on one page only"
     combo = child(window, QComboBox, "presetCombo")

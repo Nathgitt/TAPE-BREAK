@@ -39,7 +39,8 @@ MARGIN = 4
 # The settings of the look that are not condition fields, by the page that holds their line.
 LOOK_IDS_OF_PAGE = {
     "circuit": {"preset", "seed", "generations", "signal", "audio", "standard"},
-    "camera": {"camera_tube", "iris_stops", "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry"},
+    "camera": {"camera_tube", "iris_stops", "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry",
+               "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c"},
     "outside": set(),
 }
 LOOK_IDS = set().union(*LOOK_IDS_OF_PAGE.values())
@@ -58,7 +59,7 @@ BLOCKS_OF_PAGE = {
     "camera": {
         "lens": ["iris_stops"],
         "split": ["camera_layout", "camera_spectral"],
-        "tubes": ["camera_tube", "camera_temperature_c", "camera_geometry"],
+        "tubes": ["camera_tube", "camera_temperature_c", "camera_geometry", "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c"],
         "head_amp": [],
         "processing": ["camera_processing"],
         "encoder": [],
