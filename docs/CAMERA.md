@@ -330,6 +330,90 @@ Contract and acceptance test bounds from `docs/design/CAMERA_SCAN.md` ("Highligh
   `beam_ratio = 3.5` (`SATICON_BEAM_RATIO`) and `3x` light (`SATICON_LIGHT`) for `2.0 s`
   (`SATICON_ON_S`) drains within `SATICON_GONE = 0.005` of baseline after `2.0 s` (`SATICON_GONE_S`).
 
+## Single-tube stripe camera
+
+With `CameraParams::layout = "stripe"` (default `"three-tube"`), a single pickup tube sees the
+scene through an optical low-pass and cyan/yellow stripe filter on its faceplate, matching the
+frequency-separation system of the Panasonic WV-3110 (`docs/design/CAMERA_STRIPE.md`). Any
+`TubeKind` other than `off` may carry stripes; the one target is the kind's green channel
+(`channels_at(beam_ratio, temperature_c)[1]`, with `bending` from `blooming`), held in slot
+`STRIPE_SLOT = 1` of `TargetSignal` while slots 0 and 2 stay empty and are never scanned.
+
+**Chain.** Each stage acts on the scene light, the target charge or the line signal (`stripe.rs`,
+`camera.rs`, `camera_processing.rs`):
+
+1. **Optical low-pass and stripes.** Linear scene light `L_c = oetf_inverse(v / 255) * 2^iris_stops`
+   passes per active row through a birefringent plate (`optical_lowpass`), which averages two
+   copies shifted along the line by half a carrier period `d = 1 / (2 f_c)` (`cos(pi f d)` is zero
+   at `STRIPE_CARRIER_HZ = 3.58e6` Hz, from `w = 7.49 mm`, `p = 40 um`, `t = 52.3 us`). Each
+   sub-row takes its row's light through cyan and yellow stripes of opposite slant (`T_G = 1`,
+   `T_R = (1 + cos th_R) / 2`, `T_B = (1 + cos th_B) / 2` with `th = 2 pi f_c x / FS_BB + phi(r)`,
+   `phi_R(r) = +pi r / 4`, `phi_B(r) = -pi r / 4`), summed by `target_light`.
+2. **Photocurrent and scan.** `photo_current(ch, target_light / STRIPE_WHITE_LIGHT)` with
+   `STRIPE_WHITE_LIGHT = 2.0` (the mean of `T_R + T_G + T_B`), so white averages the tube's peak
+   signal current while its stripe peaks reach 1.5 times peak current. The scan engine (lag, traps,
+   ACT flyback, DBC, beam bending and plate limit) runs unchanged on slot `STRIPE_SLOT = 1`.
+3. **Head amplifier, clamp and scale.** `HeadAmplifier::amplify` adds shot, feedback and FET
+   noise plus the 5.5 MHz Butterworth band to the one line signal; noise near 3.58 MHz becomes
+   colour noise after decoding. Clamp and scale then subtract the dark equilibrium reading and
+   restore the decoder scale: `s = (i - black) * STRIPE_WHITE_LIGHT / peak_signal_na`.
+4. **Decoder.** `StripeDecoder` extracts chroma with a Gaussian band-pass around
+   `STRIPE_CARRIER_HZ` (`CHROMA_HALF_WIDTH_HZ = 0.5e6` Hz at -3 dB) and trapped luminance
+   (`LUMA_BAND_HZ = 2.8e6` Hz at -3 dB), separates red and blue carriers with a 1H delay (`r - 2`)
+   and quarter-carrier delay `1 / (4 f_c)`, takes each envelope from its analytic signal (Hilbert
+   FIR) times `carrier_gain` followed by a `COLOUR_BAND_HZ = 0.5e6` Hz Gaussian low-pass, and
+   forms green and mixed highs (`G_c = y_c - (R_c + B_c) / 2`, `h = (y - y_c) / 2`).
+5. **Processing amplifier.** `VideoProcessor::with_levels(processing, &[ch; 3], floor, white)`
+   clamps each channel at the capped-lens `floor`, gains to the white card's `white`, and runs
+   linearise (`vidicon`), knee, gamma, aperture correction from G and clip before encoding.
+
+**Alignment.** The horizontal spot (`0.67` at `40 ns`), head-amplifier band (`0.92` at
+`5.5 MHz`), vertical beam overlap of adjacent slanted lines (`~0.88`) and target transfer
+exponent weaken the carrier. At construction, after dark settle and without changing the camera's
+own state, a clone at `iris_stops = 0.0` reads `ALIGN_FRAMES = 8` frames of a flat 255 white card
+(last read amplified as `ALIGN_WHITE_FRAME = -1`, bringing a vidicon's carrier response within
+0.2 % of its 40-frame value), and a `TargetSignal` of `black` in slot `STRIPE_SLOT` is amplified as
+`ALIGN_CAPPED_FRAME = -2`. Both are clamped, scaled and decoded with gain 1 over the middle half
+(`ACTIVE_H/4 .. 3 ACTIVE_H/4`, `ACTIVE_W/4 .. 3 ACTIVE_W/4`) to give means `W1` and `C1`, setting
+`carrier_gain = 1 / (((W1_R - C1_R) + (W1_B - C1_B)) / 2)`. Decoding both again with
+`carrier_gain` gives `floor = C` and `white = W - C` per channel. Clamping R and B at `floor`
+removes the envelope detector's rectified noise floor (~0.03 of white with `consumer`, which would
+otherwise shift black toward magenta by about 30 levels of 255); as a consequence, weak carriers
+lose chroma near the noise floor and dim greys lean green (~0.05 greener at 18 % grey, ~0.012 at
+50 % grey, 0 at white).
+
+**Carrier-loss green in highlights and trails.**
+- **Highlights:** Two stops over white (`BEYOND_BEAM_STOPS = 2.0`) put every element past the
+  beam (`2.0x` peak current), flattening the line signal at the beam current with no carrier: red
+  and blue decode near 0, green decodes near 4, and the gamma-corrected picture turns green. One
+  stop over (`PEAKS_BEYOND_STOPS = 1.0`) clips only the stripe peaks, stopping red and blue near 1
+  where they would be 2.
+- **Trails:** Because red and blue share one carrier on one target, their lag trails keep the same
+  share of their lit reading (unlike three PbO tubes, where blue's traps hold longer). Because
+  capacitive lag is longer at lower current, the stripe troughs linger more than the peaks, so the
+  carrier decays before the luminance and a trail turns greener than the picture it follows (on a
+  `vidicon`'s second dark frame, ~0.42 of its lit green against ~0.02 of its lit red and blue).
+
+**Measured figures (`docs/design/CAMERA_STRIPE.md` and `tests/stripe_tube.rs`).**
+- Alignment at 525 lines (`consumer`): `saticon` `carrier_gain` ~1.83 (`white` within 0.3 % of 1,
+  `floor` ~0.028 in R and B and ~-0.028 in G; `tests/stripe_tube.rs` checks `white` within `0.03`
+  of 1.0 and `floor[R/B]` in `(0, 0.1)`); `vidicon` `carrier_gain` ~2.8.
+- Line-signal carrier on a `saticon` red field: weakened to `0.61` against a `0.67` spot response
+  (checked within `0.75..=1.02` of spot response), with off-carrier (`+- 1.0 MHz`) `<= 0.03`.
+- Grey, luminance and colour bars (`saticon`, `consumer`): white within `0.015`; 50 % grey channel
+  spread `<= 0.025` and within `0.03` of `oetf(0.5)`; stripe vs three-tube luminance on 18 % and
+  50 % grey within `0.01`; 75 % colour bars keep hue within `5.0 deg`, saturation ratio in
+  `0.9..=1.05`, and linear luminance within `0.015`.
+- Bandwidth (`saticon`, `stripe_colour`): 10-90 % colour step `0.4..=1.3 us`, luminance step
+  `0.05..=0.35 us`, colour at least `2.5x` wider than luminance.
+- Lag (`vidicon` dark frames 1 and 2 after 12 frames of 0.5 grey): `|R - B| <= 0.02` and
+  `G - max(R, B) >= 0.1` (contrast: three-tube `plumbicon` has `B >= 1.3 * R`).
+- Highlights (`saticon`): at 2 stops over white, decoded `R, B <= 0.1`, `G >= 3.0`, and
+  gamma-corrected `G - R >= 0.5`, `G - B >= 0.5`; at 1 stop over, decoded `R, B <= 1.3`,
+  `G >= 2.2`.
+- The 625-line PAL engine (`4.95` samples per carrier cycle) runs the same alignment and meets the
+  same white and 50 % grey bounds.
+
 ## Known limits
 
 * The slow tail with light bias is too short: at 200 ms the model leaves under 1 % where the

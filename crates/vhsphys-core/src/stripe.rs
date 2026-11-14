@@ -17,6 +17,9 @@ pub const LUMA_BAND_HZ: f64 = 2.8e6;
 pub const COLOUR_BAND_HZ: f64 = 0.5e6;
 /// Chroma band-pass half-width at -3 dB around `STRIPE_CARRIER_HZ`, Hz.
 pub const CHROMA_HALF_WIDTH_HZ: f64 = 0.5e6;
+/// Mean of `T_R + T_G + T_B` over the stripes: the target light of white, which gives the tube's peak
+/// current on average.
+pub const STRIPE_WHITE_LIGHT: f64 = 2.0;
 
 /// Frequency-sampling grid size for the linear-phase Gaussian FIRs.
 const FIR_GRID: usize = 4096;

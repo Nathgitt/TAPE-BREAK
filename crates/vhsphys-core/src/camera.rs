@@ -15,6 +15,7 @@
 
 use super::camera_processing::{CameraVideo, HeadAmplifier, Processing, VideoProcessor};
 use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, FH, FRAME_RATE, FS_BB};
+use super::stripe::{optical_lowpass, target_light, StripeDecoder, STRIPE_WHITE_LIGHT};
 use super::video::{encode_from_rgb, row_to_line, Baseband, Frame};
 use crate::tube::{
     oetf_inverse, photo_current, scan, Dbc, TubeChannel, TubeKind, ACT_BEAM_NA, ACT_FLYBACK_S,
@@ -62,6 +63,32 @@ fn flyback_time_s(n: i64, r: usize) -> f64 {
     n as f64 / FRAME_RATE + line as f64 / FH
 }
 
+/// How the camera's tubes see colour (config `layout`: `three-tube`, `stripe`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Layout {
+    #[default]
+    ThreeTube,
+    Stripe,
+}
+
+/// The slot of `TargetSignal` that carries the stripe camera's one target.
+pub const STRIPE_SLOT: usize = 1;
+/// Frames of white card read before the alignment measures it.
+pub const ALIGN_FRAMES: usize = 8;
+/// Head-amplifier frame indices of the alignment's white card and capped lens.
+pub const ALIGN_WHITE_FRAME: i64 = -1;
+pub const ALIGN_CAPPED_FRAME: i64 = -2;
+
+/// The stripe camera's alignment: the decoder's carrier gain, and per channel `[R, G, B]` the decoded
+/// level of a capped lens (`floor`) and of a white card above it (`white`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripeAlignment {
+    pub carrier_gain: f64,
+    pub floor: [f64; 3],
+    pub white: [f64; 3],
+}
+
 /// The camera: which pickup tubes it has and how it is set up.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -69,6 +96,8 @@ pub struct CameraParams {
     /// The pickup tube (`off`, `plumbicon`, `plumbicon-bias`, `plumbicon-act`, `plumbicon-dbc`,
     /// `vidicon`, `newvicon`, `saticon`, `chalnicon`).
     pub tube: TubeKind,
+    /// How the camera's tubes see colour (`three-tube`, `stripe`).
+    pub layout: Layout,
     /// Exposure of the scene on the tube targets, in stops (powers of two of the light).
     /// Positive values overexpose: highlights then carry more than the beam can take off.
     pub iris_stops: f64,
@@ -87,6 +116,7 @@ impl Default for CameraParams {
     fn default() -> Self {
         Self {
             tube: TubeKind::Off,
+            layout: Layout::default(),
             iris_stops: 0.0,
             beam_ratio: BEAM_RATIO_DEFAULT,
             blooming: 0.0,
@@ -914,13 +944,158 @@ impl UniformColumn {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn scan_channel_dispatch<F>(
+    ch_idx: usize,
+    ch: &TubeChannel,
+    w_ch: &[RowWeights],
+    frame: i64,
+    q_all: &mut [f64],
+    t_all: &mut [f64],
+    traps_all: &mut [[f64; MAX_TRAPS]],
+    raw_all: &mut [f64],
+    photo: &F,
+) where
+    F: Fn(usize, usize, usize, f64) -> f64 + Sync + ?Sized,
+{
+    let n_sub = SUB_ROWS * ACTIVE_H;
+    if ch.bending > 0.0 {
+        scan_channel_row_by_row(
+            ch_idx,
+            ch,
+            w_ch,
+            frame,
+            q_all,
+            t_all,
+            traps_all,
+            raw_all,
+            photo,
+        );
+    } else if traps_all.is_empty() {
+        q_all
+            .par_chunks_mut(n_sub)
+            .zip(t_all.par_chunks_mut(n_sub))
+            .zip(raw_all.par_chunks_mut(ACTIVE_H))
+            .enumerate()
+            .for_each(|(x, ((q_col, t_col), raw_col))| {
+                scan_column(
+                    ch_idx,
+                    ch,
+                    w_ch,
+                    frame,
+                    x,
+                    q_col,
+                    t_col,
+                    &mut [],
+                    raw_col,
+                    photo,
+                );
+            });
+    } else {
+        q_all
+            .par_chunks_mut(n_sub)
+            .zip(t_all.par_chunks_mut(n_sub))
+            .zip(traps_all.par_chunks_mut(n_sub))
+            .zip(raw_all.par_chunks_mut(ACTIVE_H))
+            .enumerate()
+            .for_each(|(x, (((q_col, t_col), trap_col), raw_col))| {
+                scan_column(
+                    ch_idx,
+                    ch,
+                    w_ch,
+                    frame,
+                    x,
+                    q_col,
+                    t_col,
+                    trap_col,
+                    raw_col,
+                    photo,
+                );
+            });
+    }
+}
+
+/// Subtract dark current and scale slot `STRIPE_SLOT` to the decoder scale where white averages `STRIPE_WHITE_LIGHT`.
+fn clamp_and_scale(sig: &TargetSignal, black: f64, peak_na: f64) -> Vec<Vec<f32>> {
+    let scale = STRIPE_WHITE_LIGHT / peak_na;
+    sig.rows
+        .iter()
+        .map(|chans| {
+            chans[STRIPE_SLOT]
+                .iter()
+                .map(|&i| ((i as f64 - black) * scale) as f32)
+                .collect()
+        })
+        .collect()
+}
+
+/// Mean of each decoded channel over the middle half of the rows and of the line.
+fn centre_mean(rows: &[[Vec<f32>; 3]]) -> [f64; 3] {
+    let mut sum = [0.0; 3];
+    let mut n = 0.0;
+    for row in &rows[ACTIVE_H / 4..3 * ACTIVE_H / 4] {
+        for x in ACTIVE_W / 4..3 * ACTIVE_W / 4 {
+            for k in 0..3 {
+                sum[k] += row[k][x] as f64;
+            }
+            n += 1.0;
+        }
+    }
+    sum.map(|s| s / n)
+}
+
+/// Align the stripe camera on a white card and a capped lens without modifying `base`.
+fn align_stripe(base: &CameraTube) -> (StripeAlignment, StripeDecoder) {
+    let mut card = base.clone();
+    card.set_iris_stops(0.0);
+    let mut white_frame = Frame::new(ACTIVE_W, ACTIVE_H);
+    white_frame.rgb.fill(255);
+    let mut white_sig = card.read(&white_frame, &white_frame);
+    for _ in 1..ALIGN_FRAMES {
+        white_sig = card.read(&white_frame, &white_frame);
+    }
+    card.head_amp.amplify(&mut white_sig, ALIGN_WHITE_FRAME);
+
+    let dark_val = base.black[STRIPE_SLOT] as f32;
+    let mut capped_sig = TargetSignal {
+        rows: (0..ACTIVE_H)
+            .map(|_| {
+                let mut chans = [Vec::new(), Vec::new(), Vec::new()];
+                chans[STRIPE_SLOT] = vec![dark_val; ACTIVE_W];
+                chans
+            })
+            .collect(),
+    };
+    base.head_amp.amplify(&mut capped_sig, ALIGN_CAPPED_FRAME);
+
+    let peak_na = base.channels[STRIPE_SLOT].peak_signal_na;
+    let white_s = clamp_and_scale(&white_sig, base.black[STRIPE_SLOT], peak_na);
+    let capped_s = clamp_and_scale(&capped_sig, base.black[STRIPE_SLOT], peak_na);
+
+    let dec1 = StripeDecoder::new(1.0);
+    let w1 = centre_mean(&dec1.decode(&white_s));
+    let c1 = centre_mean(&dec1.decode(&capped_s));
+    let a = 0.5 * ((w1[0] - c1[0]) + (w1[2] - c1[2]));
+    let carrier_gain = 1.0 / a;
+
+    let decoder = StripeDecoder::new(carrier_gain);
+    let w = centre_mean(&decoder.decode(&white_s));
+    let c = centre_mean(&decoder.decode(&capped_s));
+    let floor = c;
+    let white = [w[0] - c[0], w[1] - c[1], w[2] - c[2]];
+    (StripeAlignment { carrier_gain, floor, white }, decoder)
+}
+
 /// The pickup tubes of the camera with the charge and last-read time on every sub-element of
 /// their targets.
 #[derive(Clone)]
 pub struct CameraTube {
+    layout: Layout,
     channels: [TubeChannel; 3],
     /// Signal of a dark target at equilibrium, nA: the level the camera clamps to black.
     black: [f64; 3],
+    /// Linear scene light (exposure included) for each 8-bit input level.
+    linear_light: [f64; 256],
     /// Photo current for each input level, nA, per channel: the iris, the inverse gamma
     /// corrector and the target's transfer exponent, evaluated once for the 256 levels.
     photo: [[f64; 256]; 3],
@@ -936,12 +1111,14 @@ pub struct CameraTube {
     traps: [Vec<[f64; MAX_TRAPS]>; 3],
     /// Pre-spot signal scratch per channel, column-major (`x * ACTIVE_H + r`).
     raw_cols: [Vec<f64>; 3],
-    /// Held photocurrent map of the previous frame's field 1 (`ACTIVE_H x ACTIVE_W x 3`), nA.
-    /// Empty before the first `read`, which holds the first picture over `t < 0`.
+    /// Held photocurrent map of the previous frame's field 1 (`ACTIVE_H x ACTIVE_W x 3` for
+    /// `ThreeTube`, `ACTIVE_H x ACTIVE_W` for `Stripe`), nA. Empty before the first `read`.
     prev_f1_photo: Vec<f64>,
     frame: i64,
     head_amp: HeadAmplifier,
     processor: VideoProcessor,
+    alignment: Option<StripeAlignment>,
+    decoder: Option<StripeDecoder>,
 }
 
 impl CameraTube {
@@ -954,54 +1131,105 @@ impl CameraTube {
         for ch in &mut channels {
             ch.bending = bending;
         }
+        if params.layout == Layout::Stripe {
+            channels = [channels[STRIPE_SLOT]; 3];
+        }
         let exposure = params.iris_stops.exp2();
+        let linear_light: [f64; 256] =
+            std::array::from_fn(|v| oetf_inverse(v as f64 / 255.0) * exposure);
         let n_sub = SUB_ROWS * ACTIVE_H;
 
-        let weights: [Vec<RowWeights>; 3] =
-            std::array::from_fn(|ch| build_vertical_weights(channels[ch].sigma_v_lines));
-        let horiz: [(usize, Vec<f64>); 3] =
-            std::array::from_fn(|ch| build_horizontal_kernel(channels[ch].sigma_h_s));
+        let (weights, horiz) = match params.layout {
+            Layout::ThreeTube => (
+                std::array::from_fn(|ch| build_vertical_weights(channels[ch].sigma_v_lines)),
+                std::array::from_fn(|ch| build_horizontal_kernel(channels[ch].sigma_h_s)),
+            ),
+            Layout::Stripe => {
+                let mut weights: [Vec<RowWeights>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+                let mut horiz: [(usize, Vec<f64>); 3] =
+                    [(0, Vec::new()), (0, Vec::new()), (0, Vec::new())];
+                weights[STRIPE_SLOT] = build_vertical_weights(channels[STRIPE_SLOT].sigma_v_lines);
+                horiz[STRIPE_SLOT] = build_horizontal_kernel(channels[STRIPE_SLOT].sigma_h_s);
+                (weights, horiz)
+            }
+        };
 
         let mut black = [0.0; 3];
         let mut photo = [[0.0; 256]; 3];
-        let mut charge: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
-        let mut last_t: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; ACTIVE_W * n_sub]);
-        let mut traps: [Vec<[f64; MAX_TRAPS]>; 3] = std::array::from_fn(|_| Vec::new());
+        let mut charge: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut last_t: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut traps: [Vec<[f64; MAX_TRAPS]>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut raw_cols: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
 
-        for k in 0..3 {
-            let settled = UniformColumn::new(&channels[k]);
+        let init_slot = |ch: &TubeChannel,
+                         charge_k: &mut Vec<f64>,
+                         last_t_k: &mut Vec<f64>,
+                         traps_k: &mut Vec<[f64; MAX_TRAPS]>,
+                         raw_k: &mut Vec<f64>|
+         -> f64 {
+            let settled = UniformColumn::new(ch);
             let q_col = settled.charge;
             let t_col = settled.last_t;
             let tr_col = settled.traps;
-            let row_dark = settled.dark;
-            black[k] = row_dark.iter().sum::<f64>() / ACTIVE_H as f64;
+            let dark = settled.dark.iter().sum::<f64>() / ACTIVE_H as f64;
+            *charge_k = vec![0.0; ACTIVE_W * n_sub];
+            *last_t_k = vec![0.0; ACTIVE_W * n_sub];
             if !tr_col.is_empty() {
-                traps[k] = vec![[0.0; MAX_TRAPS]; ACTIVE_W * n_sub];
+                *traps_k = vec![[0.0; MAX_TRAPS]; ACTIVE_W * n_sub];
             }
+            *raw_k = vec![0.0; ACTIVE_W * ACTIVE_H];
             for x in 0..ACTIVE_W {
                 let off = x * n_sub;
-                charge[k][off..off + n_sub].copy_from_slice(&q_col);
+                charge_k[off..off + n_sub].copy_from_slice(&q_col);
                 let dx_s = (x as f64 - (ACTIVE_W / 2) as f64) / FS_BB;
                 for i in 0..n_sub {
-                    last_t[k][off + i] = t_col[i] + dx_s;
+                    last_t_k[off + i] = t_col[i] + dx_s;
                 }
                 if !tr_col.is_empty() {
-                    traps[k][off..off + n_sub].copy_from_slice(&tr_col);
+                    traps_k[off..off + n_sub].copy_from_slice(&tr_col);
                 }
             }
+            dark
+        };
+
+        match params.layout {
+            Layout::ThreeTube => {
+                for k in 0..3 {
+                    black[k] = init_slot(
+                        &channels[k],
+                        &mut charge[k],
+                        &mut last_t[k],
+                        &mut traps[k],
+                        &mut raw_cols[k],
+                    );
+                }
+            }
+            Layout::Stripe => {
+                let dark = init_slot(
+                    &channels[STRIPE_SLOT],
+                    &mut charge[STRIPE_SLOT],
+                    &mut last_t[STRIPE_SLOT],
+                    &mut traps[STRIPE_SLOT],
+                    &mut raw_cols[STRIPE_SLOT],
+                );
+                black = [dark; 3];
+            }
+        }
+        for k in 0..3 {
             for (v, p) in photo[k].iter_mut().enumerate() {
-                *p = photo_current(&channels[k], oetf_inverse(v as f64 / 255.0) * exposure);
+                *p = photo_current(&channels[k], linear_light[v]);
             }
         }
 
-        let raw_cols = std::array::from_fn(|_| vec![0.0; ACTIVE_W * ACTIVE_H]);
         let prev_f1_photo = Vec::new();
         let spec = params.processing.spec();
         let head_amp = HeadAmplifier::new(&spec.head_amp, seed);
         let processor = VideoProcessor::new(params.processing, &channels, black);
-        Some(Self {
+        let mut cam = Self {
+            layout: params.layout,
             channels,
             black,
+            linear_light,
             photo,
             weights,
             horiz,
@@ -1013,12 +1241,36 @@ impl CameraTube {
             frame: 0,
             head_amp,
             processor,
-        })
+            alignment: None,
+            decoder: None,
+        };
+        if params.layout == Layout::Stripe {
+            let (alignment, decoder) = align_stripe(&cam);
+            cam.processor = VideoProcessor::with_levels(
+                params.processing,
+                &cam.channels,
+                alignment.floor,
+                alignment.white,
+            );
+            cam.alignment = Some(alignment);
+            cam.decoder = Some(decoder);
+        }
+        Some(cam)
     }
 
     /// The stage for `params` with `seed = 0`, or `None` when the camera has no tube.
     pub fn new(params: &CameraParams) -> Option<Self> {
         Self::seeded(params, 0)
+    }
+
+    /// How the camera's tubes see colour.
+    pub fn layout(&self) -> Layout {
+        self.layout
+    }
+
+    /// The stripe camera's alignment, or `None` with three tubes.
+    pub fn stripe_alignment(&self) -> Option<StripeAlignment> {
+        self.alignment
     }
 
     /// Settled dark-equilibrium reading per channel, nA (the camera's black clamp).
@@ -1029,9 +1281,12 @@ impl CameraTube {
     /// Update the iris exposure setting for subsequent frames.
     pub fn set_iris_stops(&mut self, iris_stops: f64) {
         let exposure = iris_stops.exp2();
+        for (v, l) in self.linear_light.iter_mut().enumerate() {
+            *l = oetf_inverse(v as f64 / 255.0) * exposure;
+        }
         for k in 0..3 {
             for (v, p) in self.photo[k].iter_mut().enumerate() {
-                *p = photo_current(&self.channels[k], oetf_inverse(v as f64 / 255.0) * exposure);
+                *p = photo_current(&self.channels[k], self.linear_light[v]);
             }
         }
     }
@@ -1056,12 +1311,45 @@ impl CameraTube {
     where
         F: Fn(usize, usize, usize, f64) -> f64 + Sync + ?Sized,
     {
-        let n_sub = SUB_ROWS * ACTIVE_H;
         let frame = self.frame;
         let channels = &self.channels;
         let weights = &self.weights;
         let horiz = &self.horiz;
         let raw_cols = &mut self.raw_cols;
+
+        if self.layout == Layout::Stripe {
+            scan_channel_dispatch(
+                STRIPE_SLOT,
+                &channels[STRIPE_SLOT],
+                &weights[STRIPE_SLOT],
+                frame,
+                &mut self.charge[STRIPE_SLOT],
+                &mut self.last_t[STRIPE_SLOT],
+                &mut self.traps[STRIPE_SLOT],
+                &mut raw_cols[STRIPE_SLOT],
+                photo,
+            );
+            let (radius, ref kernel) = horiz[STRIPE_SLOT];
+            let raw_ch = &raw_cols[STRIPE_SLOT];
+            let rows: Vec<[Vec<f32>; 3]> = (0..ACTIVE_H)
+                .into_par_iter()
+                .map_init(
+                    || vec![0.0; ACTIVE_W],
+                    |scratch, r| {
+                        for x in 0..ACTIVE_W {
+                            scratch[x] = raw_ch[x * ACTIVE_H + r];
+                        }
+                        let mut out = vec![0.0f32; ACTIVE_W];
+                        convolve_horizontal(scratch, radius, kernel, &mut out);
+                        let mut chans = [Vec::new(), Vec::new(), Vec::new()];
+                        chans[STRIPE_SLOT] = out;
+                        chans
+                    },
+                )
+                .collect();
+            self.frame += 1;
+            return TargetSignal { rows };
+        }
 
         self.charge
             .par_iter_mut()
@@ -1070,62 +1358,17 @@ impl CameraTube {
             .zip(raw_cols.par_iter_mut())
             .enumerate()
             .for_each(|(ch_idx, (((q_all, t_all), traps_all), raw_all))| {
-                let ch = &channels[ch_idx];
-                let w_ch = &weights[ch_idx];
-                if ch.bending > 0.0 {
-                    scan_channel_row_by_row(
-                        ch_idx,
-                        ch,
-                        w_ch,
-                        frame,
-                        q_all,
-                        t_all,
-                        traps_all,
-                        raw_all,
-                        photo,
-                    );
-                } else if traps_all.is_empty() {
-                    q_all
-                        .par_chunks_mut(n_sub)
-                        .zip(t_all.par_chunks_mut(n_sub))
-                        .zip(raw_all.par_chunks_mut(ACTIVE_H))
-                        .enumerate()
-                        .for_each(|(x, ((q_col, t_col), raw_col))| {
-                            scan_column(
-                                ch_idx,
-                                ch,
-                                w_ch,
-                                frame,
-                                x,
-                                q_col,
-                                t_col,
-                                &mut [],
-                                raw_col,
-                                photo,
-                            );
-                        });
-                } else {
-                    q_all
-                        .par_chunks_mut(n_sub)
-                        .zip(t_all.par_chunks_mut(n_sub))
-                        .zip(traps_all.par_chunks_mut(n_sub))
-                        .zip(raw_all.par_chunks_mut(ACTIVE_H))
-                        .enumerate()
-                        .for_each(|(x, (((q_col, t_col), trap_col), raw_col))| {
-                            scan_column(
-                                ch_idx,
-                                ch,
-                                w_ch,
-                                frame,
-                                x,
-                                q_col,
-                                t_col,
-                                trap_col,
-                                raw_col,
-                                photo,
-                            );
-                        });
-                }
+                scan_channel_dispatch(
+                    ch_idx,
+                    &channels[ch_idx],
+                    &weights[ch_idx],
+                    frame,
+                    q_all,
+                    t_all,
+                    traps_all,
+                    raw_all,
+                    photo,
+                );
             });
 
         let rows: Vec<[Vec<f32>; 3]> = (0..ACTIVE_H)
@@ -1151,7 +1394,7 @@ impl CameraTube {
         TargetSignal { rows }
     }
 
-    /// Convert an RGB frame into per-element photocurrents (nA).
+    /// Convert an RGB frame into per-element photocurrents (nA) for three-tube mode.
     fn frame_photo(&self, frame: &Frame) -> Vec<f64> {
         let expected = ACTIVE_W * ACTIVE_H * 3;
         assert_eq!(frame.rgb.len(), expected, "the camera stage takes frames of the engine's active size");
@@ -1168,13 +1411,55 @@ impl CameraTube {
         out
     }
 
+    /// Convert an RGB frame into per-element photocurrents (nA) through the optical low-pass and stripe filter.
+    fn stripe_frame_photo(&self, frame: &Frame) -> Vec<f64> {
+        let expected = ACTIVE_W * ACTIVE_H * 3;
+        assert_eq!(frame.rgb.len(), expected, "the camera stage takes frames of the engine's active size");
+        let mut out = vec![0.0; ACTIVE_W * ACTIVE_H];
+        let linear = &self.linear_light;
+        let ch = &self.channels[STRIPE_SLOT];
+        let row_rgb_len = ACTIVE_W * 3;
+        out.par_chunks_mut(ACTIVE_W)
+            .zip(frame.rgb.par_chunks(row_rgb_len))
+            .enumerate()
+            .for_each(|(r, (dst, src))| {
+                let lp: [Vec<f64>; 3] = std::array::from_fn(|c| {
+                    let row: Vec<f64> = (0..ACTIVE_W).map(|x| linear[src[x * 3 + c] as usize]).collect();
+                    optical_lowpass(&row)
+                });
+                for x in 0..ACTIVE_W {
+                    let light = target_light(r, x, [lp[0][x], lp[1][x], lp[2][x]]);
+                    dst[x] = photo_current(ch, light / STRIPE_WHITE_LIGHT);
+                }
+            });
+        out
+    }
+
     /// Read one frame from pictures: field 0's interval sees `f0`, field 1's sees `f1`.
     pub fn read(&mut self, f0: &Frame, f1: &Frame) -> TargetSignal {
+        let t_f0 = self.frame as f64 / FRAME_RATE;
+        let t_f1 = (self.frame as f64 + 0.5) / FRAME_RATE;
+        if self.layout == Layout::Stripe {
+            let cur_f0 = self.stripe_frame_photo(f0);
+            let cur_f1 = if std::ptr::eq(f0, f1) { None } else { Some(self.stripe_frame_photo(f1)) };
+            let f1_ref: &[f64] = cur_f1.as_deref().unwrap_or(&cur_f0);
+            let prev_f1 = std::mem::take(&mut self.prev_f1_photo);
+            let sig = self.read_currents_impl(&|_ch, r, x, t| {
+                let idx = r * ACTIVE_W + x;
+                if t < t_f0 && !prev_f1.is_empty() {
+                    prev_f1[idx]
+                } else if t < t_f1 {
+                    cur_f0[idx]
+                } else {
+                    f1_ref[idx]
+                }
+            });
+            self.prev_f1_photo = cur_f1.unwrap_or(cur_f0);
+            return sig;
+        }
         let cur_f0 = self.frame_photo(f0);
         let cur_f1 = if std::ptr::eq(f0, f1) { None } else { Some(self.frame_photo(f1)) };
         let f1_ref: &[f64] = cur_f1.as_deref().unwrap_or(&cur_f0);
-        let t_f0 = self.frame as f64 / FRAME_RATE;
-        let t_f1 = (self.frame as f64 + 0.5) / FRAME_RATE;
         let prev_f1 = std::mem::take(&mut self.prev_f1_photo);
         let sig = self.read_currents_impl(&|ch, r, x, t| {
             let idx = (r * ACTIVE_W + x) * 3 + ch;
@@ -1190,9 +1475,43 @@ impl CameraTube {
         sig
     }
 
+    fn stripe_decode_raw(&mut self, f0: &Frame, f1: &Frame) -> Vec<[Vec<f32>; 3]> {
+        let frame_idx = self.frame;
+        let mut sig = self.read(f0, f1);
+        self.head_amp.amplify(&mut sig, frame_idx);
+        let s = clamp_and_scale(&sig, self.black[STRIPE_SLOT], self.channels[STRIPE_SLOT].peak_signal_na);
+        self.decoder.as_ref().expect("stripe decoder").decode(&s)
+    }
+
+    /// The stripe camera's colour of one frame: read, head amplifier, clamp and scale, decoder, then
+    /// `(v - floor) / white` per channel. That is linear light with white 1.0 (in the tube's own
+    /// transfer for a tube that linearises), before linearise, knee, gamma, aperture correction and clip.
+    /// Advances the frame as `video` does. `None` with three tubes, which then reads nothing.
+    pub fn stripe_colour(&mut self, f0: &Frame, f1: &Frame) -> Option<Vec<[Vec<f32>; 3]>> {
+        if self.layout != Layout::Stripe {
+            return None;
+        }
+        let alignment = self.alignment?;
+        let mut rows = self.stripe_decode_raw(f0, f1);
+        for row in &mut rows {
+            for k in 0..3 {
+                let floor = alignment.floor[k];
+                let white = alignment.white[k];
+                for v in &mut row[k] {
+                    *v = ((*v as f64 - floor) / white) as f32;
+                }
+            }
+        }
+        Some(rows)
+    }
+
     /// Scan one frame from pictures (`f0` for field 0, `f1` for field 1), amplify and process
     /// the line signal through the camera electronics.
     pub fn video(&mut self, f0: &Frame, f1: &Frame) -> CameraVideo {
+        if self.layout == Layout::Stripe {
+            let rows = self.stripe_decode_raw(f0, f1);
+            return self.processor.process(&TargetSignal { rows });
+        }
         let frame_idx = self.frame;
         let mut sig = self.read(f0, f1);
         self.head_amp.amplify(&mut sig, frame_idx);

@@ -324,12 +324,23 @@ pub struct VideoProcessor {
 impl VideoProcessor {
     /// `black` is the clamp level per channel, nA; `k_h` from the green channel's spot.
     pub fn new(processing: Processing, channels: &[TubeChannel; 3], black: [f64; 3]) -> Self {
+        let peak = std::array::from_fn(|k| channels[k].peak_signal_na);
+        Self::with_levels(processing, channels, black, peak)
+    }
+
+    /// As `new` with the gain's level per channel given: `new(p, ch, black)` is
+    /// `with_levels(p, ch, black, [ch[0].peak_signal_na, ch[1].peak_signal_na, ch[2].peak_signal_na])`.
+    pub fn with_levels(
+        processing: Processing,
+        channels: &[TubeChannel; 3],
+        black: [f64; 3],
+        peak: [f64; 3],
+    ) -> Self {
         let spec = processing.spec();
-        let peak_na = std::array::from_fn(|k| channels[k].peak_signal_na);
         let inv_gamma = std::array::from_fn(|k| channels[k].linearise.then(|| 1.0 / channels[k].gamma));
         let knee_slope = spec.knee_range.map(|r| (gamma_inverse(WHITE_CLIP) - 1.0) / (r - 1.0));
         let k_h = horizontal_gain(spec.aperture.delay_s, channels[1].sigma_h_s, spec.head_amp.band_hz);
-        Self { spec, peak_na, black_na: black, inv_gamma, knee_slope, k_h }
+        Self { spec, peak_na: peak, black_na: black, inv_gamma, knee_slope, k_h }
     }
 
     /// Horizontal aperture gain `k_h` for this processor.
