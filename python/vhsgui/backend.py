@@ -26,9 +26,11 @@ from vhsgui.model import (
     LOG_CHARS,
     PREVIEW_MAX_SIZE,
     AUDIO_MODES,
+    CAMERA_BEAM_OFF_RANGE,
     CAMERA_BEAM_RATIO_RANGE,
     CAMERA_BLOOMING_RANGE,
     CAMERA_COLD_START_RANGE,
+    CAMERA_IDLE_RANGE,
     CAMERA_LAYOUTS,
     CAMERA_PROCESSING,
     CAMERA_TEMPERATURE_RANGE,
@@ -395,6 +397,16 @@ def _cold_start_in_range(value: Any) -> bool:
     return _in_range(value, CAMERA_COLD_START_RANGE)
 
 
+def _idle_in_range(value: Any) -> bool:
+    """True for a real number inside CAMERA_IDLE_RANGE."""
+    return _in_range(value, CAMERA_IDLE_RANGE)
+
+
+def _beam_off_in_range(value: Any) -> bool:
+    """True for a real number inside CAMERA_BEAM_OFF_RANGE."""
+    return _in_range(value, CAMERA_BEAM_OFF_RANGE)
+
+
 def merge_config(look: Look) -> str:
     """TOML for the core: the condition controls with the advanced tables merged on top."""
     try:
@@ -431,6 +443,14 @@ def merge_config(look: Look) -> str:
         raise GuiError(
             f"The camera cold-start temperature must be between {CAMERA_COLD_START_RANGE[0]:g} and {CAMERA_COLD_START_RANGE[1]:g} °C"
         )
+    if not _idle_in_range(look.camera_idle_s):
+        raise GuiError(
+            f"The camera lens cap time must be between {CAMERA_IDLE_RANGE[0]:g} and {CAMERA_IDLE_RANGE[1]:g} s"
+        )
+    if not _beam_off_in_range(look.camera_beam_off_s):
+        raise GuiError(
+            f"The camera beam-off time must be between {CAMERA_BEAM_OFF_RANGE[0]:g} and {CAMERA_BEAM_OFF_RANGE[1]:g} s"
+        )
     doc: dict[str, Any] = {"condition": dict(look.condition)} if look.condition else {}
     if look.signal != DEFAULT_SIGNAL:
         doc["composite"] = {"enabled": True, "decoder": look.signal}
@@ -463,6 +483,8 @@ def save_look(look: Look) -> str:
         "camera_blooming": float(look.camera_blooming),
         "camera_cold_start": bool(look.camera_cold_start),
         "camera_cold_start_c": float(look.camera_cold_start_c),
+        "camera_idle_s": float(look.camera_idle_s),
+        "camera_beam_off_s": float(look.camera_beam_off_s),
         "advanced": look.advanced,
     }
     lines = ["[look]"] + [f"{key} = {_toml_value(value)}" for key, value in fields.items()]
@@ -545,6 +567,16 @@ def load_look(text: str) -> Look:
         raise GuiError(
             f"Look file: camera_cold_start_c must be a number from {CAMERA_COLD_START_RANGE[0]:g} to {CAMERA_COLD_START_RANGE[1]:g}"
         )
+    camera_idle_s = section.get("camera_idle_s", defaults.camera_idle_s)
+    if not _idle_in_range(camera_idle_s):
+        raise GuiError(
+            f"Look file: camera_idle_s must be a number from {CAMERA_IDLE_RANGE[0]:g} to {CAMERA_IDLE_RANGE[1]:g}"
+        )
+    camera_beam_off_s = section.get("camera_beam_off_s", defaults.camera_beam_off_s)
+    if not _beam_off_in_range(camera_beam_off_s):
+        raise GuiError(
+            f"Look file: camera_beam_off_s must be a number from {CAMERA_BEAM_OFF_RANGE[0]:g} to {CAMERA_BEAM_OFF_RANGE[1]:g}"
+        )
     advanced = section.get("advanced", defaults.advanced)
     if not isinstance(advanced, str):
         raise GuiError("Look file: advanced must be a string")
@@ -576,6 +608,8 @@ def load_look(text: str) -> Look:
         camera_blooming=float(camera_blooming),
         camera_cold_start=camera_cold_start,
         camera_cold_start_c=float(camera_cold_start_c),
+        camera_idle_s=float(camera_idle_s),
+        camera_beam_off_s=float(camera_beam_off_s),
     )
 
 
@@ -625,6 +659,10 @@ def run_args(binary: Path | str, req: RunRequest, config_path: Path | str | None
             args += ["--camera-blooming", repr(float(req.look.camera_blooming))]
         if req.look.camera_cold_start:
             args += ["--camera-cold-start", repr(float(req.look.camera_cold_start_c))]
+        if req.look.camera_idle_s > 0:
+            args += ["--camera-idle", repr(float(req.look.camera_idle_s))]
+        if req.look.camera_beam_off_s > 0:
+            args += ["--camera-beam-off", repr(float(req.look.camera_beam_off_s))]
     if config_path is not None:
         args += ["--config", str(config_path)]
     frame, seconds = snap_start(req.start, req.look.standard)

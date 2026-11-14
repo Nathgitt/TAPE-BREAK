@@ -288,6 +288,12 @@ struct RunArgs {
     /// Beam bending in the camera tubes: how strongly a charged highlight pulls the beam towards itself and blooms (0 = off, the default).
     #[arg(long, value_name = "N", allow_negative_numbers = true, value_parser = parse_blooming)]
     camera_blooming: Option<f64>,
+    /// Seconds the camera stands with its lens capped and the beam on before the shot: a cold camera warms up under the cap.
+    #[arg(long, value_name = "SECONDS", allow_negative_numbers = true, value_parser = parse_seconds)]
+    camera_idle: Option<f64>,
+    /// Seconds the camera's beam is held off at the start of the shot, lens open: the targets store the scene unread and the picture comes up with the beam.
+    #[arg(long, value_name = "SECONDS", allow_negative_numbers = true, value_parser = parse_seconds)]
+    camera_beam_off: Option<f64>,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -696,6 +702,12 @@ fn run(a: RunArgs) -> Result<()> {
     if let Some(b) = a.camera_blooming {
         sets.push(format!("camera.blooming={b:?}"));
     }
+    if let Some(v) = a.camera_idle {
+        sets.push(format!("camera.idle_s={v:?}"));
+    }
+    if let Some(v) = a.camera_beam_off {
+        sets.push(format!("camera.beam_off_s={v:?}"));
+    }
     sets.extend(a.sets.iter().cloned());
     let (text, sets, standard) = assemble_config(&file_text, &sets, a.standard)?;
     // A config with `[[generation]]` tables describes a rack: each generation names its own
@@ -1080,6 +1092,15 @@ fn parse_blooming(s: &str) -> Result<f64, String> {
     }
 }
 
+fn parse_seconds(s: &str) -> Result<f64, String> {
+    let v = s.parse::<f64>().map_err(|_| format!("'{s}' is not a number"))?;
+    if v.is_finite() && v >= 0.0 {
+        Ok(v)
+    } else {
+        Err("must be a number of seconds, 0 or more".into())
+    }
+}
+
 /// A number of generations: a whole number from 1 to `MAX_GENERATIONS`.
 fn parse_generations(answer: &str) -> Option<u8> {
     answer.parse::<u8>().ok().filter(|n| (1..=MAX_GENERATIONS).contains(n))
@@ -1378,6 +1399,8 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             camera_cold_start: None,
             camera_beam_ratio: None,
             camera_blooming: None,
+            camera_idle: None,
+            camera_beam_off: None,
             start: None,
             duration: None,
             frames: None,
