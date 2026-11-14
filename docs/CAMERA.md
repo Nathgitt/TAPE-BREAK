@@ -629,11 +629,18 @@ act per sub-element inside `integrate_sub_row` (`tube.rs`, `camera.rs`; contract
 `docs/design/CAMERA_RETENTION.md`, checks in `tests/camera_retention.rs`). Nothing is applied
 to the picture after scanning. Channels with `Collection::FULL`, `Burn::NONE` and
 `cold_offset_c == 0` (`newvicon` and `chalnicon` by default) run the unsplit rule bit-for-bit;
-otherwise each held piece of length `dt` is cut into `n = ceil(dt / RETENTION_STEP_S)` equal
-sub-steps (`RETENTION_STEP_S = 0.5e-3` s `[est]`) when collection is not `FULL` and either
-held charge `h > 0` or `q + (j + dark) dt > q_knee` (`q_knee = C (target_voltage_v - knee_v)`),
-and `n = 1` otherwise. When geometry black shading is enabled, `bias_na` and `dark_na_at(t)`
-both carry the element's `shade` factor.
+otherwise, when collection is not `FULL` and either held charge `h > 0` or
+`q + (j + dark) dt > q_knee` (`q_knee = C (target_voltage_v - knee_v)`), each held piece of
+length `dt` is cut into `n = min(max(1, ceil((j + dark) dt / (C HELD_STEP_V))),
+ceil(dt / RETENTION_STEP_S))` equal sub-steps (`HELD_STEP_V = 0.5` V `[DER]`,
+`RETENTION_STEP_S = 0.5e-3` s `[DER]`), advancing held charge by an exponential midpoint step
+with collection taken at the charge predicted for the middle of the sub-step; `n = 1`
+otherwise. Checked against a converged `1/16` ms reference (`tests/camera_retention_step.rs`),
+readings stay within `3.0e-5` of peak white without bias light and `1.1e-4` with it (against
+`1.9e-3` and `7.4e-3` for the old 0.5 ms step, and closer than the old step in every case
+measured), at 11 to 21 sub-steps a frame for a lit lead-oxide element at peak white (against
+about 70) and about 2.4 fps instead of 0.85 on the default camera `[DER]`. When geometry black
+shading is enabled, `bias_na` and `dark_na_at(t)` both carry the element's `shade` factor.
 
 **Held charge (`Collection`).** For lead oxide (all four Plumbicon kinds) and the Saticon,
 the layer voltage `V_l(q) = target_voltage_v - q / (capacitance_f * 1e9)` (`layer_voltage_v`)
@@ -687,7 +694,7 @@ light and dark current up to `plate_nas`. `idle(seconds)` caps the lens for
 `round(seconds * FRAME_RATE)` whole frames (`UniformColumn::frame` advances by `n`): with the
 beam on, traps, `h` and `b` evolve with `p = 0` and charge/timestamps shift to dark equilibrium;
 with the beam off, elements integrate dark current (in sub-steps of at most `1 s` when warming,
-midpoint dark current) up to the plate. `CameraParams::cold_start_c: Option<f64>` (default
+midpoint dark current, with held charge taking the same half-volt midpoint step) up to the plate. `CameraParams::cold_start_c: Option<f64>` (default
 `None`) sets `cold_offset_c = cold_start_c - temperature_c` on every channel in
 `CameraTube::seeded`. Session time `t` relaxes the faceplate offset as
 `T(t) - T_op = cold_offset_c * exp(-max(t, 0) / WARM_UP_S)` with `WARM_UP_S = 600.0` s `[est]`,

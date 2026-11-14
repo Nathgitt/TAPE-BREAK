@@ -345,6 +345,8 @@ pub struct TubeChannel {
     pub burn: Burn,
     /// Faceplate temperature at switch-on less operating temperature, deg C (`0.0` for none).
     pub cold_offset_c: f64,
+    /// Fixed retention sub-step, s, for a numerical reference; `0.0` takes the held-charge step.
+    pub retention_step_s: f64,
 }
 
 impl TubeChannel {
@@ -442,6 +444,7 @@ impl TubeKind {
                 collection,
                 burn,
                 cold_offset_c: 0.0,
+                retention_step_s: 0.0,
             };
             [ch, ch, ch]
         };
@@ -490,6 +493,7 @@ impl TubeKind {
                         collection: PBO_COLLECTION[k],
                         burn: Burn::NONE,
                         cold_offset_c: 0.0,
+                        retention_step_s: 0.0,
                     }
                 }))
             }

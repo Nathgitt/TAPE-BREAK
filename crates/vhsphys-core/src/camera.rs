@@ -36,11 +36,26 @@ pub const SUB_ROWS: usize = 4;
 
 /// Dark scanning time before frame 0; exceeds 30 times the slowest dark settling constant.
 const DARK_SETTLE_S: f64 = 10.0;
-/// Sub-step size (s) when integrating held charge below the layer collection knee.
+/// Shortest held-charge sub-step, s: an overloaded element never takes more sub-steps than this grid.
 pub const RETENTION_STEP_S: f64 = 0.5e-3;
+/// Layer swing per held-charge sub-step, V.
+pub const HELD_STEP_V: f64 = 0.5;
 const STATE_LEN: usize = MAX_TRAPS + 2;
 const HELD_IDX: usize = MAX_TRAPS;
 const BURN_IDX: usize = MAX_TRAPS + 1;
+
+thread_local! {
+    /// Held-charge sub-steps taken on this thread; read by `UniformColumn::held_steps`.
+    static HELD_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn held_steps_now() -> u64 {
+    HELD_STEPS.with(|c| c.get())
+}
+
+fn count_held_steps(n: u64) {
+    HELD_STEPS.with(|c| c.set(c.get() + n));
+}
 const IDENTITY_MATRIX: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 #[inline]
@@ -648,9 +663,11 @@ where
         f64::INFINITY
     };
 
+    let c_nas_per_v = ch.capacitance_f * 1e9;
     let mut q_cur = *q;
     let mut t0 = t_prev;
     let mut m = (t0 / field_s).floor() as i64;
+    let mut steps: u64 = 0;
     while t0 < t_now {
         let t_end = ((m + 1) as f64 * field_s).min(t_now);
         let dt_piece = t_end - t0;
@@ -667,13 +684,18 @@ where
             let dark_est = ch.dark_na_at(t_mid)
                 * shade
                 * if has_burn { 1.0 + ch.burn.dark_gain * b_cur } else { 1.0 };
-            let n_sub = if has_collection
+            let n_sub = if ch.retention_step_s > 0.0 {
+                (dt_piece / ch.retention_step_s).ceil().max(1.0) as usize
+            } else if has_collection
                 && (h_cur > 0.0 || q_cur + (j_est + dark_est) * dt_piece > q_knee)
             {
-                (dt_piece / RETENTION_STEP_S).ceil().max(1.0) as usize
+                let per_swing = ((j_est + dark_est) * dt_piece / (c_nas_per_v * HELD_STEP_V)).ceil();
+                let grid = (dt_piece / RETENTION_STEP_S).ceil();
+                per_swing.min(grid).max(1.0) as usize
             } else {
                 1
             };
+            steps += n_sub as u64;
             let ds = dt_piece / n_sub as f64;
 
             for sub in 0..n_sub {
@@ -692,8 +714,10 @@ where
                     (1.0, 1.0)
                 };
                 let j_light = (p_na + bias_na) * s;
+                let dark_na = ch.dark_na_at(t_sub_mid) * shade * dark_burn;
 
                 let mut trap_dn = 0.0;
+                let mut trap_dn_half = 0.0;
                 if has_traps {
                     let st = trap_occ.as_deref_mut().expect("trap state");
                     for (p, trap) in ch.traps.iter().enumerate() {
@@ -702,7 +726,9 @@ where
                                 trap.capture * j_light / trap.capacity_nas + 1.0 / trap.release_s;
                             let n_inf = trap.capture * j_light / b;
                             let n_0 = st[p];
-                            let n_1 = n_inf + (n_0 - n_inf) * (-b * ds).exp();
+                            let e_half = (-0.5 * b * ds).exp();
+                            trap_dn_half += (n_inf - n_0) * (1.0 - e_half);
+                            let n_1 = n_inf + (n_0 - n_inf) * (e_half * e_half);
                             trap_dn += n_1 - n_0;
                             st[p] = n_1;
                         }
@@ -710,29 +736,56 @@ where
                 }
 
                 let held_dn = if has_collection {
-                    let eta = ch.collection.efficiency(ch.layer_voltage_v(q_cur));
-                    let a = (1.0 - eta) * j_light;
-                    let beta = a / ch.collection.capacity_nas + 1.0 / ch.collection.release_s;
-                    let h_inf = a / beta;
                     let st = trap_occ.as_deref_mut().expect("held state");
                     let h_0 = st[HELD_IDX];
-                    let h_1 = h_inf + (h_0 - h_inf) * (-beta * ds).exp();
+                    let h_1 = held_midpoint(ch, q_cur, h_0, j_light, dark_na, trap_dn_half, ds);
                     st[HELD_IDX] = h_1;
                     h_1 - h_0
                 } else {
                     0.0
                 };
 
-                let dark_na = ch.dark_na_at(t_sub_mid) * shade * dark_burn;
                 q_cur = (q_cur + j_light * ds - trap_dn - held_dn + dark_na * ds).min(plate_nas);
             }
         }
         t0 = t_end;
         m += 1;
     }
+    count_held_steps(steps);
     *q = q_cur;
     *t_prev_ref = t_now;
     q_cur
+}
+
+/// One held-charge sub-step of `ds` from charge `q` and held charge `h_0`, with light `j` and dark
+/// current `d` constant over it and `trap_dn_half` the traps' change to its middle: the held charge
+/// advanced exactly with the collection taken at the charge predicted for the middle of the step.
+#[inline]
+fn held_midpoint(
+    ch: &TubeChannel,
+    q: f64,
+    h_0: f64,
+    j: f64,
+    d: f64,
+    trap_dn_half: f64,
+    ds: f64,
+) -> f64 {
+    let col = &ch.collection;
+    if j == 0.0 {
+        // nothing is captured, whatever the collection: the held charge only decays
+        return h_0 * (-ds / col.release_s).exp();
+    }
+    let eta_0 = col.efficiency(ch.layer_voltage_v(q));
+    let a_0 = (1.0 - eta_0) * j;
+    let beta_0 = a_0 / col.capacity_nas + 1.0 / col.release_s;
+    let h_inf_0 = a_0 / beta_0;
+    let h_half = h_inf_0 + (h_0 - h_inf_0) * (-0.5 * beta_0 * ds).exp();
+    let q_half = (q + (j + d) * (0.5 * ds) - trap_dn_half - (h_half - h_0)).min(ch.plate_nas);
+    let eta = col.efficiency(ch.layer_voltage_v(q_half));
+    let a = (1.0 - eta) * j;
+    let beta = a / col.capacity_nas + 1.0 / col.release_s;
+    let h_inf = a / beta;
+    h_inf + (h_0 - h_inf) * (-beta * ds).exp()
 }
 
 /// Step 1 (ACT only): integrate elements in `fb_range` to `t_fb` and discharge those above
@@ -1461,18 +1514,23 @@ fn idle_dark_element(
     };
     let h_0 = state.as_deref().map_or(0.0, |st| st[HELD_IDX]);
     let b_0 = state.as_deref().map_or(0.0, |st| st[BURN_IDX]);
-    let step_max = if has_collection
+    let held_regime = has_collection
         && bias_na > 0.0
-        && (h_0 > 0.0 || *q + (bias_na + ch.dark_na_at(t_prev) * shade) * dt > q_knee)
-    {
-        RETENTION_STEP_S
-    } else if warming || (has_burn && b_0 > 0.0) {
-        1.0
+        && (h_0 > 0.0 || *q + (bias_na + ch.dark_na_at(t_prev) * shade) * dt > q_knee);
+    let n_steps = if ch.retention_step_s > 0.0 {
+        (dt / ch.retention_step_s).ceil().max(1.0) as usize
     } else {
-        dt
+        let n_held = if held_regime {
+            ((bias_na + ch.dark_na_at(t_prev) * shade) * dt
+                / (ch.capacitance_f * 1e9 * HELD_STEP_V))
+                .ceil()
+                .min((dt / RETENTION_STEP_S).ceil())
+        } else {
+            1.0
+        };
+        let n_slow = if warming || (has_burn && b_0 > 0.0) { dt.ceil() } else { 1.0 };
+        n_held.max(n_slow).max(1.0) as usize
     };
-
-    let n_steps = (dt / step_max).ceil().max(1.0) as usize;
     let ds = dt / n_steps as f64;
     let mut q_cur = *q;
     for step in 0..n_steps {
@@ -1520,19 +1578,25 @@ fn idle_dark_element(
             (1.0, 1.0)
         };
         let j_light = bias_na * s;
+        let dark_na = ch.dark_na_at(t_mid) * shade * dark_burn;
 
         let mut trap_dn = 0.0;
+        let mut trap_dn_half = 0.0;
         if has_traps {
             let st = state.as_deref_mut().expect("trap state");
             for (p, trap) in ch.traps.iter().enumerate() {
                 if trap.capture > 0.0 {
                     let n_0 = st[p];
                     let n_1 = if j_light == 0.0 {
-                        n_0 * (-ds / trap.release_s).exp()
+                        let e_half = (-0.5 * ds / trap.release_s).exp();
+                        trap_dn_half += -n_0 * (1.0 - e_half);
+                        n_0 * e_half * e_half
                     } else {
                         let b = trap.capture * j_light / trap.capacity_nas + 1.0 / trap.release_s;
                         let n_inf = trap.capture * j_light / b;
-                        n_inf + (n_0 - n_inf) * (-b * ds).exp()
+                        let e_half = (-0.5 * b * ds).exp();
+                        trap_dn_half += (n_inf - n_0) * (1.0 - e_half);
+                        n_inf + (n_0 - n_inf) * (e_half * e_half)
                     };
                     trap_dn += n_1 - n_0;
                     st[p] = n_1;
@@ -1543,22 +1607,13 @@ fn idle_dark_element(
         let held_dn = if has_collection {
             let st = state.as_deref_mut().expect("held state");
             let h_cur = st[HELD_IDX];
-            let h_1 = if j_light == 0.0 {
-                h_cur * (-ds / ch.collection.release_s).exp()
-            } else {
-                let eta = ch.collection.efficiency(ch.layer_voltage_v(q_cur));
-                let a = (1.0 - eta) * j_light;
-                let beta = a / ch.collection.capacity_nas + 1.0 / ch.collection.release_s;
-                let h_inf = a / beta;
-                h_inf + (h_cur - h_inf) * (-beta * ds).exp()
-            };
+            let h_1 = held_midpoint(ch, q_cur, h_cur, j_light, dark_na, trap_dn_half, ds);
             st[HELD_IDX] = h_1;
             h_1 - h_cur
         } else {
             0.0
         };
 
-        let dark_na = ch.dark_na_at(t_mid) * shade * dark_burn;
         q_cur = (q_cur + j_light * ds - trap_dn - held_dn + dark_na * ds).min(plate_nas);
     }
     *q = q_cur;
@@ -1639,6 +1694,15 @@ fn reset_geom_charge_and_time(
     }
 }
 
+/// State of one sub-element of a `UniformColumn`; 0 for the states its channel does not carry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElementState {
+    pub charge_nas: f64,
+    pub traps_nas: [f64; MAX_TRAPS],
+    pub held_nas: f64,
+    pub burn: f64,
+}
+
 /// One uniformly lit target column scanned by the same row passes as the full camera.
 pub struct UniformColumn {
     ch: TubeChannel,
@@ -1651,6 +1715,7 @@ pub struct UniformColumn {
     dark: Vec<f64>,
     frame: i64,
     beam_on: bool,
+    held_steps: u64,
 }
 
 impl UniformColumn {
@@ -1696,6 +1761,7 @@ impl UniformColumn {
             dark: raw,
             frame: 0,
             beam_on: true,
+            held_steps: 0,
         }
     }
 
@@ -1706,6 +1772,25 @@ impl UniformColumn {
 
     pub fn set_beam_on(&mut self, on: bool) {
         self.beam_on = on;
+    }
+
+    /// State of sub-row `k` (`0..SUB_ROWS * ACTIVE_H`) as last left by a read or idle.
+    pub fn element(&self, k: usize) -> ElementState {
+        let st = self.traps.get(k).copied().unwrap_or([0.0; STATE_LEN]);
+        let mut traps_nas = [0.0; MAX_TRAPS];
+        traps_nas.copy_from_slice(&st[..MAX_TRAPS]);
+        ElementState {
+            charge_nas: self.charge[k],
+            traps_nas,
+            held_nas: st[HELD_IDX],
+            burn: st[BURN_IDX],
+        }
+    }
+
+    /// Sub-steps taken by this column's reads in the pieces that leave the merged rule, since the
+    /// dark settle.
+    pub fn held_steps(&self) -> u64 {
+        self.held_steps
     }
 
     /// Lens capped, beam as set, for `seconds` (rounded to whole frames) without reading.
@@ -1745,6 +1830,7 @@ impl UniformColumn {
     pub fn read_rows(&mut self, photo: &dyn Fn(usize, f64) -> f64) -> Vec<f64> {
         let mut raw = vec![0.0; ACTIVE_H];
         let current = |_: usize, r: usize, _: usize, t: f64| photo(r, t);
+        let steps_before = held_steps_now();
         scan_column(
             0,
             &self.ch,
@@ -1761,6 +1847,7 @@ impl UniformColumn {
             &current,
             self.beam_on,
         );
+        self.held_steps += held_steps_now() - steps_before;
         self.frame += 1;
         raw
     }
