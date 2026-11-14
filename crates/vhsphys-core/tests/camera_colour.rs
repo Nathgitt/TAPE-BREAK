@@ -475,20 +475,22 @@ fn every_material_needs_a_matrix_of_its_own() {
         );
     }
     let pbo = colour_matrix(materials(TubeKind::Plumbicon));
-    let red_through = |kind: TubeKind| {
-        let t = taking_matrix(materials(kind));
-        let mt = mul(&pbo, &t);
-        [mt[R][R], mt[G][R], mt[B][R]]
-    };
-    let newvicon = red_through(TubeKind::Newvicon);
+    // The lead-oxide matrix applied to another material's taking: column R is the red primary as the
+    // three channels read it, and row R's green term is how the red channel reads a saturated green.
+    let mt = |kind: TubeKind| mul(&pbo, &taking_matrix(materials(kind)));
+    let newvicon = mt(TubeKind::Newvicon);
     assert!(
-        newvicon[R] >= 1.0 + NEWVICON_OVER && newvicon[G] <= -NEWVICON_OVER,
-        "Newvicon red through the lead-oxide matrix: {newvicon:.3?}"
+        newvicon[R][R] >= 1.0 + NEWVICON_OVER && newvicon[R][G] <= -NEWVICON_OVER,
+        "Newvicon through the lead-oxide matrix: red primary on red {:.3}, green primary read in red {:.3}",
+        newvicon[R][R],
+        newvicon[R][G]
     );
-    let saticon = red_through(TubeKind::Saticon);
+    let saticon = mt(TubeKind::Saticon);
     assert!(
-        saticon[R] <= 1.0 - SATICON_UNDER && saticon[G] >= SATICON_UNDER,
-        "Saticon red through the lead-oxide matrix: {saticon:.3?}"
+        saticon[R][R] <= 1.0 - SATICON_UNDER && saticon[R][G] >= SATICON_UNDER,
+        "Saticon through the lead-oxide matrix: red primary on red {:.3}, green primary read in red {:.3}",
+        saticon[R][R],
+        saticon[R][G]
     );
 }
 
