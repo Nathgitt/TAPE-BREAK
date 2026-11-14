@@ -23,7 +23,7 @@ from PySide6.QtWidgets import QApplication, QScrollArea
 from vhsgui import backend
 from vhsgui.app import MainWindow
 
-WINDOW_SIZE = (1180, 900)  # the settings window: wide enough for the preview, tall enough for the Look group
+WINDOW_SIZE = (1180, 1020)  # the settings window: wide enough for the preview, tall enough for the Look group
 SCHEMATIC_SIZE = (1180, 620)  # size of the schematic drawings in docs/img
 WAIT_S = 600.0  # longest wait for the source frame or the preview render
 POLL_S = 0.05
