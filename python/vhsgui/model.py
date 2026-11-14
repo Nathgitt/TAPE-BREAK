@@ -22,9 +22,22 @@ FRAME_RATES: dict[str, tuple[int, int]] = {"ntsc": (FPS_NUM, FPS_DEN), "pal": (2
 
 # The camera's pickup tube ahead of the recorder (`--camera-tube`), and how far its iris is
 # opened beyond normal exposure (`--iris-stops`): overexposed highlights leave comet tails.
-# The three lead-oxide Plumbicons come first, then the other target materials.
-CAMERA_TUBES = ("off", "plumbicon", "plumbicon-bias", "plumbicon-act", "vidicon", "newvicon", "saticon", "chalnicon")
+# The four lead-oxide Plumbicons come first, then the other target materials.
+CAMERA_TUBES = (
+    "off", "plumbicon", "plumbicon-bias", "plumbicon-act", "plumbicon-dbc", "vidicon", "newvicon", "saticon", "chalnicon",
+)
 IRIS_STOPS_RANGE = (-2.0, 6.0)
+# How the camera sees colour (`--camera-layout`): a prism and a tube per colour, or one tube
+# behind a colour stripe filter. The first entry is the engine's default.
+CAMERA_LAYOUTS = ("three-tube", "stripe")
+DEFAULT_CAMERA_LAYOUT = "three-tube"
+# The camera's electronics (`--camera-processing`): a studio processing amplifier or a home camera's.
+CAMERA_PROCESSING = ("studio", "consumer")
+DEFAULT_CAMERA_PROCESSING = "studio"
+# Temperature of the tube targets (`--camera-temperature`), deg C: the engine's default and the
+# range the window offers.
+DEFAULT_CAMERA_TEMPERATURE_C = 25.0
+CAMERA_TEMPERATURE_RANGE = (0.0, 60.0)
 
 # A frame needs two frames of context on each side, so the first frames of a fresh
 # render are not representative. A render that starts mid-file therefore begins this
@@ -188,6 +201,11 @@ class Look:
     standard: str = DEFAULT_STANDARD  # one of STANDARDS
     camera_tube: str = "off"  # one of CAMERA_TUBES
     iris_stops: float = 0.0  # within IRIS_STOPS_RANGE; only matters with a tube
+    camera_layout: str = DEFAULT_CAMERA_LAYOUT  # one of CAMERA_LAYOUTS; only matters with a tube
+    camera_processing: str = DEFAULT_CAMERA_PROCESSING  # one of CAMERA_PROCESSING; only matters with a tube
+    camera_temperature_c: float = DEFAULT_CAMERA_TEMPERATURE_C  # within CAMERA_TEMPERATURE_RANGE
+    camera_spectral: bool = False  # the prism, filter and target responses instead of ideal colour
+    camera_geometry: bool = False  # deflection, registration, shading, flare and corner focus
 
 
 @dataclass
