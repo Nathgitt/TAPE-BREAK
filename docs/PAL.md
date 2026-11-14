@@ -57,6 +57,11 @@ is the format's own SP pitch, so a PAL SP head has the same carrier-to-noise rat
 head `[est]`. The tape advance per field (467.8 um) is again 1.5 H of head travel, so neighbouring
 tracks are line aligned as in the 525-line format.
 
+**The camera.** The pickup-tube stage works at 625/50 as it does at 525/60: the read times, the frame period and
+the sample rate come from the engine's raster constants, and the tube constants are the same. The target
+capacitances were fitted on the 625/50 scanned target and are used unchanged at 525/60 (`CAMERA.md`). The single-tube
+stripe camera's 3.58 MHz carrier has 4.95 samples per cycle at 625 lines and meets the same white and grey bounds.
+
 **Colour-under and crosstalk.** The carrier is 40 + 1/8 cycles per line. The per-sample carrier table
 keeps the whole 40 cycles, so it is the same on every line, and `record::line_rotation` adds the
 carrier's extra eighth of a turn per line to the head's own rotation:
@@ -67,7 +72,7 @@ rotation) turns -90 deg per line. The V switch flips the wanted chroma every lin
 of the 525-line deck would cancel V instead of the crosstalk. The PAL deck adds line n and line
 n - 2 of the field: the crosstalk is 180 deg apart there and the switch state is the same.
 
-**Line switch.** The camera's baseband is the unswitched (U, V); its burst sits at +135 deg (-U + V).
+**Line switch.** The picture's baseband (from the raster encoder, or from the camera stage when a tube is on) is the unswitched (U, V); its burst sits at +135 deg (-U + V).
 The recorder (`record::record_track`) inverts V, burst included, on every odd global line
 (`record::v_switched`) before the record band-pass, as a PAL coder does before the signal reaches
 the deck. A frame has an odd number of lines, so the sequence runs on from one frame into the next.

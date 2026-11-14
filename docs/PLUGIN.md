@@ -24,6 +24,11 @@ s.finish();                     // flush the tail
   candidate. A sensible plugin UI is the `Condition` struct (sliders for tape
   age, storage, head wear, deck age and temperature ...) plus an "advanced" panel
   that exposes raw physical parameters.
+* A camera tube (`params.camera`, off by default) puts the pickup-tube stage ahead of the recorder: frames
+  given to `push` (or `push_fields(f0, f1)` for field-sequential pictures) go through the scanned target before
+  they are encoded, and the iris can follow an automation track. The target's charge starts at dark equilibrium with
+  the session and lasts for frames, so a host that seeks pushes a pre-roll of a few frames (a long tail is a few
+  tens) before the first frame it wants (`docs/CAMERA.md`). The stage is built only when a tube is selected.
 * A host with several generations uses `Chain::with_start(stages, start)` instead
   of a `Session` (same `push` / `ready` / `process` / `finish`).
 * Sound goes through `audio::AudioProcessor::new(&params, rate, channels)` and
@@ -41,14 +46,15 @@ often in parallel. Two workable designs:
    (cost: three extra frames per seek). Parameter changes create a new session
    (calibration takes ~0.1 s).
 2. **Stateless per frame.** Build a short-lived session for `k-3 .. k+3` for every
-   request: simple and thread safe, about 6-7x the per-frame cost.
+   request: simple and thread safe, about 6-7x the per-frame cost. With a camera tube on the session also needs
+   the pre-roll above for every request.
 
 `ntsc-rs` (https://github.com/valadaptive/ntsc-rs) is a good reference for the
 plugin crates (OpenFX, After Effects, Premiere) built around a Rust effect core.
 
 ## Performance notes
 
-~13 fps at 8 cores for the full chain. Hot spots: Lorentzian pulse rendering
+~13 fps at 8 cores for the full chain (about 2 fps with a camera tube, `docs/PERFORMANCE.md`). Hot spots: Lorentzian pulse rendering
 (~135 k reversals per field), the discriminator and the RF filters. Options if
 more speed is needed: a lower RF rate (8 x fsc, 1820 samples/line), f32 filters
 with SIMD, caching the per-field transitions across parameter changes that only
