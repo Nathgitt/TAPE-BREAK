@@ -695,6 +695,14 @@
      "pal"
     ]
    }
+  },
+  {
+   "text": "SET ON THE CAMERA PAGE",
+   "x": 246,
+   "y": 142,
+   "size": 11,
+   "align": "l",
+   "b": "dim"
   }
  ],
  "hint": {
@@ -736,40 +744,6 @@
    "kind": "stepper",
    "min": 0,
    "max": 2147483647
-  },
-  {
-   "id": "camera_tube",
-   "block": "camera",
-   "label": "TUBE",
-   "x": 246,
-   "y": 120,
-   "w": 211,
-   "kind": "choice",
-   "choices": [
-    "off",
-    "plumbicon",
-    "plumbicon-bias",
-    "plumbicon-act",
-    "plumbicon-dbc",
-    "vidicon",
-    "newvicon",
-    "saticon",
-    "chalnicon"
-   ]
-  },
-  {
-   "id": "iris_stops",
-   "block": "camera",
-   "label": "IRIS",
-   "x": 246,
-   "y": 142,
-   "w": 211,
-   "kind": "slider",
-   "unit": "stops",
-   "min": -2,
-   "max": 6,
-   "step": 0.5,
-   "decimals": 1
   },
   {
    "id": "rec_deck_age_years",

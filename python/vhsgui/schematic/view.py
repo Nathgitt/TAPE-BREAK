@@ -10,7 +10,9 @@ Public surface (docs/design/FORMAT.md describes the data it draws):
     control_rect(id) / control_at(pos)
     hover_control() / current_control() / set_current_control(id)
     set_help({id: text}) / hint_text()
+    set_enabled(id, on) / is_enabled(id)
     visible_labels() -> list[str]          the texts of the labels drawn now, in layout order
+    visible_glyphs() -> list[str]          the glyph names of the instances drawn now, in layout order
     set_screen_image(image) / screen_image() / screen_rect() / set_tv_zoom(on) / tv_zoomed()
     set_animated(on) / is_animated() / is_ticking() / advance(seconds) / clock()
     start_boot() / skip_boot() / boot_progress()
@@ -30,7 +32,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QKeyEvent, QMous
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from .data import Control, Label, Primitive, SchematicData, load_data
+from .data import Control, Instance, Label, Primitive, SchematicData, load_data
 from .paint import PaintContext, color, draw_block, draw_control, draw_hint, draw_primitive, draw_reel_motion, draw_scanlines, draw_screen, draw_vignette, draw_wire, set_font, text
 
 
@@ -60,6 +62,7 @@ class SchematicView(QWidget):
         self._data: SchematicData = load_data(data_dir)
         self._controls = {control.id: control for control in self._data.controls}
         self._values: dict[str, Any] = {control.id: self._default(control) for control in self._data.controls}
+        self._enabled: dict[str, bool] = {control.id: True for control in self._data.controls}
         self._baseline: dict[str, Any] = {}
         self._choices: dict[str, list[str]] = {control.id: list(control.choices) for control in self._data.controls if control.kind == "choice"}
         self._help: dict[str, str] = {}
@@ -137,8 +140,8 @@ class SchematicView(QWidget):
     def values(self) -> dict[str, Any]:
         return dict(self._values)
 
-    def _label_shown(self, label: Label) -> bool:
-        """A label with a `when` is drawn only while its control holds one of the listed values."""
+    def _label_shown(self, label: Label | Instance) -> bool:
+        """A label or instance with a `when` is drawn only while its control holds one of the listed values."""
         if label.when is None:
             return True
         control_id, allowed = label.when
@@ -146,6 +149,20 @@ class SchematicView(QWidget):
 
     def visible_labels(self) -> list[str]:
         return [label.text for label in self._data.labels if self._label_shown(label)]
+
+    def visible_glyphs(self) -> list[str]:
+        return [instance.glyph for instance in self._data.instances if self._label_shown(instance)]
+
+    def set_enabled(self, control_id: str, enabled: bool) -> None:
+        if control_id not in self._controls:
+            raise KeyError(control_id)
+        self._enabled[control_id] = bool(enabled)
+        self._touch()
+
+    def is_enabled(self, control_id: str) -> bool:
+        if control_id not in self._controls:
+            raise KeyError(control_id)
+        return self._enabled[control_id]
 
     def _snap(self, control: Control, value: Any) -> Any:
         if control.kind == "choice":
@@ -442,6 +459,9 @@ class SchematicView(QWidget):
         control_id = self.control_at(point)
         if control_id is None:
             return
+        if not self._enabled[control_id]:
+            event.accept()
+            return
         control = self._controls[control_id]
         if self._current != control_id:
             self._current = control_id
@@ -482,6 +502,9 @@ class SchematicView(QWidget):
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         control_id = self.control_at(event.position())
         if control_id is not None:
+            if not self._enabled[control_id]:
+                event.accept()
+                return
             if self._press_snapshot and self._press_snapshot[0] == control_id:
                 self._values[control_id] = self._press_snapshot[1]
                 self._flash_until.pop(control_id, None)
@@ -495,7 +518,7 @@ class SchematicView(QWidget):
         if self._zoomed:
             return
         control_id = self.control_at(event.position())
-        if control_id is None:
+        if control_id is None or not self._enabled[control_id]:
             return
         self._current = control_id
         amount = 1 if event.angleDelta().y() > 0 else -1
@@ -515,6 +538,8 @@ class SchematicView(QWidget):
             self._row_move(-1)
         elif event.key() == Qt.Key.Key_Down:
             self._row_move(1)
+        elif not self._enabled[self._current]:
+            return
         elif event.key() == Qt.Key.Key_Space and control.kind == "toggle":
             self._step(control, 1)
         elif event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
@@ -693,7 +718,7 @@ class SchematicView(QWidget):
         return tuple(sorted(control_id for control_id, until in self._flash_until.items() if until > self._clock))
 
     def _ensure_base_cache(self, width: int, device_ratio: float) -> QImage:
-        key = (width, round(width * CANVAS_HEIGHT / CANVAS_WIDTH), round(device_ratio, 6), self._cache_revision, self._flash_signature(), self._theme_key(), self._effects["glow"], tuple(self.visible_labels()))
+        key = (width, round(width * CANVAS_HEIGHT / CANVAS_WIDTH), round(device_ratio, 6), self._cache_revision, self._flash_signature(), self._theme_key(), self._effects["glow"], tuple(self.visible_labels()), tuple(self.visible_glyphs()))
         if self._base_cache is not None and self._base_cache_key == key:
             return self._base_cache
         height = key[1]
@@ -715,15 +740,29 @@ class SchematicView(QWidget):
             if self._label_shown(label):
                 text(painter, ctx, label.text, label.x, label.y, label.brightness, label.size, label.align)
         for instance in self._data.instances:
+            if not self._label_shown(instance):
+                continue
             glyph = self._data.glyphs[instance.glyph]
             for primitive in glyph.primitives:
                 draw_primitive(painter, ctx, primitive, instance)
         active_ids = {self._hover, self._current}
         flashing_ids = self._flash_signature()
         for control in self._data.controls:
+            enabled = self._enabled[control.id]
             baseline = self._baseline.get(control.id)
             baseline_fraction = self._fraction(control, baseline) if baseline is not None else None
-            draw_control(painter, ctx, control, self._values[control.id], self._fraction(control, self._values[control.id]), control.id in active_ids, self.is_edited(control.id), control.id in flashing_ids, baseline_fraction)
+            draw_control(
+                painter,
+                ctx,
+                control,
+                self._values[control.id],
+                self._fraction(control, self._values[control.id]),
+                enabled and control.id in active_ids,
+                enabled and self.is_edited(control.id),
+                enabled and control.id in flashing_ids,
+                baseline_fraction,
+                enabled,
+            )
         draw_hint(painter, ctx, self._data.hint, self._fit_hint(self.hint_text()))
         painter.end()
         image.setDevicePixelRatio(device_ratio)

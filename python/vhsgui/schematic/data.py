@@ -87,6 +87,8 @@ class Instance:
     y: float
     scale: float
     block: str
+    # (choice control id, the values of it for which the instance is drawn); None draws it always.
+    when: tuple[str, tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True)
@@ -206,7 +208,7 @@ def _parse_when(value: Any, path: str) -> tuple[str, tuple[str, ...]]:
     return control_id, tuple(values)
 
 
-def _check_when(label: Label, controls: dict[str, Control], path: str) -> None:
+def _check_when(label: Label | Instance, controls: dict[str, Control], path: str) -> None:
     """The condition has to name a choice control of the same page and only values that control offers."""
     if label.when is None:
         return
@@ -347,7 +349,8 @@ def _parse_layout(raw: Any, path: str, glyphs: dict[str, Glyph]) -> SchematicDat
         name = _text(_field(item, "glyph", item_path), f"{item_path}.glyph")
         if name not in glyphs:
             raise _error(f"{item_path}.glyph", "unknown glyph")
-        instances.append(Instance(name, float(_number(_field(item, "x", item_path), f"{item_path}.x")), float(_number(_field(item, "y", item_path), f"{item_path}.y")), float(_number(_field(item, "scale", item_path), f"{item_path}.scale")), _text(_field(item, "block", item_path), f"{item_path}.block")))
+        when = _parse_when(item["when"], f"{item_path}.when") if "when" in item else None
+        instances.append(Instance(name, float(_number(_field(item, "x", item_path), f"{item_path}.x")), float(_number(_field(item, "y", item_path), f"{item_path}.y")), float(_number(_field(item, "scale", item_path), f"{item_path}.scale")), _text(_field(item, "block", item_path), f"{item_path}.block"), when))
 
     wires = []
     for i, value in enumerate(_field(obj, "wires", path)):
@@ -394,6 +397,8 @@ def _parse_layout(raw: Any, path: str, glyphs: dict[str, Glyph]) -> SchematicDat
     by_id = {control.id: control for control in controls}
     for i, label in enumerate(labels):
         _check_when(label, by_id, f"{path}.labels[{i}]")
+    for i, instance in enumerate(instances):
+        _check_when(instance, by_id, f"{path}.instances[{i}]")
 
     animation_raw = _object(_field(obj, "animation", path), f"{path}.animation")
     animation = Animation(*(float(_number(_field(animation_raw, name, f"{path}.animation"), f"{path}.animation.{name}")) for name in ("pulse_speed", "pulse_spacing", "reel_rpm", "flicker", "boot_ms", "refresh_flash_ms")))

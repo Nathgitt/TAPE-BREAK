@@ -266,8 +266,8 @@ def _control_text(control: Control, value: Any) -> str:
     return f"{float(value):.{control.decimals}f}{suffix}"
 
 
-def draw_control(painter: QPainter, ctx: PaintContext, control: Control, value: Any, fraction: float, active: bool, edited: bool, flashing: bool, baseline_fraction: float | None) -> None:
-    tier = "hot" if active or flashing else "norm"
+def draw_control(painter: QPainter, ctx: PaintContext, control: Control, value: Any, fraction: float, active: bool, edited: bool, flashing: bool, baseline_fraction: float | None, enabled: bool = True) -> None:
+    tier = "hot" if active or flashing else "norm" if enabled else "dim"
     value_tier: str | QColor = tier
     if edited:
         value_tier = color(ctx.theme, "warn")

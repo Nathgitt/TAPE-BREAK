@@ -66,6 +66,8 @@ from vhsgui.model import (
     CAMERA_TEMPERATURE_RANGE,
     CAMERA_TUBES,
     CONDITION_FIELDS,
+    DEFAULT_CAMERA_LAYOUT,
+    DEFAULT_CAMERA_PROCESSING,
     DEFAULT_CAMERA_TEMPERATURE_C,
     DEFAULT_STANDARD,
     GROUPS,
@@ -231,9 +233,10 @@ SCHEMATIC_BOTTOM_STYLE = (
 # A plain widget's layout ignores the style sheet's border and padding, so the frame needs its own margin.
 SCHEMATIC_BOTTOM_MARGIN = 3
 # Page names are shared by the buttons and the command-line entry point.
+SCHEMATIC_CAMERA = "camera"
 SCHEMATIC_CIRCUIT = "circuit"
 SCHEMATIC_OUTSIDE = "outside"
-SCHEMATIC_PAGE_NAMES = (SCHEMATIC_CIRCUIT, SCHEMATIC_OUTSIDE)
+SCHEMATIC_PAGE_NAMES = (SCHEMATIC_CAMERA, SCHEMATIC_CIRCUIT, SCHEMATIC_OUTSIDE)
 
 
 def _clock(seconds: float) -> str:
@@ -1177,6 +1180,7 @@ class MainWindow(QMainWindow):
         view = self._schematic_pages[name]
         for page_name, page_view in self._schematic_pages.items():
             page_view.setVisible(self._schematic_mode and page_name == name)
+        self.camera_button.setChecked(name == SCHEMATIC_CAMERA)
         self.circuit_button.setChecked(name == SCHEMATIC_CIRCUIT)
         self.outside_button.setChecked(name == SCHEMATIC_OUTSIDE)
         if self._schematic_mode:
@@ -1194,6 +1198,7 @@ class MainWindow(QMainWindow):
         self._schematic_mode = enabled
         self.panels_button.setChecked(not enabled)
         self.schematic_button.setChecked(enabled)
+        self.camera_button.setVisible(enabled)
         self.circuit_button.setVisible(enabled)
         self.outside_button.setVisible(enabled)
         self._move_schematic_widgets(enabled)
@@ -1283,12 +1288,18 @@ class MainWindow(QMainWindow):
         self.schematic = SchematicView()
         self.schematic.setObjectName("schematicView")
         self.schematic.setVisible(False)
+        camera_dir = Path(__file__).resolve().parent / "schematic" / "camera"
+        self.camera = SchematicView(data_dir=camera_dir)
+        self.camera.setObjectName("cameraView")
+        self.camera.setVisible(False)
+        self._update_camera_enabled()
         outside_dir = Path(__file__).resolve().parent / "schematic" / "outside"
         self.outside = SchematicView(data_dir=outside_dir)
         self.outside.setObjectName("outsideView")
         self.outside.setVisible(False)
-        self._schematic_views = [self.schematic, self.outside]
+        self._schematic_views = [self.schematic, self.camera, self.outside]
         self._schematic_pages = {
+            SCHEMATIC_CAMERA: self.camera,
             SCHEMATIC_CIRCUIT: self.schematic,
             SCHEMATIC_OUTSIDE: self.outside,
         }
@@ -1307,6 +1318,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._mode_bar)
         root_layout.addWidget(self._panels_area, 1)
         root_layout.addWidget(self.schematic, 1)
+        root_layout.addWidget(self.camera, 1)
         root_layout.addWidget(self.outside, 1)
         root_layout.addWidget(self._schematic_bottom, 0)
         self.setCentralWidget(root)
@@ -1335,6 +1347,9 @@ class MainWindow(QMainWindow):
         self.schematic_button.clicked.connect(lambda: self.set_schematic_mode(True))
         layout.addWidget(self.panels_button)
         layout.addWidget(self.schematic_button)
+        self.camera_button = QPushButton("Camera")
+        self.camera_button.setObjectName("cameraButton")
+        self.camera_button.setCheckable(True)
         self.circuit_button = QPushButton("Circuit")
         self.circuit_button.setObjectName("circuitButton")
         self.circuit_button.setCheckable(True)
@@ -1343,13 +1358,17 @@ class MainWindow(QMainWindow):
         self.outside_button.setCheckable(True)
         pages = QButtonGroup(self)
         pages.setExclusive(True)
+        pages.addButton(self.camera_button)
         pages.addButton(self.circuit_button)
         pages.addButton(self.outside_button)
         self.circuit_button.setChecked(True)
+        self.camera_button.clicked.connect(lambda: self.set_schematic_page(SCHEMATIC_CAMERA))
         self.circuit_button.clicked.connect(lambda: self.set_schematic_page(SCHEMATIC_CIRCUIT))
         self.outside_button.clicked.connect(lambda: self.set_schematic_page(SCHEMATIC_OUTSIDE))
+        self.camera_button.setVisible(False)
         self.circuit_button.setVisible(False)
         self.outside_button.setVisible(False)
+        layout.addWidget(self.camera_button)
         layout.addWidget(self.circuit_button)
         layout.addWidget(self.outside_button)
 
@@ -1857,12 +1876,11 @@ class MainWindow(QMainWindow):
             self.preset_combo.setItemData(index, preset.summary, Qt.ItemDataRole.ToolTipRole)
         names = [preset.name for preset in presets]
         field_help = {spec.key: spec.help for spec in CONDITION_FIELDS}
+        help_texts = {**field_help, **LOOK_HELP}
         for view in self._schematic_views:
             if "preset" in view.control_ids():
                 view.set_choices("preset", names)
-                view.set_help({**field_help, **LOOK_HELP})
-            else:
-                view.set_help(field_help)
+            view.set_help(help_texts)
         if DEFAULT_PRESET in names:
             self.preset_combo.setCurrentIndex(names.index(DEFAULT_PRESET))
         self._load_preset()
@@ -1910,6 +1928,11 @@ class MainWindow(QMainWindow):
             "standard": look.standard,
             "camera_tube": look.camera_tube,
             "iris_stops": look.iris_stops,
+            "camera_layout": look.camera_layout,
+            "camera_processing": look.camera_processing,
+            "camera_temperature_c": look.camera_temperature_c,
+            "camera_spectral": look.camera_spectral,
+            "camera_geometry": look.camera_geometry,
         }
 
     def _sync_schematic(self) -> None:
@@ -1938,6 +1961,11 @@ class MainWindow(QMainWindow):
             "standard": DEFAULT_STANDARD,
             "camera_tube": backend.DEFAULT_CAMERA_TUBE,
             "iris_stops": DEFAULT_IRIS_STOPS,
+            "camera_layout": DEFAULT_CAMERA_LAYOUT,
+            "camera_processing": DEFAULT_CAMERA_PROCESSING,
+            "camera_temperature_c": DEFAULT_CAMERA_TEMPERATURE_C,
+            "camera_spectral": False,
+            "camera_geometry": False,
         }
         for view in self._schematic_views:
             view.set_baseline(self._schematic_baseline)
@@ -1993,6 +2021,16 @@ class MainWindow(QMainWindow):
                 self.camera_tube_combo.setCurrentIndex(self.camera_tube_combo.findData(value))
             elif control_id == "iris_stops":
                 self.iris_spin.setValue(float(value))
+            elif control_id == "camera_layout":
+                self.camera_layout_combo.setCurrentIndex(self.camera_layout_combo.findData(value))
+            elif control_id == "camera_processing":
+                self.camera_processing_combo.setCurrentIndex(self.camera_processing_combo.findData(value))
+            elif control_id == "camera_temperature_c":
+                self.camera_temperature_spin.setValue(float(value))
+            elif control_id == "camera_spectral":
+                self.camera_spectral_check.setChecked(bool(value))
+            elif control_id == "camera_geometry":
+                self.camera_geometry_check.setChecked(bool(value))
         finally:
             self._sync_guard = False
         self._sync_schematic()
@@ -2013,7 +2051,7 @@ class MainWindow(QMainWindow):
 
     def _update_camera_enabled(self) -> None:
         # Without a tube the camera adds nothing, so its settings have no effect to set.
-        enabled = self.camera_tube_combo.currentData() != backend.DEFAULT_CAMERA_TUBE
+        has_tube = self.camera_tube_combo.currentData() != backend.DEFAULT_CAMERA_TUBE
         for widget in (
             self.iris_spin,
             self.camera_layout_combo,
@@ -2022,7 +2060,18 @@ class MainWindow(QMainWindow):
             self.camera_spectral_check,
             self.camera_geometry_check,
         ):
-            widget.setEnabled(enabled)
+            widget.setEnabled(has_tube)
+        view = getattr(self, "camera", None)
+        if view is not None:
+            for cid in (
+                "iris_stops",
+                "camera_layout",
+                "camera_processing",
+                "camera_temperature_c",
+                "camera_spectral",
+                "camera_geometry",
+            ):
+                view.set_enabled(cid, has_tube)
 
     def _on_camera_tube_changed(self, *_args: object) -> None:
         self._update_camera_enabled()

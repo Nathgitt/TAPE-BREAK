@@ -1,4 +1,4 @@
-"""Command line entry point: python -m vhsgui [--schematic | --panels] [--page {circuit,outside}] [--binary PATH] [--screenshot PNG] [input]."""
+"""Command line entry point: python -m vhsgui [--schematic | --panels] [--page {camera,circuit,outside}] [--binary PATH] [--screenshot PNG] [input]."""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +23,7 @@ Desktop front end for vhs-phys. The window opens on the phosphor schematic
 HELP_EPILOG = """\
 examples:
   python -m vhsgui clip.mp4                 open a video on the schematic
+  python -m vhsgui --page camera clip.mp4   start on the camera page
   python -m vhsgui --page outside clip.mp4  start on the interference page
   python -m vhsgui --panels clip.mp4        start with the plain settings panels
   QT_QPA_PLATFORM=offscreen python -m vhsgui --screenshot out.png clip.mp4
@@ -47,8 +48,8 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     mode.add_argument("--panels", action="store_true", help="start with the settings panels instead of the schematic")
     parser.add_argument(
         "--page",
-        choices=("circuit", "outside"),
-        help="schematic page to start on: circuit (signal chain) or outside (interference); default: circuit",
+        choices=("camera", "circuit", "outside"),
+        help="schematic page to start on: camera, circuit (signal chain) or outside (interference); default: circuit",
     )
     parser.add_argument("--screenshot", metavar="PNG", help="save a picture of the window and exit (works with QT_QPA_PLATFORM=offscreen)")
     args = parser.parse_args(argv)
@@ -111,7 +112,7 @@ def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str
     window.resize(*SCREENSHOT_SIZE)
     app.processEvents()
     if args.schematic:
-        shown = window.schematic if window.schematic_page == "circuit" else window.outside
+        shown = {"camera": window.camera, "circuit": window.schematic, "outside": window.outside}[window.schematic_page]
         shown.skip_boot()
     picture = window.grab()
     saved = picture.save(args.screenshot)
