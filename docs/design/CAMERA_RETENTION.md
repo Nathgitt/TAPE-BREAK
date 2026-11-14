@@ -194,27 +194,115 @@ evaluated once in the piece as now) and light `j = (p + bias_na) * s`, where `s`
 sensitivity factor below:
 
 1. **Sub-steps.** If the channel's collection is `FULL` and its burn `NONE` and `cold_offset_c == 0`,
-   the piece is integrated by the merged rule bit for bit. Otherwise it is cut into `n` equal sub-steps,
-   `n = ceil(dt / RETENTION_STEP_S)` when the collection is not `FULL` and either `h > 0` or
-   `q + (j + dark) dt > q_knee` (`q_knee = C (target_voltage_v - knee_v)`, the charge at which the layer
-   reaches the knee), and `n = 1` otherwise. `RETENTION_STEP_S = 0.5e-3` s [est, numerical: it resolves
-   the fall of `V_l` within a field; halving it changes the prototype's readings by under 0.5 %].
+   the piece is integrated by the merged rule bit for bit. Otherwise it is cut into `n` equal sub-steps
+   of `ds = dt / n`, with `n` from "The held-charge step" below (one sub-step per half volt the layer
+   can swing in the piece, at least 1, at most the 0.5 ms grid). Each sub-step `i` (`0 <= i < n`) has the
+   mid time `t_i = t0 + (i + 1/2) ds`, where `t0` is the piece's start.
 2. **Burn** (if not `NONE`), exactly over the sub-step `ds` with constant drive:
    `db/dt = r (p / peak_signal_na) (1 - b) - b / tau_b`, so `b1 = b_inf + (b0 - b_inf) exp(-beta ds)`,
    `beta = r p / peak + 1 / tau_b`, `b_inf = (r p / peak) / beta`. The sub-step uses `b_m = (b0 + b1) / 2`:
    sensitivity factor `s = 1 - b_m`, dark-current factor `1 + dark_gain * b_m`. The drive is the photo
-   current only (bias light is not the lamp that burns).
-3. **Traps** fill from `j` exactly as now (with `j` including `s`), giving `trap_dn`.
-4. **Held charge** (if not `FULL`), with `eta` taken at the sub-step's start charge `q`:
-   `dh/dt = (1 - eta) j (1 - h / H) - h / tau_h`, exactly: `a = (1 - eta) j`, `beta = a / H + 1 / tau_h`,
-   `h_inf = a / beta`, `h1 = h_inf + (h0 - h_inf) exp(-beta ds)`, `held_dn = h1 - h0`.
-5. **Element.** `q <- min(q + j ds - trap_dn - held_dn + dark(t) (1 + dark_gain b_m) ds, plate_nas)`
-   with `dark(t)` the channel's dark current at the sub-step's mid time (below). Bias light is in `j`.
+   current only (bias light is not the lamp that burns). Without burn, `s = 1` and the factor is 1.
+3. **Light and dark of the sub-step.** `j = (p + bias_na) s` and `d = dark(t_i) (1 + dark_gain b_m)`,
+   with `dark(t)` the channel's dark current at session time `t` (the warm-up law below). Both are
+   constant over the sub-step and are the only currents onto the element besides what traps and the
+   held charge take and give back. (With geometry, `bias_na` and `dark(t)` carry the element's black
+   shading factor, as they do in every other rule of the engine.)
+4. **Traps** fill from `j` exactly over `ds` as now (with `j` including `s`). Per trap `p` with
+   capture `c > 0`, capacity `N`, release `tau`: `beta_p = c j / N + 1 / tau`, `n_inf = c j / beta_p`,
+   `e_half = exp(-beta_p ds / 2)`, `n1 = n_inf + (n0 - n_inf) e_half^2`. The sub-step's trap change is
+   `trap_dn = sum (n1 - n0)` and its change to the half-step is `trap_dn_half = sum (n_inf - n0)
+   (1 - e_half)` (needed by step 5 only).
+5. **Held charge** (if not `FULL`), `dh/dt = (1 - eta(V_l(q))) j (1 - h / H) - h / tau_h`, by an
+   exponential midpoint step: the held population is advanced exactly with `eta` frozen, and `eta` is
+   taken at the element's charge predicted for the middle of the sub-step.
+   - If `j == 0` the capture term vanishes whatever `eta` is: `h1 = h0 exp(-ds / tau_h)`, no predictor.
+   - Predictor, with `eta` at the start charge `q`: `a0 = (1 - eta(V_l(q))) j`,
+     `beta0 = a0 / H + 1 / tau_h`, `h_inf0 = a0 / beta0`,
+     `h_half = h_inf0 + (h0 - h_inf0) exp(-beta0 ds / 2)`,
+     `q_half = min(q + (j + d) ds / 2 - trap_dn_half - (h_half - h0), plate_nas)`.
+   - Step, with `eta` at the predicted charge: `a = (1 - eta(V_l(q_half))) j`, `beta = a / H + 1 / tau_h`,
+     `h_inf = a / beta`, `h1 = h_inf + (h0 - h_inf) exp(-beta ds)`.
+   - `held_dn = h1 - h0`. The predictor's `h_half` and `q_half` are discarded; only `h1` is stored.
+6. **Element.** `q <- min(q + j ds - trap_dn - held_dn + d ds, plate_nas)`. Bias light is in `j`.
+
+Burn and traps do not depend on the element's charge, so for a constant light they are exact at any
+step; only the held charge couples to `q` through `eta`, and the midpoint makes that coupling second
+order in `ds` (halving the swing per step cuts the error about four times, measured below).
 
 Charge is conserved: what the held population takes it gives back (`-held_dn` turns positive as it
 empties); what it cannot take (`h` near `H`) is collected at once, so an overloaded element still
 reaches the plate. Released carriers go onto the element and are read by the beam like light: a retained
 image passes through the beam's bottleneck, as lag does.
+
+### The held-charge step
+
+The number of sub-steps `n` of a piece of length `dt` that leaves the merged rule (step 1 above). At the
+piece's start the element holds `q` and `h0`, its burn is `b0`; `t_mid` is the piece's mid time (where
+`p` is evaluated), and the estimates use the start burn: `j_e = (p + bias_na) (1 - b0)`,
+`d_e = dark(t_mid) (1 + dark_gain b0)` (`b0 = 0` without burn). `C = capacitance_f * 1e9` nA s per V.
+
+1. **Fixed step (numerical reference).** If `retention_step_s > 0` (a `TubeChannel` field, `0.0` for
+   every kind): `n = max(1, ceil(dt / retention_step_s))`, for every piece of the channel that leaves the
+   merged rule, whatever its collection, burn or charge. Nothing else uses it.
+2. **Held regime.** Otherwise, if the collection is not `FULL` and either `h0 > 0` or
+   `q + (j_e + d_e) dt > q_knee` (`q_knee = C (target_voltage_v - knee_v)`, the charge at which the layer
+   reaches the knee; the same trigger as before):
+   `n = min(max(1, ceil((j_e + d_e) dt / (C HELD_STEP_V))), ceil(dt / RETENTION_STEP_S))`.
+   `(j_e + d_e) dt / C` is how far light and dark current alone would move the layer voltage in the
+   piece, so each sub-step moves it by at most `HELD_STEP_V = 0.5` V. The maximum keeps an overloaded
+   element (which reaches the plate within the piece and then stays there) from taking more sub-steps
+   than the 0.5 ms grid, `RETENTION_STEP_S = 0.5e-3` s; without it a hundred times peak white would take
+   about 740 (red) to 1760 (green) sub-steps a lit frame against the grid's 67 [DER].
+3. **Otherwise** `n = 1` (the layer stays above its knee, `eta = 1`, and `h` stays 0; burn, traps and
+   the warm-up's dark current are evaluated once per piece as before).
+
+**Why half a volt** [DER, numerical]. The project holds the step to accuracy first: the rule must
+come closer to the converged target than the first rule (0.5 ms, `eta` at the start) at every point
+measured, not only be cheaper. One step per volt does not: at peak white, where a red or blue element
+swings under a volt in most pieces and so takes one midpoint step per piece, its reading errs by
+1.1e-4 (R) and 8.6e-6 (B) of peak white against the first rule's 4.2e-5 and 3.6e-6, and its held
+charge by 9.1e-4 against 3.9e-4 of the capacity. At half a volt every case below is closer than the
+first rule in every quantity (or the same, where both take the same single step).
+
+**Accuracy** [DER, numerical]. The reference is the same scheme at a fixed step (`retention_step_s`).
+At 1/16 ms it is converged: 1/64 ms moves no row by more than 1e-7 of peak white, and the first rule's
+scheme at a fixed 0.01 ms lies within 4e-5 of it (first order, as expected). A fixed 0.25 ms is within
+1.2e-6 of peak white (rows) and 2e-5 of the capacity (held charge) of the 1/16 ms reference, so it
+serves as the tests' reference. Against the 1/16 ms reference, over 40 frames of nine scenes on one
+uniformly lit column (a tenth of peak white, peak white, twice peak white, 16 and 100 times peak white,
+each for 20 frames (16 times: 10) then dark; a 20 times spot of a tenth of the height for 30 frames,
+then dark; static bars; a
+moving edge at 1.5 times peak white; a moving grating) for Plumbicon R, G and B, the Saticon, the ACT
+Plumbicon (G, three scenes), Plumbicon with bias light (R, two scenes) and the vidicon (peak white and
+its lamp):
+
+| Quantity | This rule, worst | First rule, worst | One volt per step, worst |
+|---|---|---|---|
+| Row reading, share of peak white | 3.0e-5 plain (R, twice peak white); 1.1e-4 with bias light (R, twice peak white, the frame the light goes out) | 1.9e-3 plain; 7.4e-3 with bias light | 1.1e-4; 3.8e-4 |
+| Held charge, share of its capacity | 3.0e-4 (G, bars) | 8.3e-3 | 1.5e-3 |
+| Trap occupancy, share of its capacity | 5e-9 (vidicon) | the same | the same |
+| Burn, absolute | 1.3e-12 (vidicon under the lamp, burn 0.025) | the same | the same |
+| Stored charge, share of the plate | 1.3e-5 (Saticon, 16 times) | 8.1e-4 | 1.7e-5 |
+
+Case by case the rule's error is below the first rule's in every scene with sub-steps; the closest
+are the red grating (rows 2.4e-5 against 3.6e-5), red bias light at peak white (2.8e-5 against 4.5e-5)
+and blue at peak white (1.7e-6 against 3.6e-6). Where neither rule sub-steps (low key; the Saticon at or
+below peak white, whose layer stays above its knee; the vidicon, which has no held charge) both take
+one step per piece and agree with the reference to rounding (3e-13 of peak white). The rule is second
+order: on red with bias light at twice peak white, 1, 0.5 and 0.25 V per step give 3.8e-4, 1.1e-4 and
+3.0e-5. The bounds of the tests (`tests/camera_retention_step.rs`) are, case by case, the rule's
+measured error plus a quarter, each below the first rule's error in the same case.
+
+**Cost** [DER]. Sub-steps per sub-element per frame on one column: one per piece (about 6 a frame) in
+the dark or at low key, as before; at steady peak white 11.3 (R), 21.4 (G), 11.7 (B) against about 70
+with the first rule (one volt per step: 7.8, 12.7, 7.9); in overload at most the 0.5 ms grid plus one
+per piece (70.5), as before. A sub-step costs about 1.8 times an old one (four exponentials instead of
+two). On the whole default three-tube Plumbicon camera (NTSC, 8 threads, a ramp scene with texture and a
+moving highlight, measured on an implementation of this section): 8.5 s of CPU a frame becomes 3.2 s
+(2.6 times less; one volt per step: 2.8 s), and a read takes 0.42 s instead of 1.1 to 1.2 s, 2.4 fps
+instead of 0.85 (one volt: 2.6 fps). Another build ran on the machine at times; the CPU figures varied by
+under 2 % between repeats.
 
 ### Warm-up
 
@@ -248,6 +336,15 @@ are then those of the dark-settled column shifted by `n` frames (the beam has he
 at the temperature of switch-on; the first frames read after an idle settle it to the present dark
 current). With the beam off, `idle` integrates as the skipped frames would, with no light: charge rises
 by the dark current (sub-steps of at most 1 s when warming, midpoint dark current) up to the plate.
+The idle time `dt` is one piece with `p = 0` (bias light only), integrated by the sub-steps of "One held
+piece" (burn, light and dark, traps, held charge by the midpoint step, element), with `n`:
+`max(1, ceil(dt / retention_step_s))` if `retention_step_s > 0`; otherwise `max(n_held, n_slow)`, where
+`n_held = min(max(1, ceil((bias_na + dark(t0)) dt / (C HELD_STEP_V))), ceil(dt / RETENTION_STEP_S))` when
+the collection is not `FULL`, `bias_na > 0` and either `h0 > 0` or `q + (bias_na + dark(t0)) dt > q_knee`
+(`t0` the element's last-landed time), else 1; and `n_slow = ceil(dt / 1 s)` when warming
+(`cold_offset_c != 0` with a finite `dark_doubling_c`) or burnt (`b0 > 0`), else 1. As before, once the
+charge reaches the plate on a tube that is neither warming nor burnt, the rest of the time is one exact
+step at the plate.
 
 ## Constants
 
@@ -262,7 +359,11 @@ In `tube.rs`:
 | `VIDICON_BURN` | `rate_per_s 5.5e-6, recovery_s 600, dark_gain 0.75` | US 3,546,520: -12 % after 120 s, dark 10 to nearly 11 nA, normal within 30 min [DS]; recovery 600 s leaves 5 % after 30 min [DER]; rate for `b(120 s) = 0.12` at `BURN_LAMP_LIGHT` [DER]; `dark_gain = 0.09 / 0.12` [DER] |
 | `WARM_UP_S` | 600 s | [est] |
 
-In `camera.rs`: `RETENTION_STEP_S = 0.5e-3` [est, numerical].
+In `camera.rs`: `HELD_STEP_V = 0.5` V, the layer swing per held-charge sub-step [DER, numerical: the
+largest of 1, 0.5 and 0.25 V that is closer to the converged reference than the first rule everywhere,
+"The held-charge step"]; `RETENTION_STEP_S = 0.5e-3` s, the
+shortest sub-step the rule takes (the old fixed step, kept as the overload maximum) [DER, numerical].
+Neither is a property of a tube, so neither is a measurement to be wanted.
 
 Capacities are target-equivalent over the whole target, as trap capacities are: a target of another size
 scales them with its area (the test helper `resized` in `camera_materials.rs` does so for traps).
@@ -311,6 +412,8 @@ pub const WARM_UP_S: f64 = 600.0;
 //                              // SATICON_COLLECTION for Saticon, FULL otherwise
 //     burn: Burn               // VIDICON_BURN for Vidicon, NONE otherwise
 //     cold_offset_c: f64       // 0.0 from TubeKind; CameraTube sets it from CameraParams
+//     retention_step_s: f64    // 0.0 from TubeKind (the held-charge step); > 0: fixed sub-steps
+//                              // of that length, s (the numerical reference of the tests)
 impl TubeChannel {
     /// `target_voltage_v - q / (capacitance_f * 1e9)`, V.
     pub fn layer_voltage_v(&self, q_nas: f64) -> f64;
@@ -323,6 +426,15 @@ In `camera.rs` (both engines):
 
 ```rust
 pub const RETENTION_STEP_S: f64 = 0.5e-3;
+pub const HELD_STEP_V: f64 = 0.5;
+/// State of one sub-element of a `UniformColumn`; 0 for the states its channel does not carry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElementState {
+    pub charge_nas: f64,
+    pub traps_nas: [f64; MAX_TRAPS],
+    pub held_nas: f64,
+    pub burn: f64,
+}
 // CameraParams gains, with #[serde(default)] as the others:
 //     cold_start_c: Option<f64>   // faceplate temperature at switch-on, deg C; None = at temperature_c
 impl UniformColumn {
@@ -331,6 +443,12 @@ impl UniformColumn {
     pub fn set_beam_on(&mut self, on: bool);
     /// Lens capped, beam as set, for `seconds` (rounded to whole frames) without reading.
     pub fn idle(&mut self, seconds: f64);
+    /// State of sub-row `k` (`0..SUB_ROWS * ACTIVE_H`) as last left by a read or idle.
+    pub fn element(&self, k: usize) -> ElementState;
+    /// Sub-steps taken by this column's reads in the pieces that leave the merged rule (the sum of
+    /// every such piece's `n`) since construction, the dark settle excluded; 0 for a channel on the
+    /// merged rule. `idle` does not count.
+    pub fn held_steps(&self) -> u64;
 }
 impl CameraTube {
     pub fn set_beam_on(&mut self, on: bool);
@@ -367,9 +485,13 @@ collection that is not `FULL`, a burn), so the other kinds cost nothing.
 - No constant fitted before this stage changes: `TARGET_CAPACITANCE_F`, `PBO_BLUE_TRAPS`,
   `SATICON_CAPACITANCE_F`, `SATICON_TRAPS` and the rest stay as merged. (The two Saticon constants were
   refitted afterwards to the BC4908 family, decision 2.)
-- Cost: sub-steps only on elements whose layer falls below the knee (highlights, high key); burn adds one
-  exponential per piece on vidicon elements. The prototype's 300 nA decay took about 17 times the merged
-  time for one uniform column (every element is at high key); a normal picture has few such elements.
+- Cost: sub-steps only on elements whose layer falls below the knee; burn adds one exponential per piece
+  on vidicon elements. The expectation that a normal picture has few such elements was wrong for lead
+  oxide: its knee is its target voltage, so every lit element, and every element that has ever held
+  charge, takes the held-charge step. With the first fixed rule (0.5 ms sub-steps, `eta` at the start)
+  that was about 70 sub-steps per lit element a frame and the default three-tube Plumbicon read about
+  1 fps; the step of "The held-charge step" takes 11 to 21 at peak white and the camera reads about
+  2.4 fps (see there).
 
 ## Tests (`tests/camera_retention.rs`)
 
@@ -390,6 +512,50 @@ The prototype (the merged engine with this section's rule in `integrate_sub_row`
 and the warm-up law) ran this file: all ten pass, 2.7 s together in release.
 
 The longest, the vidicon burn, reads 120 s of frames (about 2.5 s); its recovery uses `idle`.
+
+## Tests (`tests/camera_retention_step.rs`)
+
+The held-charge step, on `UniformColumn`, against the same column with `retention_step_s = 0.25e-3`
+(the reference of "The held-charge step"). Each case compares every row reading of every frame, and the
+held charge, trap occupancies, burn and stored charge of every sub-row (`UniformColumn::element`) after
+every frame. A case's bound on a reading, a held charge (share of `H`) and a stored charge (share of the
+plate) is the rule's measured error plus a quarter, rounded up; the test also requires each error to be
+below the first rule's error in the same case (the last column). Traps within 1e-8 of their capacity
+and burn within 1e-12 everywhere. Lead oxide: light for 20 frames, then 10 dark.
+
+| Case | Rule, measured [DER]: row / held / charge | Bound | First rule [DER] |
+|---|---|---|---|
+| Plumbicon R, peak white | 1.84e-5 / 1.42e-4 / 1.21e-6 | 2.3e-5 / 1.8e-4 / 1.6e-6 | 4.15e-5 / 3.93e-4 / 3.48e-6 |
+| Plumbicon R, twice peak white | 2.88e-5 / 4.71e-5 / 1.54e-6 | 3.6e-5 / 5.9e-5 / 2.0e-6 | 1.87e-3 / 1.97e-3 / 1.05e-4 |
+| Plumbicon G, peak white | 1.18e-5 / 1.85e-4 / 1.64e-6 | 1.5e-5 / 2.4e-4 / 2.1e-6 | 1.31e-4 / 2.24e-3 / 1.96e-5 |
+| Plumbicon G, twice peak white | 9.82e-6 / 8.49e-5 / 1.75e-6 | 1.3e-5 / 1.1e-4 / 2.2e-6 | 8.21e-4 / 8.27e-3 / 1.08e-4 |
+| Plumbicon B, peak white | 1.69e-6 / 1.24e-4 / 8.03e-8 | 2.2e-6 / 1.6e-4 / 1.1e-7 | 3.58e-6 / 3.61e-4 / 1.79e-7 |
+| Plumbicon B, twice peak white | 3.69e-6 / 8.55e-5 / 1.77e-7 | 4.7e-6 / 1.1e-4 / 2.3e-7 | 1.35e-4 / 2.20e-3 / 6.29e-6 |
+| Plumbicon with bias light R, peak white | 2.83e-5 / 1.53e-4 / 5.91e-7 | 3.6e-5 / 2.0e-4 / 7.4e-7 | 4.45e-5 / 4.14e-4 / 1.68e-6 |
+| Plumbicon with bias light R, twice peak white | 1.11e-4 / 4.12e-5 / 4.39e-6 | 1.4e-4 / 5.2e-5 / 5.5e-6 | 7.35e-3 / 1.87e-3 / 2.57e-4 |
+| Saticon G, 20 times peak white for 10 frames (US 4,330,733's drive), then 10 dark | 1.70e-5 / 2.64e-5 / 9.25e-6 | 2.2e-5 / 3.3e-5 / 1.2e-5 | 2.06e-4 / 2.12e-4 / 7.41e-5 |
+| Vidicon G, the lamp of US 3,546,520 (3500 times peak white) for 60 frames, then 10 dark; the lamp must burn more than 1e-2 (it reaches 0.038) | 0 / - / 5.4e-11; traps 4.9e-9, burn 3.3e-13 | 1e-9 / - / 1e-10 | the same (no sub-steps in either rule) |
+
+Tests: `lead_oxide_highlights_are_integrated_within_the_bound_of_the_converged_target` (the six plain
+Plumbicon cases), `lead_oxide_with_bias_light_is_integrated_within_the_bound_of_the_converged_target`,
+`a_sticking_saticon_is_integrated_within_the_bound_of_the_converged_target`,
+`a_burning_vidicon_is_integrated_within_the_bound_of_the_converged_target`, and
+`the_held_charge_takes_one_step_per_half_volt_of_swing`: `held_steps` over 20 frames of steady light
+after 10. A Newvicon at peak white takes 0 (the merged rule). Plumbicon R, G, B at a tenth of peak
+white take one step per piece (5.99 a frame, every piece swings under half a volt); at peak white at
+least the swing a frame in steps, `(peak + dark) T_frame / (C HELD_STEP_V)`, and at most that plus one
+per piece (measured R 11.34 for 7.30, G 21.39 for 17.47, B 11.65 for 7.63); at 100 times peak white at
+most `T_frame / RETENTION_STEP_S` plus one per piece (70.47 against 72.72). The file runs in about 9 s
+in release.
+
+The existing camera tests (`camera_retention`, `camera_lag`, `camera_materials`, `camera_highlights`,
+`camera_tube`, `camera_scan`, `camera_blooming`, `camera_colour`, `camera_electronics`,
+`camera_geometry`) and `stripe_tube`, `stripe_camera`, `golden`, `field_sequential` and `pal` pass
+unchanged with the rule, measured on an implementation of this section; no tolerance was changed.
+The readings the retention tests report move by little: the XQ1020 high-key tail from 1.229 / 0.418 %
+to 1.234 / 0.424 % at 60 / 200 ms (data 1.2 / 0.4 %, factor 1.3), the Saticon's sticking from 21.92 to
+21.93 %, the bending test's bloom at 4 times peak white from 1427.1 to 1419.7 nA (growth to 16 times 1.72,
+at least 1.3), the green low-key decay in its fourth decimal; the rest within their last printed digit.
 
 ## Decisions for the lead
 
@@ -424,6 +590,14 @@ The longest, the vidicon burn, reads 120 s of frames (about 2.5 s); its recovery
 3. **The held-charge capacities and release times are [est]**, two numbers per material fitted to one
    datum each (PbO to the XQ1020 high key, Saticon to US 4,330,733's band). The PbO burn's lifetime
    (2 s) follows from that fit, not from a burn measurement; no source times a PbO burn.
+4. **The held-charge step, changed.** The first rule (0.5 ms sub-steps, `eta` at their start) made
+   the default three-tube Plumbicon read about 1 fps, because lead oxide's knee is its target voltage
+   (intended: the Mullard and RCA curves show incomplete collection below 45 V), so every lit element
+   sub-steps. The lead approved the midpoint step of "The held-charge step". One volt per step, as
+   first proposed, is the cheaper (2.8 s of CPU a frame against 3.2 s) but at peak white on red and
+   blue it is further from the converged target than the first rule; half a volt is closer than the
+   first rule everywhere measured, and was taken because accuracy comes first. Every existing test
+   passes unchanged.
 
 ## Out of scope
 
