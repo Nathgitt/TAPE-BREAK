@@ -103,7 +103,7 @@ Session::process(batch)
   4 decode_frame(k)      parallel over frames   sync/AFC/colour decode of fields 2k, 2k+1
 ```
 
-Ahead of all this, a session with a camera tube on hands each pushed frame to `CameraTube::encode_baseband` instead of
+Ahead of all this, a session with a camera tube on hands each pushed frame to `CameraTube::encode_baseband` in place of
 `video::encode_frame` (`push_fields` goes to `encode_fields`). The camera lets the held input pictures charge the target of
 each channel, reads the target row by row at every element's own time (`read_time_s`), passes the line signal in nA through the
 head amplifier and the processing amplifier and encodes the clipped, gamma-corrected signals straight to baseband Y/C; the
@@ -174,6 +174,11 @@ time and picture position. With one engine and direct links a `Rack` gives the f
   half-width `h = sqrt((g/2)^2 + (d+a)(d+a+delta))`; spectrum `exp(-k h)`. Spacing
   changes add to `h`, so time-varying spacing is exact per pulse and Wallace's
   law is a consequence, not an input.
+* **The tube works in seconds.** The target's constants are in nA, nF and seconds and every element is read at its own
+  time (`read_time_s`), so one set of constants serves both rasters and the lag is checked at the same elapsed times at 50
+  and 60 Hz. One scan of an element is solved in closed form (`exp(-q'/K) = exp(-q/K) + (I_b - r1)/K`), and the held
+  charge of lead oxide and the Saticon is advanced in half-volt midpoint steps, checked against a converged 1/16 ms
+  reference (`docs/CAMERA.md`, "Retention").
 * **Stateless processes.** Timebase error, tape defects and tracking are pure
   functions of (seed, global time or track index). Parallel scheduling cannot
   change a result.

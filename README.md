@@ -319,7 +319,7 @@ The rest of the camera, each a flag and a config key (`docs/CAMERA.md`, "Using i
   beams that scan nearby lines towards itself, so a bright highlight spreads into the dark around it. Peak white does
   not bend the beam; no measurement sets the scale of the effect.
 * **Spectral colour** (`--camera-spectral`): the scene's light goes through the lens infrared filter, the prism and each
-  target's spectral response, instead of ideal colour.
+  target's spectral response; without it the colour is ideal.
 * **Scan geometry** (`--camera-geometry`): deflection distortion, registration of the three tubes, black and white
   shading, veiling glare, halation, and corner focus, with the studio camera's correctors.
 * **Retention**: held charge in lead oxide and the Saticon (more lag at high key, sticking after an overload), reversible
@@ -484,6 +484,9 @@ cd python && ../.venv/bin/python -m pytest -q tests
 * Input is treated as a progressive source (the two fields of a frame come from
   the same image); there is no 59.94 fps field output yet. Field-sequential input exists in the core only (`Session::push_fields(f0, f1)`), while the command line tool still treats each input frame as progressive.
 * Print-through and the luma line-delay noise canceller are not modelled.
+* The camera has no Trinicon tube, no stripe-camera spectra and no permanent burn damage, and the
+  beam spot does not grow with beam current; the lists of what is estimated or unmeasured are in
+  `docs/CAMERA.md` ("Known limits") and `docs/MEASUREMENTS_WANTED.md`.
 * The ageing laws and several defaults are engineering estimates (tagged `[est]`
   in the source and notes) and are meant to be tuned against real tapes.
 
