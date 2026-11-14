@@ -203,6 +203,8 @@ enum CameraTubeArg {
     PlumbiconBias,
     /// Plumbicon with an anti-comet-tail gun (XQ1520): lag, no comet tails.
     PlumbiconAct,
+    /// Plumbicon diode gun with dynamic beam control (XQ3440): a boosted beam discharges highlights, so no comet tails.
+    PlumbiconDbc,
     /// Sb2S3 vidicon of home cameras: heavy lag, its own transfer curve.
     Vidicon,
     /// ZnSe/ZnCdTe Newvicon: sensitive, lag from its large target capacitance.
@@ -220,6 +222,15 @@ enum CameraProcessingArg {
     Studio,
     /// Consumer (home camera).
     Consumer,
+}
+
+/// How the camera's tubes see colour.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CameraLayoutArg {
+    /// Three tubes behind a colour-splitting prism, one per colour (studio cameras).
+    ThreeTube,
+    /// One tube behind a colour stripe filter (home cameras).
+    Stripe,
 }
 
 #[derive(clap::Args)]
@@ -247,7 +258,7 @@ struct RunArgs {
     /// Sound: process (through the simulated tape and deck), copy (untouched) or none.
     #[arg(long, value_enum, default_value_t = AudioMode::Process)]
     audio: AudioMode,
-    /// Camera pickup tube ahead of the recorder: lag and comet tails (off, plumbicon, plumbicon-bias, plumbicon-act, vidicon, newvicon, saticon, chalnicon).
+    /// Camera pickup tube ahead of the recorder: lag and comet tails (off, plumbicon, plumbicon-bias, plumbicon-act, plumbicon-dbc, vidicon, newvicon, saticon, chalnicon).
     #[arg(long, value_enum)]
     camera_tube: Option<CameraTubeArg>,
     /// Exposure of the camera tubes in stops: positive overexposes, so highlights leave tails.
@@ -259,6 +270,18 @@ struct RunArgs {
     /// Camera electronics: studio (three-tube broadcast) or consumer (home camera).
     #[arg(long, value_enum, value_name = "PROFILE")]
     camera_processing: Option<CameraProcessingArg>,
+    /// How the camera sees colour: three-tube (a prism and a tube per colour) or stripe (one tube behind a stripe filter).
+    #[arg(long, value_enum, value_name = "LAYOUT")]
+    camera_layout: Option<CameraLayoutArg>,
+    /// Take the scene through the camera's prism, infrared filter and target spectral responses, with its colour matrix, instead of ideal colour.
+    #[arg(long)]
+    camera_spectral: bool,
+    /// Give the camera its scan geometry: deflection, registration, black and white shading, lens flare and corner focus.
+    #[arg(long)]
+    camera_geometry: bool,
+    /// Faceplate temperature of the camera tubes at switch-on in degrees Celsius: the black creeps as they warm to --camera-temperature.
+    #[arg(long, value_name = "DEG_C", allow_negative_numbers = true)]
+    camera_cold_start: Option<f64>,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -637,12 +660,29 @@ fn run(a: RunArgs) -> Result<()> {
             CameraTubeArg::Plumbicon => "plumbicon",
             CameraTubeArg::PlumbiconBias => "plumbicon-bias",
             CameraTubeArg::PlumbiconAct => "plumbicon-act",
+            CameraTubeArg::PlumbiconDbc => "plumbicon-dbc",
             CameraTubeArg::Vidicon => "vidicon",
             CameraTubeArg::Newvicon => "newvicon",
             CameraTubeArg::Saticon => "saticon",
             CameraTubeArg::Chalnicon => "chalnicon",
         };
         sets.push(format!("camera.tube={name}"));
+    }
+    if let Some(layout) = a.camera_layout {
+        let name = match layout {
+            CameraLayoutArg::ThreeTube => "three-tube",
+            CameraLayoutArg::Stripe => "stripe",
+        };
+        sets.push(format!("camera.layout={name}"));
+    }
+    if a.camera_spectral {
+        sets.push("camera.spectral=true".to_string());
+    }
+    if a.camera_geometry {
+        sets.push("camera.geometry=true".to_string());
+    }
+    if let Some(c) = a.camera_cold_start {
+        sets.push(format!("camera.cold_start_c={c:?}"));
     }
     sets.extend(a.sets.iter().cloned());
     let (text, sets, standard) = assemble_config(&file_text, &sets, a.standard)?;
@@ -1170,6 +1210,7 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
         ("Plumbicon", "Standard tube (XQ1020): target lag and highlight comet tails"),
         ("Plumbicon+Bias", "Light-bias tube (XQ1410): reduced lag in shadows"),
         ("Plumbicon+ACT", "Anti-comet-tail gun (XQ1520): lag without persistent tails"),
+        ("Plumbicon+DBC", "Diode gun with dynamic beam control (XQ3440): highlights discharged, no tails"),
         ("Vidicon", "Sb2S3 vidicon of home cameras: heavy lag, its own transfer curve"),
         ("Newvicon", "ZnSe/ZnCdTe Newvicon: sensitive, lag from its large target capacitance"),
         ("Saticon", "Se-As-Te Saticon (H8397A): low lag, residues clear white"),
@@ -1180,11 +1221,24 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
         1 => (Some(CameraTubeArg::Plumbicon), ask_iris_stops()?),
         2 => (Some(CameraTubeArg::PlumbiconBias), ask_iris_stops()?),
         3 => (Some(CameraTubeArg::PlumbiconAct), ask_iris_stops()?),
-        4 => (Some(CameraTubeArg::Vidicon), ask_iris_stops()?),
-        5 => (Some(CameraTubeArg::Newvicon), ask_iris_stops()?),
-        6 => (Some(CameraTubeArg::Saticon), ask_iris_stops()?),
-        7 => (Some(CameraTubeArg::Chalnicon), ask_iris_stops()?),
+        4 => (Some(CameraTubeArg::PlumbiconDbc), ask_iris_stops()?),
+        5 => (Some(CameraTubeArg::Vidicon), ask_iris_stops()?),
+        6 => (Some(CameraTubeArg::Newvicon), ask_iris_stops()?),
+        7 => (Some(CameraTubeArg::Saticon), ask_iris_stops()?),
+        8 => (Some(CameraTubeArg::Chalnicon), ask_iris_stops()?),
         _ => (None, None),
+    };
+    let camera_layout_arg = if camera_tube_arg.is_some() {
+        let layout_choices = [
+            ("Three tubes", "A prism splits the light onto one tube per colour (studio camera)"),
+            ("Stripe", "One tube behind a colour stripe filter (home camera)"),
+        ];
+        match ask_choice("Camera colour pickup:", &layout_choices, 0)? {
+            1 => Some(CameraLayoutArg::Stripe),
+            _ => None,
+        }
+    } else {
+        None
     };
 
     let audio_choices = [
@@ -1235,6 +1289,7 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             CameraTubeArg::Plumbicon => "plumbicon",
             CameraTubeArg::PlumbiconBias => "plumbicon-bias",
             CameraTubeArg::PlumbiconAct => "plumbicon-act",
+            CameraTubeArg::PlumbiconDbc => "plumbicon-dbc",
             CameraTubeArg::Vidicon => "vidicon",
             CameraTubeArg::Newvicon => "newvicon",
             CameraTubeArg::Saticon => "saticon",
@@ -1246,6 +1301,10 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
     if let Some(stops) = iris_stops {
         cmd_parts.push("--iris-stops".to_string());
         cmd_parts.push(stops.to_string());
+    }
+    if let Some(CameraLayoutArg::Stripe) = camera_layout_arg {
+        cmd_parts.push("--camera-layout".to_string());
+        cmd_parts.push("stripe".to_string());
     }
     if audio_arg != AudioMode::Process {
         let a_str = match audio_arg {
@@ -1283,6 +1342,10 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             iris_stops,
             camera_temperature: None,
             camera_processing: None,
+            camera_layout: camera_layout_arg,
+            camera_spectral: false,
+            camera_geometry: false,
+            camera_cold_start: None,
             start: None,
             duration: None,
             frames: None,

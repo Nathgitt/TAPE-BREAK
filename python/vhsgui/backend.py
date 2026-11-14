@@ -26,7 +26,13 @@ from vhsgui.model import (
     LOG_CHARS,
     PREVIEW_MAX_SIZE,
     AUDIO_MODES,
+    CAMERA_LAYOUTS,
+    CAMERA_PROCESSING,
+    CAMERA_TEMPERATURE_RANGE,
     CAMERA_TUBES,
+    DEFAULT_CAMERA_LAYOUT,
+    DEFAULT_CAMERA_PROCESSING,
+    DEFAULT_CAMERA_TEMPERATURE_C,
     IRIS_STOPS_RANGE,
     MAX_GENERATIONS,
     SIGNALS,
@@ -53,7 +59,7 @@ MICROSECONDS = 1_000_000  # seeks are cut to this resolution
 ASPECT_TOLERANCE_STEPS = 8  # even widths tried below the largest one while fitting the aspect ratio
 DEFAULT_SIGNAL = "svideo"  # the deck's own Y/C: no composite stage is configured
 DEFAULT_AUDIO = "process"  # the core's default, so no flag is needed
-DEFAULT_CAMERA_TUBE = "off"  # no pickup tube is simulated, so neither camera flag is needed
+DEFAULT_CAMERA_TUBE = "off"  # no pickup tube is simulated, so no camera flag is needed
 EVEN = 2  # video encoders need even frame dimensions
 ASPECT_EPSILON = 1e-9  # guards the floor of sizes that are exact in theory but not in floats
 
@@ -356,6 +362,13 @@ def _iris_in_range(value: Any) -> bool:
     return IRIS_STOPS_RANGE[0] <= value <= IRIS_STOPS_RANGE[1]
 
 
+def _temperature_in_range(value: Any) -> bool:
+    """True for a real number inside CAMERA_TEMPERATURE_RANGE (a bool is not a number here)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return CAMERA_TEMPERATURE_RANGE[0] <= value <= CAMERA_TEMPERATURE_RANGE[1]
+
+
 def merge_config(look: Look) -> str:
     """TOML for the core: the condition controls with the advanced tables merged on top."""
     try:
@@ -370,6 +383,14 @@ def merge_config(look: Look) -> str:
         raise GuiError(f"Unknown camera tube '{look.camera_tube}'")
     if not _iris_in_range(look.iris_stops):
         raise GuiError(f"The iris must be between {IRIS_STOPS_RANGE[0]:g} and {IRIS_STOPS_RANGE[1]:g} stops")
+    if look.camera_layout not in CAMERA_LAYOUTS:
+        raise GuiError(f"Unknown camera layout '{look.camera_layout}'")
+    if look.camera_processing not in CAMERA_PROCESSING:
+        raise GuiError(f"Unknown camera electronics '{look.camera_processing}'")
+    if not _temperature_in_range(look.camera_temperature_c):
+        raise GuiError(
+            f"The camera temperature must be between {CAMERA_TEMPERATURE_RANGE[0]:g} and {CAMERA_TEMPERATURE_RANGE[1]:g} °C"
+        )
     doc: dict[str, Any] = {"condition": dict(look.condition)} if look.condition else {}
     if look.signal != DEFAULT_SIGNAL:
         doc["composite"] = {"enabled": True, "decoder": look.signal}
@@ -393,6 +414,11 @@ def save_look(look: Look) -> str:
         "standard": look.standard,
         "camera_tube": look.camera_tube,
         "iris_stops": float(look.iris_stops),  # always written with a '.', so it reads back as a float
+        "camera_layout": look.camera_layout,
+        "camera_processing": look.camera_processing,
+        "camera_temperature_c": float(look.camera_temperature_c),
+        "camera_spectral": bool(look.camera_spectral),
+        "camera_geometry": bool(look.camera_geometry),
         "advanced": look.advanced,
     }
     lines = ["[look]"] + [f"{key} = {_toml_value(value)}" for key, value in fields.items()]
@@ -440,6 +466,23 @@ def load_look(text: str) -> Look:
     iris_stops = section.get("iris_stops", defaults.iris_stops)
     if not _iris_in_range(iris_stops):
         raise GuiError(f"Look file: iris_stops must be a number from {IRIS_STOPS_RANGE[0]:g} to {IRIS_STOPS_RANGE[1]:g}")
+    camera_layout = section.get("camera_layout", defaults.camera_layout)
+    if camera_layout not in CAMERA_LAYOUTS:
+        raise GuiError(f"Look file: camera_layout must be one of {', '.join(CAMERA_LAYOUTS)}")
+    camera_processing = section.get("camera_processing", defaults.camera_processing)
+    if camera_processing not in CAMERA_PROCESSING:
+        raise GuiError(f"Look file: camera_processing must be one of {', '.join(CAMERA_PROCESSING)}")
+    camera_temperature_c = section.get("camera_temperature_c", defaults.camera_temperature_c)
+    if not _temperature_in_range(camera_temperature_c):
+        raise GuiError(
+            f"Look file: camera_temperature_c must be a number from {CAMERA_TEMPERATURE_RANGE[0]:g} to {CAMERA_TEMPERATURE_RANGE[1]:g}"
+        )
+    camera_spectral = section.get("camera_spectral", defaults.camera_spectral)
+    if not isinstance(camera_spectral, bool):
+        raise GuiError("Look file: camera_spectral must be true or false")
+    camera_geometry = section.get("camera_geometry", defaults.camera_geometry)
+    if not isinstance(camera_geometry, bool):
+        raise GuiError("Look file: camera_geometry must be true or false")
     advanced = section.get("advanced", defaults.advanced)
     if not isinstance(advanced, str):
         raise GuiError("Look file: advanced must be a string")
@@ -462,6 +505,11 @@ def load_look(text: str) -> Look:
         standard=standard,
         camera_tube=camera_tube,
         iris_stops=float(iris_stops),
+        camera_layout=camera_layout,
+        camera_processing=camera_processing,
+        camera_temperature_c=float(camera_temperature_c),
+        camera_spectral=camera_spectral,
+        camera_geometry=camera_geometry,
     )
 
 
@@ -495,6 +543,16 @@ def run_args(binary: Path | str, req: RunRequest, config_path: Path | str | None
         args += ["--standard", req.look.standard]
     if req.look.camera_tube != DEFAULT_CAMERA_TUBE:
         args += ["--camera-tube", req.look.camera_tube, "--iris-stops", repr(float(req.look.iris_stops))]
+        if req.look.camera_layout != DEFAULT_CAMERA_LAYOUT:
+            args += ["--camera-layout", req.look.camera_layout]
+        if req.look.camera_processing != DEFAULT_CAMERA_PROCESSING:
+            args += ["--camera-processing", req.look.camera_processing]
+        if req.look.camera_temperature_c != DEFAULT_CAMERA_TEMPERATURE_C:
+            args += ["--camera-temperature", repr(float(req.look.camera_temperature_c))]
+        if req.look.camera_spectral:
+            args.append("--camera-spectral")
+        if req.look.camera_geometry:
+            args.append("--camera-geometry")
     if config_path is not None:
         args += ["--config", str(config_path)]
     frame, seconds = snap_start(req.start, req.look.standard)

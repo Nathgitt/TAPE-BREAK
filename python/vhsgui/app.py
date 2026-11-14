@@ -61,8 +61,12 @@ from PySide6.QtWidgets import (
 from vhsgui import backend
 from vhsgui.model import (
     AUDIO_MODES,
+    CAMERA_LAYOUTS,
+    CAMERA_PROCESSING,
+    CAMERA_TEMPERATURE_RANGE,
     CAMERA_TUBES,
     CONDITION_FIELDS,
+    DEFAULT_CAMERA_TEMPERATURE_C,
     DEFAULT_STANDARD,
     GROUPS,
     IRIS_STOPS_RANGE,
@@ -140,6 +144,7 @@ CAMERA_TUBE_LABELS = (
     "Plumbicon",
     "Plumbicon with light bias",
     "Plumbicon, anti-comet-tail gun",
+    "Plumbicon, dynamic beam control",
     "Vidicon (home camera)",
     "Newvicon",
     "Saticon",
@@ -148,6 +153,10 @@ CAMERA_TUBE_LABELS = (
 IRIS_STEP = 0.5  # stops per click of the iris box
 DEFAULT_IRIS_STOPS = 0.0  # normal exposure: the iris neither over- nor underexposes
 IRIS_DECIMALS = 1
+CAMERA_LAYOUT_LABELS = ("Three tubes (prism)", "One tube, stripe filter")  # in the order of CAMERA_LAYOUTS
+CAMERA_PROCESSING_LABELS = ("Studio", "Home camera")  # in the order of CAMERA_PROCESSING
+CAMERA_TEMPERATURE_STEP = 1.0  # degrees per click of the temperature box
+CAMERA_TEMPERATURE_DECIMALS = 1
 PREVIEW_AUDIO = "none"  # a preview is only looked at, so the sound is never rendered for it
 
 SPLIT_DEFAULT = 0.5  # the divider starts in the middle
@@ -184,6 +193,11 @@ TASK_RENDER = "render"
 STANDARD_HELP = "The set's television standard: NTSC is 525 lines at 29.97 fps, PAL 625 at 25 fps, PAL-60 plays an NTSC tape on a PAL set."
 CAMERA_TUBE_HELP = "The camera's pickup tube: a Plumbicon lags and smears bright lights into comet tails, cured by the bias and gun variants; a vidicon lags heavily, a Saticon hardly at all, and the Newvicon and Chalnicon lag through their large target capacitance."
 IRIS_HELP = "The camera's iris opening past normal, in stops (each doubles the light): wide, it overexposes and shows comet tails. Needs a tube."
+CAMERA_LAYOUT_HELP = "How the camera sees colour: a prism and a tube per colour, or a home camera's one tube behind a stripe filter. Needs a tube."
+CAMERA_PROCESSING_HELP = "The camera's electronics: a studio processing amplifier, or a home camera's simpler circuits. Needs a tube."
+CAMERA_TEMPERATURE_HELP = "Temperature of the tube targets: warmer targets have more dark current, which lifts the black. Needs a tube."
+CAMERA_SPECTRAL_HELP = "Real colour: the prism, the infrared filter and each target's spectral response, with the colour matrix. Needs a tube."
+CAMERA_GEOMETRY_HELP = "Real scan: deflection, registration of the tubes, black and white shading, lens flare and corner focus. Needs a tube."
 LOOK_HELP = {
     "preset": "The starting condition of the tape and decks; the lines below start from its values.",
     "seed": "Seeds the random defects: the same seed always gives the same damage.",
@@ -193,6 +207,11 @@ LOOK_HELP = {
     "standard": STANDARD_HELP,
     "camera_tube": CAMERA_TUBE_HELP,
     "iris_stops": IRIS_HELP,
+    "camera_layout": CAMERA_LAYOUT_HELP,
+    "camera_processing": CAMERA_PROCESSING_HELP,
+    "camera_temperature_c": CAMERA_TEMPERATURE_HELP,
+    "camera_spectral": CAMERA_SPECTRAL_HELP,
+    "camera_geometry": CAMERA_GEOMETRY_HELP,
 }
 SCHEMATIC_MIN_WIDTH = 1240
 SCHEMATIC_MIN_HEIGHT = 880
@@ -424,7 +443,7 @@ FLOW_SECTIONS: tuple[FlowSection, ...] = (
             "V_out = OETF((s_read - black) / peak_na)",
         ),
         parameters=(
-            ("camera.tube", "Tube selection: off, plumbicon, plumbicon-bias, plumbicon-act, vidicon, newvicon, saticon, chalnicon"),
+            ("camera.tube", "Tube selection: off, plumbicon, plumbicon-bias, plumbicon-act, plumbicon-dbc, vidicon, newvicon, saticon, chalnicon"),
             ("camera.iris_stops", "Optical exposure offset (stops; positive overexposes to highlight comet tails)"),
             ("camera.beam_ratio", "ACT beam reserve capacity multiplier above peak white (nominal: 2.0)"),
             ("standard", "Raster standard: NTSC (525/29.97), PAL (625/25), or PAL-60"),
@@ -1198,6 +1217,11 @@ class MainWindow(QMainWindow):
             standard=self.standard_combo.currentData(),
             camera_tube=self.camera_tube_combo.currentData(),
             iris_stops=self.iris_spin.value(),
+            camera_layout=self.camera_layout_combo.currentData(),
+            camera_processing=self.camera_processing_combo.currentData(),
+            camera_temperature_c=self.camera_temperature_spin.value(),
+            camera_spectral=self.camera_spectral_check.isChecked(),
+            camera_geometry=self.camera_geometry_check.isChecked(),
         )
 
     def open_input(self, path: str) -> None:
@@ -1475,7 +1499,48 @@ class MainWindow(QMainWindow):
         iris_label = QLabel("Iris")
         for widget in (iris_label, self.iris_spin):
             widget.setToolTip(IRIS_HELP)
-        self._update_iris_enabled()
+
+        self.camera_layout_combo = QComboBox()
+        self.camera_layout_combo.setObjectName("field_camera_layout")
+        for text, value in zip(CAMERA_LAYOUT_LABELS, CAMERA_LAYOUTS, strict=True):
+            self.camera_layout_combo.addItem(text, value)
+        camera_layout_label = QLabel("Colour pickup")
+        for widget in (camera_layout_label, self.camera_layout_combo):
+            widget.setToolTip(CAMERA_LAYOUT_HELP)
+        self.camera_layout_combo.currentIndexChanged.connect(self._on_look_changed)
+
+        self.camera_processing_combo = QComboBox()
+        self.camera_processing_combo.setObjectName("field_camera_processing")
+        for text, value in zip(CAMERA_PROCESSING_LABELS, CAMERA_PROCESSING, strict=True):
+            self.camera_processing_combo.addItem(text, value)
+        camera_processing_label = QLabel("Electronics")
+        for widget in (camera_processing_label, self.camera_processing_combo):
+            widget.setToolTip(CAMERA_PROCESSING_HELP)
+        self.camera_processing_combo.currentIndexChanged.connect(self._on_look_changed)
+
+        self.camera_temperature_spin = QDoubleSpinBox()
+        self.camera_temperature_spin.setObjectName("field_camera_temperature_c")
+        self.camera_temperature_spin.setDecimals(CAMERA_TEMPERATURE_DECIMALS)
+        self.camera_temperature_spin.setRange(*CAMERA_TEMPERATURE_RANGE)
+        self.camera_temperature_spin.setSingleStep(CAMERA_TEMPERATURE_STEP)
+        self.camera_temperature_spin.setSuffix(" °C")
+        self.camera_temperature_spin.setValue(DEFAULT_CAMERA_TEMPERATURE_C)
+        camera_temperature_label = QLabel("Tube temperature")
+        for widget in (camera_temperature_label, self.camera_temperature_spin):
+            widget.setToolTip(CAMERA_TEMPERATURE_HELP)
+        self.camera_temperature_spin.valueChanged.connect(self._on_look_changed)
+
+        self.camera_spectral_check = QCheckBox("Spectral colour")
+        self.camera_spectral_check.setObjectName("field_camera_spectral")
+        self.camera_spectral_check.setToolTip(CAMERA_SPECTRAL_HELP)
+        self.camera_spectral_check.toggled.connect(self._on_look_changed)
+
+        self.camera_geometry_check = QCheckBox("Scan geometry")
+        self.camera_geometry_check.setObjectName("field_camera_geometry")
+        self.camera_geometry_check.setToolTip(CAMERA_GEOMETRY_HELP)
+        self.camera_geometry_check.toggled.connect(self._on_look_changed)
+
+        self._update_camera_enabled()
 
         self.save_look_button = QPushButton("Save look...")
         self.save_look_button.setObjectName("saveLookButton")
@@ -1504,8 +1569,16 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.camera_tube_combo, 6, 1, 1, 2)
         grid.addWidget(iris_label, 7, 0)
         grid.addWidget(self.iris_spin, 7, 1)
-        grid.addWidget(self.reset_button, 8, 0, 1, 3)
-        grid.addLayout(look_files, 9, 0, 1, 3)
+        grid.addWidget(camera_layout_label, 8, 0)
+        grid.addWidget(self.camera_layout_combo, 8, 1, 1, 2)
+        grid.addWidget(camera_processing_label, 9, 0)
+        grid.addWidget(self.camera_processing_combo, 9, 1, 1, 2)
+        grid.addWidget(camera_temperature_label, 10, 0)
+        grid.addWidget(self.camera_temperature_spin, 10, 1)
+        grid.addWidget(self.camera_spectral_check, 11, 1, 1, 2)
+        grid.addWidget(self.camera_geometry_check, 12, 1, 1, 2)
+        grid.addWidget(self.reset_button, 13, 0, 1, 3)
+        grid.addLayout(look_files, 14, 0, 1, 3)
         grid.setColumnStretch(1, 1)
         return box
 
@@ -1938,12 +2011,21 @@ class MainWindow(QMainWindow):
             if not self._sync_guard:
                 self._sync_schematic()
 
-    def _update_iris_enabled(self) -> None:
-        # Without a tube the camera adds nothing, so the iris has no effect to set.
-        self.iris_spin.setEnabled(self.camera_tube_combo.currentData() != backend.DEFAULT_CAMERA_TUBE)
+    def _update_camera_enabled(self) -> None:
+        # Without a tube the camera adds nothing, so its settings have no effect to set.
+        enabled = self.camera_tube_combo.currentData() != backend.DEFAULT_CAMERA_TUBE
+        for widget in (
+            self.iris_spin,
+            self.camera_layout_combo,
+            self.camera_processing_combo,
+            self.camera_temperature_spin,
+            self.camera_spectral_check,
+            self.camera_geometry_check,
+        ):
+            widget.setEnabled(enabled)
 
     def _on_camera_tube_changed(self, *_args: object) -> None:
-        self._update_iris_enabled()
+        self._update_camera_enabled()
         self._on_look_changed()
 
     def _on_advanced_changed(self) -> None:
@@ -2005,6 +2087,11 @@ class MainWindow(QMainWindow):
         self.standard_combo.setCurrentIndex(self.standard_combo.findData(look.standard))
         self.camera_tube_combo.setCurrentIndex(self.camera_tube_combo.findData(look.camera_tube))
         self.iris_spin.setValue(look.iris_stops)
+        self.camera_layout_combo.setCurrentIndex(self.camera_layout_combo.findData(look.camera_layout))
+        self.camera_processing_combo.setCurrentIndex(self.camera_processing_combo.findData(look.camera_processing))
+        self.camera_temperature_spin.setValue(look.camera_temperature_c)
+        self.camera_spectral_check.setChecked(look.camera_spectral)
+        self.camera_geometry_check.setChecked(look.camera_geometry)
         self.advanced_edit.setPlainText(look.advanced)
         self._set_stale(True)
         self._sync_schematic()
