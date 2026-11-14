@@ -14,17 +14,21 @@ The input pictures are the camera's gamma-corrected output, held over their own 
 sees `f0` and field 1's half-frame sees `f1`). Per channel:
 
 1. `v = rgb / 255`; scene light `L = oetf_inverse(v) * 2^iris_stops` (BT.709 transfer, so
-   `L = 1` gives peak white at an iris of 0), giving photocurrent `peak * L^0.95` (the
-   light transfer exponent of the data sheet). When `blooming > 0`, photocurrent above the
-   beam current spills laterally to neighbouring columns of the row before storage.
+   `L = 1` gives peak white at an iris of 0), giving photocurrent `peak * L^gamma` (the
+   light transfer exponent of the data sheet).
 2. Each target is divided into `ACTIVE_W` columns by `4 * ACTIVE_H` sub-rows (`SUB_ROWS = 4`),
    so the beam overlaps adjacent lines of the other field. Between beam visits, each
    sub-element integrates `(j_photo + j_dark + j_bias) * dt` over the held pictures covering
    its interval, up to the signal-plate limit `C * V_target`.
 3. Rows are read in raster order - field 0 top-down, then field 1 top-down - with sample `x`
    of active row `r` in frame `n` read at its own time `read_time_s(n, r, x)`. Each row pass
-   offers sub-rows within 3 sigma (`sigma_v = 0.65` frame-line pitches) a vertical Gaussian
-   share of the beam using the scan law in `tube.rs` (with ACT flyback clipping when fitted).
+   runs up to seven target-side steps: ACT flyback over a span of lines ahead of the read
+   beam (`plumbicon-act`), dynamic beam control bisection per column (`plumbicon-dbc`),
+   integration to the read instant, capture of the aim by the nearest element above the
+   beam-bending onset when `blooming > 0`, a single landing per element across the row, sharing
+   landed charge back to the aims' columns, and recording the column read current. When
+   `blooming == 0` and neither ACT nor DBC is active, the column-by-column path produces
+   identical output.
 4. The charge landed across the pass's sub-rows is summed and divided by `SUB_ROWS * T_frame`
    to give the row signal current in nA, then convolved along the line with a horizontal
    Gaussian beam spot (`sigma_h = 40 ns`, renormalised inside the active line at the ends).
@@ -72,10 +76,35 @@ accumulates until the element reaches the signal-plate voltage and photoconducti
 current, reading above peak white (clipped white) until it is gone. A
 longer or brighter highlight stores more; a stronger beam (`beam_ratio`) shortens it.
 
-**Anti-comet-tail (ACT) gun.** It recharges, during the line flyback, every element above the
-level the read beam can stabilise, so nothing is left over: the stored charge is cut to the
-beam current before the scan and the highlight never outlasts its frame. Only the ordinary
-lag remains.
+**Anti-comet-tail (ACT) gun.** During each line flyback (`ACT_FLYBACK_S = 8.0 us`), the ACT
+flood beam covers a vertical band spanning `ACT_SPAN_PH = 1/30` of picture height
+(`h_act = 8` active lines per field at 525, `9.6` at 625) with `ACT_BEAM_NA = 100 000 nA`
+(`24.0 nA s` per flyback pass). Every sub-element in the band above the channel's ACT
+pedestal (`ACT_LEVEL_V = [3.5, 7.0, 3.5] V`, or `4.83 / 8.05 / 4.62 nA s` for R / G / B) is
+discharged down toward that pedestal at the flyback instant `t_fb`. Interior lines receive
+multiple overlapping flybacks across adjacent field lines (`96 nA s` total over 4 passes,
+clearing full target-plate charge above the pedestal), whereas the very first line of a field
+receives only one flyback pass (`24.0 nA s`) unless already discharged earlier in the scan.
+
+**Dynamic beam control (`plumbicon-dbc`).** A diode-gun Plumbicon (`V_T = 0.10 V`,
+capacitance `1.7x` triode Plumbicon -> `2.346 / 1.955 / 2.244 nF` for R / G / B) adds
+feedback that boosts the read beam on a column above the fixed quiescent `beam_ratio` when
+stored charge in the scan footprint exceeds the nominal beam headroom (`DBC.headroom = 0.5`),
+solving per column by bisection to `DBC_TOLERANCE_NA = 0.01 nA` up to `DBC.max_ratio = 17.0`
+times peak signal current (`plate_nas = [105.57, 87.975, 100.98] nA s`). Above `17x`
+highlights, the beam hits the diode-gun limit and leaves a comet tail.
+
+**Beam bending and blooming.** When `blooming > 0`, an element at target potential
+`V = q / C` above `V_BEND_ONSET_V = 10.0 V` deflects nearby scanning beams toward itself
+within radius `rho(V) = min(blooming * (V - V_BEND_ONSET_V) / V_BEND_ONSET_V, BEND_RADIUS_MAX_LINES)`
+(`3.5` frame lines at the `45 V` plate limit for `blooming = 1`, capped at
+`BEND_RADIUS_MAX_LINES = 4.0` frame lines, metric aspect `TARGET_ASPECT = 4/3`), bounded
+to sub-rows inside the read beam's vertical support and columns scaled by `sample_pitch_lines`
+(`0.849` at 525, `1.038` at 625). Each column's beam lands at most once on the capturing
+element (nearest in metric distance, ties broken by highest potential then upper-left), and
+the resulting signal current is returned to every aimed column that was captured. Highlights
+below `V_BEND_ONSET_V` (including white at normal exposure) do not bend the beam, while bright
+overexposed spots pull charge from dark neighbours so the bloom grows with highlight level.
 
 ## Tube constants in seconds
 
@@ -101,8 +130,8 @@ current measured in nA by the same sub-row scan as the camera. See
 
 PbO blue's capacitance sits within 15 % of the red/green mean (1.265 nF); its extra lag comes from
 two trap populations in the blue layer (see "Target materials and traps") rather than from a larger
-capacitance. The diode-gun value is provided for later tube types and is not used by the current
-Plumbicon family.
+capacitance. `plumbicon-dbc` uses the diode-gun value (`V_T = 0.10 V`) with `1.7x` larger
+capacitance (`2.346 / 1.955 / 2.244 nF` for R / G / B) so `K = C * V_T` stays the same.
 
 The following table records the lag checks from `tests/camera_lag.rs`; percentages are measured
 at the indicated time after a light transition. Decay is relative to the signal above dark and
@@ -128,12 +157,13 @@ same constants and is checked at the same elapsed times.
 
 ## Target materials and traps
 
-Four target materials join lead oxide (`plumbicon`, `plumbicon-bias`, `plumbicon-act`): `vidicon`
-(Sb2S3), `newvicon` (ZnSe/ZnCdTe), `saticon` (Se-As-Te) and `chalnicon` (CdSe). A camera with one
-of them carries three identical tubes behind the prism, each at 200 nA peak white with a triode
-gun (`V_T = 0.17 V`). See [`docs/design/CAMERA_SCAN.md`](design/CAMERA_SCAN.md), "Target
-materials and traps", and [`docs/CAMERA_RESEARCH.md`](CAMERA_RESEARCH.md), "Six photoconductors
-differ in gamma, dark current and lag mechanism" and "Traps add an exposure-dependent tail".
+Four target materials join lead oxide (`plumbicon`, `plumbicon-bias`, `plumbicon-act`,
+`plumbicon-dbc`): `vidicon` (Sb2S3), `newvicon` (ZnSe/ZnCdTe), `saticon` (Se-As-Te) and
+`chalnicon` (CdSe). A camera with one of them carries three identical tubes behind the prism,
+each at 200 nA peak white with a triode gun (`V_T = 0.17 V`). See
+[`docs/design/CAMERA_SCAN.md`](design/CAMERA_SCAN.md), "Target materials and traps", and
+[`docs/CAMERA_RESEARCH.md`](CAMERA_RESEARCH.md), "Six photoconductors differ in gamma, dark
+current and lag mechanism" and "Traps add an exposure-dependent tail".
 
 | Kind | `gamma` | Linearise | Peak (nA) | `V_target` (V) | `dark_25` (nA) | Doubling (deg C) | `C` (nF) | Sources |
 |---|---:|---|---:|---:|---:|---:|---:|---|
@@ -273,13 +303,43 @@ remain down to `-0.03`.
 | Vertical gain `k_v` | 0.5 | 0 | `g = 0.25` (BBC Monograph 47) |
 | Coring `c` | 0.008 `[est]` | 0.015 `[est]` | Threshold in gamma-corrected units |
 
+## Highlights
+
+Contract and acceptance test bounds from `docs/design/CAMERA_SCAN.md` ("Highlights") and
+`crates/vhsphys-core/tests/camera_highlights.rs`:
+
+* `plumbicon-act`: `ACT_LEVEL_V = [3.5, 7.0, 3.5] V`, `ACT_BEAM_NA = 100 000 nA`,
+  `ACT_FLYBACK_S = 8.0 us`, `ACT_SPAN_PH = 1/30` (`24.0 nA s` per flyback, `8` / `9.6` field
+  lines at 525 / 625). Rated `32x` highlights (`ACT_RATED = 32.0`) leave no comet tail in
+  interior rows (`< LAG_ONLY = 0.25` of peak white on the first dark frame), while low-key
+  lag (`20 / 300 nA` at `50 Hz`) agrees with `plumbicon` within `SAME_LAG = 0.01`.
+* `plumbicon-dbc`: diode gun `V_T = 0.10 V`, capacitance `2.346 / 1.955 / 2.244 nF` (R / G / B),
+  `DBC.headroom = 0.5`, `DBC.max_ratio = 17.0`, `DBC_TOLERANCE_NA = 0.01 nA`. Matches plain
+  Plumbicon linearity within `LINEAR_TOLERANCE = 0.01` up to rated exposure and low-key lag
+  within `SAME_LAG = 0.01`, discharges a `16x` highlight (`DBC_RATED = 16.0`), leaves a comet
+  tail at `32x` (`DBC_BEYOND = 32.0`), and keeps read current bounded within `DBC_MAX_TOLERANCE = 0.03`
+  of `17.0x`.
+* `blooming = 1.0`: `V_BEND_ONSET_V = 10.0 V`, `BEND_RADIUS_MAX_LINES = 4.0`, `TARGET_ASPECT = 4/3`.
+  Peak white (`L = 1`) does not spread beyond `WHITE_SPREAD = 0.002`; a `16x` bar
+  (`BENT_LIGHT = 16.0`) produces bloom `>= BLOOM_MIN = 0.25` of peak white at `BEYOND_SPOT = 3`
+  samples outside the bar edge (inside the 3.5-line plate radius) while `BEYOND_RADIUS = 6`
+  samples stays `< DARK_MAX = 0.02`; increasing a horizontal band from `MILD_LIGHT = 4.0` to
+  `BENT_LIGHT = 16.0` expands outer-row bloom (`BLOOM_ROWS = 6`) by at least `BLOOM_GROWTH = 1.3`.
+* Trail colour: under a `4x` highlight (`TRAIL_LIGHT = 4.0`), `plumbicon`'s clipped red tail
+  outlasts green by at least `RED_OVER_GREEN_FRAMES = 2` frames; `saticon` at
+  `beam_ratio = 3.5` (`SATICON_BEAM_RATIO`) and `3x` light (`SATICON_LIGHT`) for `2.0 s`
+  (`SATICON_ON_S`) drains within `SATICON_GONE = 0.005` of baseline after `2.0 s` (`SATICON_GONE_S`).
+
 ## Known limits
 
 * The slow tail with light bias is too short: at 200 ms the model leaves under 1 % where the
   XQ1410 data shows 2 to 3.5 %. That tail is the PbO photoconductive lag, which is left out
   because the data sheet calls it negligible for the plain tube; with bias it is what is left.
-* Blooming by beam bending (a highlight spreading sideways) and burn-in are not modelled. The
-  charge stays on its own element.
+* Beam bending models electrostatic attraction from stored target potential toward elements above
+  `10 V` within `4.0` frame lines; out-of-scope highlight effects are not modelled: burn-in,
+  optical flare and the anti-halation disc, DBC feedback loop delay, beam spot growth and
+  deflection-geometry shift, landing-energy displacement (approach vs departure asymmetry),
+  and cross-channel bending across separate prism targets.
 * The capacitances are fitted at 625/50 and used unchanged at 525/60; elapsed-time lag is
   checked on both raster engines.
 * Only the Plumbicon variants and monochrome-style target curves (R = G = B channels for
@@ -310,8 +370,9 @@ are on the tape.
 
     vhsphys run in.mp4 out.mp4 --preset worn --camera-tube plumbicon --iris-stops 2
 
-`--camera-tube` takes `off`, `plumbicon` (XQ1020), `plumbicon-bias` (XQ1410) and
-`plumbicon-act` (XQ1520). `--iris-stops N` is the exposure in stops: 0 is the light that
+`--camera-tube` takes `off`, `plumbicon` (XQ1020), `plumbicon-bias` (XQ1410),
+`plumbicon-act` (XQ1520), `plumbicon-dbc` (diode gun with dynamic beam control), `vidicon`,
+`newvicon`, `saticon` and `chalnicon`. `--iris-stops N` is the exposure in stops: 0 is the light that
 gives peak white, 2 overexposes by a factor of four, so that bright parts of the picture are
 beyond what the beam can take off and leave tails. In a config file:
 

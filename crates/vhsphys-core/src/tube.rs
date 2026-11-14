@@ -162,6 +162,36 @@ pub const SIGMA_V_LINES: f64 = 0.65;
 /// Source: `docs/CAMERA_RESEARCH.md` ("Interlaced readout"), 36 to 44 ns at 52 us active scan
 /// for 30 mm Plumbicon tubes (XQ1520 ACT 36 ns, XQ1020 G 44 ns).
 pub const SIGMA_H_S: f64 = 40e-9;
+/// ACT cutting level per channel `[R, G, B]`, V: XQ1520 cathode-pulse presets
+/// (Mullard 1987, `docs/CAMERA_RESEARCH.md`) [DS].
+pub const ACT_LEVEL_V: [f64; 3] = [3.5, 7.0, 3.5];
+/// ACT flyback beam current, nA: grid 1 raised to about 100 uA during flyback
+/// (Mullard 1987, `docs/CAMERA_RESEARCH.md`) [DS], all taken to reach the target [est].
+pub const ACT_BEAM_NA: f64 = 100_000.0;
+/// Duration of the ACT line flyback beam, s [est, inside the 10.9 to 12 us line blanking].
+pub const ACT_FLYBACK_S: f64 = 8.0e-6;
+/// Height of the ACT flyback band, as a fraction of the picture height
+/// ([est]: "many scanning lines", US 4,143,305; 16 lines at 525, 19.2 at 625).
+pub const ACT_SPAN_PH: f64 = 1.0 / 30.0;
+/// Element potential above cathode at which beam bending starts, V
+/// (Philips Tech. Rev. 1963: kept target swing within about 10 V) [DS].
+pub const V_BEND_ONSET_V: f64 = 10.0;
+/// Maximum beam-bending capture radius in frame-line pitches [est, bounds the search].
+pub const BEND_RADIUS_MAX_LINES: f64 = 4.0;
+/// Scanned target picture aspect ratio (4:3 broadcast raster).
+pub const TARGET_ASPECT: f64 = 4.0 / 3.0;
+/// Bisection tolerance for dynamic beam control beam current, nA [est].
+pub const DBC_TOLERANCE_NA: f64 = 0.01;
+/// Dynamic beam control: `headroom` as a fraction of `beam_na` (US 4,229,767: 300 nA over a
+/// 600 nA base) [DS], the largest beam as a multiple of `peak_signal_na` ([DER]: 16x peak white
+/// handled per Mullard 1987 plus one peak of headroom).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dbc {
+    pub headroom: f64,
+    pub max_ratio: f64,
+}
+/// Diode-gun dynamic beam control parameters (`docs/design/CAMERA_SCAN.md`, "Dynamic beam control").
+pub const DBC: Dbc = Dbc { headroom: 0.5, max_ratio: 17.0 };
 /// Which camera tube the picture was shot through.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -175,6 +205,8 @@ pub enum TubeKind {
     PlumbiconBias,
     /// Plumbicon with an anti-comet-tail gun (XQ1520): lag, no comet tails.
     PlumbiconAct,
+    /// Plumbicon diode gun with dynamic beam control (XQ3440): cooler beam, higher capacitance.
+    PlumbiconDbc,
     /// Antimony trisulphide (Sb2S3) 2/3-inch home-camera vidicon: heavy trap-dominated lag.
     Vidicon,
     /// ZnSe/ZnCdTe 2/3-inch Newvicon: linear transfer, high capacitance, no traps.
@@ -208,6 +240,12 @@ pub struct TubeChannel {
     pub bias_na: f64,
     /// Anti-comet-tail gun.
     pub act: bool,
+    /// ACT cutting level, V (`ACT_LEVEL_V[k]` for `PlumbiconAct`, `0.0` otherwise).
+    pub act_level_v: f64,
+    /// Dynamic beam control (`Some(DBC)` for `PlumbiconDbc`, `None` otherwise).
+    pub dbc: Option<Dbc>,
+    /// Beam-bending strength (`0.0` from `TubeKind`; set by `CameraTube` from `CameraParams::blooming`).
+    pub bending: f64,
     /// Light transfer exponent.
     pub gamma: f64,
     /// Whether the processing amplifier linearises `1 / gamma` before the knee.
@@ -220,12 +258,34 @@ pub struct TubeChannel {
     pub traps: [Trap; MAX_TRAPS],
 }
 
+impl TubeChannel {
+    /// Element potential above cathode for stored charge `q_nas` (nA s), V: `q / (capacitance_f * 1e9)`.
+    pub fn potential_v(&self, q_nas: f64) -> f64 {
+        q_nas / (self.capacitance_f * 1e9)
+    }
+
+    /// ACT cutting level in target-equivalent charge, nA s: `capacitance_f * act_level_v * 1e9`.
+    pub fn act_level_nas(&self) -> f64 {
+        self.capacitance_f * self.act_level_v * 1e9
+    }
+
+    /// Beam-bending capture radius `rho(V)` for this channel's `bending`, in frame-line pitches.
+    pub fn bend_radius_lines(&self, potential_v: f64) -> f64 {
+        if self.bending <= 0.0 || potential_v <= V_BEND_ONSET_V {
+            return 0.0;
+        }
+        (self.bending * (potential_v - V_BEND_ONSET_V) / V_BEND_ONSET_V)
+            .min(BEND_RADIUS_MAX_LINES)
+    }
+}
+
 fn dark_law(kind: TubeKind) -> Option<(f64, f64)> {
     match kind {
         TubeKind::Off => None,
-        TubeKind::Plumbicon | TubeKind::PlumbiconBias | TubeKind::PlumbiconAct => {
-            Some((DARK_NA, f64::INFINITY))
-        }
+        TubeKind::Plumbicon
+        | TubeKind::PlumbiconBias
+        | TubeKind::PlumbiconAct
+        | TubeKind::PlumbiconDbc => Some((DARK_NA, f64::INFINITY)),
         TubeKind::Vidicon => Some((VIDICON_DARK_25_NA, VIDICON_DARK_DOUBLING_C)),
         TubeKind::Newvicon => Some((NEWVICON_DARK_25_NA, NEWVICON_DARK_DOUBLING_C)),
         TubeKind::Saticon => Some((SATICON_DARK_25_NA, SATICON_DARK_DOUBLING_C)),
@@ -266,6 +326,9 @@ impl TubeKind {
                 dark_na,
                 bias_na: 0.0,
                 act: false,
+                act_level_v: 0.0,
+                dbc: None,
+                bending: 0.0,
                 gamma,
                 linearise,
                 target_voltage_v,
@@ -276,28 +339,47 @@ impl TubeKind {
         };
         match self {
             TubeKind::Off => None,
-            TubeKind::Plumbicon | TubeKind::PlumbiconBias | TubeKind::PlumbiconAct => {
-                Some(std::array::from_fn(|k| TubeChannel {
-                    peak_signal_na: PEAK_SIGNAL_NA[k],
-                    beam_na: beam_ratio * PEAK_SIGNAL_NA[k],
-                    capacitance_f: TARGET_CAPACITANCE_F[k],
-                    v_t: V_T_TRIODE_GUN_V,
-                    k_nas: TARGET_CAPACITANCE_F[k] * V_T_TRIODE_GUN_V * 1e9,
-                    sigma_v_lines: SIGMA_V_LINES,
-                    sigma_h_s: SIGMA_H_S,
-                    plate_nas: TARGET_CAPACITANCE_F[k] * TARGET_VOLTAGE_V * 1e9,
-                    dark_na,
-                    bias_na: if self == TubeKind::PlumbiconBias {
-                        LIGHT_BIAS_XQ1410_NA[k]
+            TubeKind::Plumbicon
+            | TubeKind::PlumbiconBias
+            | TubeKind::PlumbiconAct
+            | TubeKind::PlumbiconDbc => {
+                let is_dbc = self == TubeKind::PlumbiconDbc;
+                let v_t = if is_dbc { V_T_DIODE_GUN_V } else { V_T_TRIODE_GUN_V };
+                Some(std::array::from_fn(|k| {
+                    let capacitance_f = if is_dbc {
+                        TARGET_CAPACITANCE_F[k] * V_T_TRIODE_GUN_V / V_T_DIODE_GUN_V
                     } else {
-                        0.0
-                    },
-                    act: self == TubeKind::PlumbiconAct,
-                    gamma: GAMMA,
-                    linearise: false,
-                    target_voltage_v: TARGET_VOLTAGE_V,
-                    dark_doubling_c,
-                    traps: if k == 2 { PBO_BLUE_TRAPS } else { [Trap::NONE; MAX_TRAPS] },
+                        TARGET_CAPACITANCE_F[k]
+                    };
+                    TubeChannel {
+                        peak_signal_na: PEAK_SIGNAL_NA[k],
+                        beam_na: beam_ratio * PEAK_SIGNAL_NA[k],
+                        capacitance_f,
+                        v_t,
+                        k_nas: capacitance_f * v_t * 1e9,
+                        sigma_v_lines: SIGMA_V_LINES,
+                        sigma_h_s: SIGMA_H_S,
+                        plate_nas: capacitance_f * TARGET_VOLTAGE_V * 1e9,
+                        dark_na,
+                        bias_na: if self == TubeKind::PlumbiconBias {
+                            LIGHT_BIAS_XQ1410_NA[k]
+                        } else {
+                            0.0
+                        },
+                        act: self == TubeKind::PlumbiconAct,
+                        act_level_v: if self == TubeKind::PlumbiconAct {
+                            ACT_LEVEL_V[k]
+                        } else {
+                            0.0
+                        },
+                        dbc: if is_dbc { Some(DBC) } else { None },
+                        bending: 0.0,
+                        gamma: GAMMA,
+                        linearise: false,
+                        target_voltage_v: TARGET_VOLTAGE_V,
+                        dark_doubling_c,
+                        traps: if k == 2 { PBO_BLUE_TRAPS } else { [Trap::NONE; MAX_TRAPS] },
+                    }
                 }))
             }
             TubeKind::Vidicon => Some(make_uniform(
