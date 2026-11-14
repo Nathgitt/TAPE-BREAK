@@ -61,17 +61,21 @@ from PySide6.QtWidgets import (
 from vhsgui import backend
 from vhsgui.model import (
     AUDIO_MODES,
+    CAMERA_BEAM_OFF_RANGE,
     CAMERA_BEAM_RATIO_RANGE,
     CAMERA_BLOOMING_RANGE,
     CAMERA_COLD_START_RANGE,
+    CAMERA_IDLE_RANGE,
     CAMERA_LAYOUTS,
     CAMERA_PROCESSING,
     CAMERA_TEMPERATURE_RANGE,
     CAMERA_TUBES,
     CONDITION_FIELDS,
+    DEFAULT_CAMERA_BEAM_OFF_S,
     DEFAULT_CAMERA_BEAM_RATIO,
     DEFAULT_CAMERA_BLOOMING,
     DEFAULT_CAMERA_COLD_START_C,
+    DEFAULT_CAMERA_IDLE_S,
     DEFAULT_CAMERA_LAYOUT,
     DEFAULT_CAMERA_PROCESSING,
     DEFAULT_CAMERA_TEMPERATURE_C,
@@ -171,6 +175,10 @@ CAMERA_BLOOMING_STEP = 0.1
 CAMERA_BLOOMING_DECIMALS = 1
 CAMERA_COLD_START_STEP = 1.0
 CAMERA_COLD_START_DECIMALS = 0
+CAMERA_IDLE_STEP = 10.0
+CAMERA_IDLE_DECIMALS = 0
+CAMERA_BEAM_OFF_STEP = 0.5
+CAMERA_BEAM_OFF_DECIMALS = 1
 PREVIEW_AUDIO = "none"  # a preview is only looked at, so the sound is never rendered for it
 
 SPLIT_DEFAULT = 0.5  # the divider starts in the middle
@@ -216,6 +224,8 @@ CAMERA_BEAM_RATIO_HELP = "Beam current as a multiple of what peak white needs (2
 CAMERA_BLOOMING_HELP = "Beam bending: a highlight charged far above the rest pulls the beam towards itself, so it spreads into its surroundings. 0 is off. Needs a tube."
 CAMERA_COLD_START_HELP = "Switch the camera on cold: the tubes start at the temperature below and warm up over about ten minutes, so the black creeps. Needs a tube."
 CAMERA_COLD_START_C_HELP = "Faceplate temperature of the tubes at switch-on. Needs a tube and Cold start."
+CAMERA_IDLE_HELP = "Time the camera stands with its lens capped and the beam on before the shot. A cold camera warms up under the cap. Needs a tube."
+CAMERA_BEAM_OFF_HELP = "Time the beam is held off at the start of the shot with the lens open. The targets store the scene unread; the picture comes up with the beam, and a Saticon can burn. Needs a tube."
 LOOK_HELP = {
     "preset": "The starting condition of the tape and decks; the lines below start from its values.",
     "seed": "Seeds the random defects: the same seed always gives the same damage.",
@@ -234,6 +244,8 @@ LOOK_HELP = {
     "camera_blooming": CAMERA_BLOOMING_HELP,
     "camera_cold_start": CAMERA_COLD_START_HELP,
     "camera_cold_start_c": CAMERA_COLD_START_C_HELP,
+    "camera_idle_s": CAMERA_IDLE_HELP,
+    "camera_beam_off_s": CAMERA_BEAM_OFF_HELP,
 }
 SCHEMATIC_MIN_WIDTH = 1240
 SCHEMATIC_MIN_HEIGHT = 880
@@ -1251,6 +1263,8 @@ class MainWindow(QMainWindow):
             camera_blooming=self.camera_blooming_spin.value(),
             camera_cold_start=self.camera_cold_start_check.isChecked(),
             camera_cold_start_c=self.camera_cold_start_spin.value(),
+            camera_idle_s=self.camera_idle_spin.value(),
+            camera_beam_off_s=self.camera_beam_off_spin.value(),
         )
 
     def open_input(self, path: str) -> None:
@@ -1640,6 +1654,26 @@ class MainWindow(QMainWindow):
             CAMERA_COLD_START_C_HELP,
             " °C",
         )
+        camera_idle_label, self.camera_idle_spin = make_camera_spin(
+            "field_camera_idle_s",
+            "Lens cap before",
+            CAMERA_IDLE_RANGE,
+            CAMERA_IDLE_STEP,
+            CAMERA_IDLE_DECIMALS,
+            DEFAULT_CAMERA_IDLE_S,
+            CAMERA_IDLE_HELP,
+            " s",
+        )
+        camera_beam_off_label, self.camera_beam_off_spin = make_camera_spin(
+            "field_camera_beam_off_s",
+            "Beam off at start",
+            CAMERA_BEAM_OFF_RANGE,
+            CAMERA_BEAM_OFF_STEP,
+            CAMERA_BEAM_OFF_DECIMALS,
+            DEFAULT_CAMERA_BEAM_OFF_S,
+            CAMERA_BEAM_OFF_HELP,
+            " s",
+        )
 
         self._update_camera_enabled()
 
@@ -1685,8 +1719,12 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.camera_cold_start_check, 15, 1, 1, 2)
         grid.addWidget(camera_cold_start_label, 16, 0)
         grid.addWidget(self.camera_cold_start_spin, 16, 1)
-        grid.addWidget(self.reset_button, 17, 0, 1, 3)
-        grid.addLayout(look_files, 18, 0, 1, 3)
+        grid.addWidget(camera_idle_label, 17, 0)
+        grid.addWidget(self.camera_idle_spin, 17, 1)
+        grid.addWidget(camera_beam_off_label, 18, 0)
+        grid.addWidget(self.camera_beam_off_spin, 18, 1)
+        grid.addWidget(self.reset_button, 19, 0, 1, 3)
+        grid.addLayout(look_files, 20, 0, 1, 3)
         grid.setColumnStretch(1, 1)
         return box
 
@@ -2026,6 +2064,8 @@ class MainWindow(QMainWindow):
             "camera_blooming": look.camera_blooming,
             "camera_cold_start": look.camera_cold_start,
             "camera_cold_start_c": look.camera_cold_start_c,
+            "camera_idle_s": look.camera_idle_s,
+            "camera_beam_off_s": look.camera_beam_off_s,
         }
 
     def _sync_schematic(self) -> None:
@@ -2063,6 +2103,8 @@ class MainWindow(QMainWindow):
             "camera_blooming": DEFAULT_CAMERA_BLOOMING,
             "camera_cold_start": False,
             "camera_cold_start_c": DEFAULT_CAMERA_COLD_START_C,
+            "camera_idle_s": 0.0,
+            "camera_beam_off_s": 0.0,
         }
         for view in self._schematic_views:
             view.set_baseline(self._schematic_baseline)
@@ -2136,6 +2178,10 @@ class MainWindow(QMainWindow):
                 self.camera_cold_start_check.setChecked(bool(value))
             elif control_id == "camera_cold_start_c":
                 self.camera_cold_start_spin.setValue(float(value))
+            elif control_id == "camera_idle_s":
+                self.camera_idle_spin.setValue(float(value))
+            elif control_id == "camera_beam_off_s":
+                self.camera_beam_off_spin.setValue(float(value))
         finally:
             self._sync_guard = False
         self._sync_schematic()
@@ -2168,6 +2214,8 @@ class MainWindow(QMainWindow):
             self.camera_beam_ratio_spin,
             self.camera_blooming_spin,
             self.camera_cold_start_check,
+            self.camera_idle_spin,
+            self.camera_beam_off_spin,
         ):
             widget.setEnabled(has_tube)
         self.camera_cold_start_spin.setEnabled(cold_start)
@@ -2183,6 +2231,8 @@ class MainWindow(QMainWindow):
                 "camera_beam_ratio",
                 "camera_blooming",
                 "camera_cold_start",
+                "camera_idle_s",
+                "camera_beam_off_s",
             ):
                 view.set_enabled(cid, has_tube)
             view.set_enabled("camera_cold_start_c", cold_start)
@@ -2260,6 +2310,8 @@ class MainWindow(QMainWindow):
             (self.camera_blooming_spin, self.camera_blooming_spin.setValue, look.camera_blooming),
             (self.camera_cold_start_check, self.camera_cold_start_check.setChecked, look.camera_cold_start),
             (self.camera_cold_start_spin, self.camera_cold_start_spin.setValue, look.camera_cold_start_c),
+            (self.camera_idle_spin, self.camera_idle_spin.setValue, look.camera_idle_s),
+            (self.camera_beam_off_spin, self.camera_beam_off_spin.setValue, look.camera_beam_off_s),
         ):
             widget.blockSignals(True)
             setter(value)

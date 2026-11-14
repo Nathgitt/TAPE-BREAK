@@ -126,8 +126,10 @@ overexposes, so highlights leave comet tails). `--camera-layout` chooses `three-
 `--camera-processing` chooses `studio` or `consumer`, `--camera-beam-ratio N` sets the beam
 current as a multiple of peak white (default 2), `--camera-blooming N` sets beam-bending
 strength (default 0, off), `--camera-temperature DEG_C` and `--camera-cold-start DEG_C` set
-operating and switch-on faceplate temperatures, and `--camera-spectral` and `--camera-geometry`
-enable spectral taking/colour matrixing and scan geometry. The model is in `docs/CAMERA.md`.
+operating and switch-on faceplate temperatures, `--camera-idle SECONDS` and `--camera-beam-off SECONDS`
+hold the lens capped before the shot and the beam off at its start, and `--camera-spectral` and
+`--camera-geometry` enable spectral taking/colour matrixing and scan geometry. The model is in
+`docs/CAMERA.md`.
 
 ```sh
 vhsphys run in.mp4 out.mp4 --preset worn --standard pal
