@@ -170,7 +170,7 @@ current and lag mechanism" and "Traps add an exposure-dependent tail".
 | `plumbicon` (R / G / B) | 0.95 | no | 150 / 300 / 150 | 45 | 1.0 | none | 1.38 / 1.15 / 1.32 | Philips T10, Mullard 1987; no temperature law published |
 | `vidicon` (Sb2S3) | 0.65 | yes | 200 | 30 `[est]` | 20 | 7.5 | 9.9 | Philips T12 / XQ1271, Panasonic WV-3110; `V_target` 10-60 V, doubling 7-8 deg C |
 | `newvicon` (ZnSe/ZnCdTe) | 1.0 | no | 200 | 25 `[est]` | 5 | 7.5 | 7.6 | Philips T12, Matsushita S4075; `V_target` 10-35 V, doubling 7-8 deg C |
-| `saticon` (Se-As-Te) | 1.0 | no | 200 | 50 | 0.215 | 9.6 | 0.64 | Hitachi H8397A (0.15 nA at 20 C, 2.7 nA at 60 C); layer 0.58-1.16 nF (Hitachi Hyoron 1976) |
+| `saticon` (Se-As-Te) | 1.0 | no | 200 | 50 | 0.215 | 9.6 | 0.80 | Hitachi H8397A (0.15 nA at 20 C, 2.7 nA at 60 C); layer 0.58-1.16 nF (Hitachi Hyoron 1976); `C` fitted to the BC4908 lag family |
 | `chalnicon` (CdSe) | 0.925 | no | 200 `[est]` | 35 | 0.681 | 9.0 | 6.4 | Toshiba 1973 (gamma 0.90-0.95; dark 0.1 / 1 / 10 nA at 0 / 30 / 60 C) |
 
 `dark_25` and the doubling step are set so the law `dark(T) = dark_25 * 2^((T - 25) / doubling)`
@@ -203,14 +203,17 @@ capacitive") have none.
 |---|---|---:|---:|---:|
 | PbO blue | fast | 0.12 | 0.37 | 0.066 |
 | PbO blue | slow | 0.035 | 3.9 | 0.45 |
-| Saticon | fast | 0.54 | 0.066 | 0.061 |
-| Saticon | slow | 0.09 | 0.40 | 0.82 |
+| Saticon | fast | 0.95 | 0.14 | 0.047 |
+| Saticon | proportional | 0.027 | 20 `[est]` | 0.10 |
 | Vidicon | one | 0.95 | 5.0 | 0.25 |
 
 The blue tube's fast population fills within a few fields and gives the 50 ms excess of short
 exposures; the slow one fills over about a second and keeps the 200 ms floor near 2 % that bias
-light does not remove. The vidicon's single strong population carries most of its lag, and bias
-light cuts its 200 ms tail more than its first fields.
+light does not remove. The Saticon's fast population takes nearly all the light while it has room,
+so a few nA of bias keep it full and its share of the lag is what bias light removes; its second
+population is so large that it stays proportional to the light, and gives the tail of about 1.5 %
+at 50 ms that the BC4908 keeps at 200 nA however much bias it gets. The vidicon's single strong
+population carries most of its lag, and bias light cuts its 200 ms tail more than its first fields.
 
 The measured lag beside each figure of `tests/camera_materials.rs` (lag in percent of the signal
 above dark and bias, middle rows of the scanned target). The RCA exposure families run on a dark
@@ -222,20 +225,27 @@ that scanned area.
 |---|---|---:|---:|
 | XQ1410B blue (20/300 nA, 50 Hz) | decay 200 ms at 0 / 1 / 2 / 3 / 4 / 5 / 8 / 12 nA bias | 5.2 / 3.6 / 2.9 / 2.6 / 2.4 / 2.2 / 2.1 / 2.0 | 5.82 / 4.64 / 3.87 / 3.37 / 3.05 / 2.84 / 2.49 / 2.28 |
 | XQ1427B blue | decay 50, 200 ms after 2 / 4 / 16 / 64 / 256 fields | 1.9, 0.3 / 2.4, 0.45 / 3.4, 1.25 / 4.5, 1.95 / 4.7, 2.25 | 1.60, 0.21 / 1.96, 0.36 / 2.80, 0.93 / 3.56, 1.48 / 3.61, 1.52 |
-| Saticon BC4391 | decay 50, 200 ms after 2 / 4 / 16 / 64 / 256 fields | 1.5, 0.2 / 1.8, 0.25 / 2.3, 0.45 / 2.45, 0.5 / 2.55, 0.5 | 2.41, 0.21 / 2.61, 0.36 / 3.07, 0.73 / 3.16, 0.80 / 3.16, 0.80 |
-| Saticon H8397A (200 nA, 3.5x beam, 30 C, 60 Hz) | decay 50 ms at 0 / 5 / 10 / 16 nA bias; relative to 0 nA | 6.7 / 3.9 / 2.0 / 0.8; 1 / 0.58 / 0.30 / 0.12 | 1.40 / 0.57 / 0.30 / 0.21; 1 / 0.41 / 0.21 / 0.15 |
+| Saticon BC4391 (shape only) | decay 50, 200 ms after 2 / 4 / 16 / 64 / 256 fields; as shares of the 256-field reading | 1.5, 0.2 / 1.8, 0.25 / 2.3, 0.45 / 2.45, 0.5 / 2.55, 0.5; 0.59, 0.4 / 0.71, 0.5 / 0.90, 0.9 / 0.96, 1 / 1, 1 | 4.42, 0.15 / 4.75, 0.25 / 5.45, 0.47 / 5.56, 0.50 / 5.56, 0.50; 0.79, 0.30 / 0.85, 0.50 / 0.98, 0.94 / 1, 1 / 1, 1 |
+| Saticon BC4908 (800 nA beam, 30 C, 60 Hz) | decay 50 ms at 30 / 50 / 200 nA with 0 nA; 5 nA; 10 nA bias | 12.4 / 8.7 / 3.6; 6.1 / 4.3 / 2.4; 2.9 / 2.2 / 1.85 | 12.08 / 8.00 / 3.06; 5.48 / 4.07 / 2.25; 2.96 / 2.54 / 1.93 |
+| Saticon H8397A (200 nA, 3.5x beam, 30 C, 60 Hz), not judged | decay 50 ms at 0 / 5 / 10 / 16 nA bias | 6.7 / 3.9 / 2.0 / 0.8 | 3.06 / 2.25 / 1.94 / 1.80 |
 | Newvicon S4075 / T12 (200 nA, 25 C) | decay 50 ms (60 Hz) / 60 ms (50 Hz) | 10 / 8-13 | 10.93 / 9.17 |
 | Newvicon at 45 C | decay 50 ms (60 Hz) | below 25 C by 1.2x | 6.05 (1.81x) |
 | Chalnicon (200 nA, 25 C, 60 Hz) `[est]` | decay 50 ms | 10 | 10.28 |
 | Vidicon (200 nA, 20 nA dark, 60 Hz) | decay 50 / 200 ms | 20 / 8 (5-12) | 15.98 / 5.32 |
 | Vidicon, 20 nA bias | cut of the 50 / 200 ms lag | 13 to 9.2 (1.4x) / 3.3 to 1.2 (2.8x) | 1.30x / 2.15x |
 
-The two Saticon sets do not agree with each other in this model. In both the capacitive law and
-the traps, lag in percent of the signal can only fall as the signal rises, but the H8397A at
-200 nA lags more than the BC4391 at 30 nA, and Hitachi's own 0.05 uA figure (2-3 %) is below its
-0.2 uA one (`docs/CAMERA_RESEARCH.md` lists this as unexplained). The Saticon is therefore fitted
-to the BC4391 family as measured and to the H8397A family by how much bias light cuts its lag,
-relative to the unbiased value; its absolute H8397A level comes out lower than the data.
+The Saticon data do not agree with each other. In both the capacitive law and the traps, lag in
+percent of the signal can only fall as the signal rises, but the H8397A at 200 nA lags more than
+the BC4391 at 30 nA, and Hitachi's own 0.05 uA figure (2-3 %) is below its 0.2 uA one. RCA's
+BC4908, the H8397A's equivalent, falls with signal as the law does (12.4 / 8.7 / 3.6 % at 30 / 50 /
+200 nA), and so do three other measurements of the kind
+([`docs/design/CAMERA_RETENTION.md`](design/CAMERA_RETENTION.md), "The Saticon's lag does not rise
+with signal"). The Saticon is therefore fitted to the whole BC4908 family, every point within a
+factor 1.18 (`C` 0.80 nF, inside the layer's 0.58-1.16 nF). The BC4391 family is judged by its
+shape only, because its levels (about 2 % at 50 ms at 30 nA with 5 nA bias) are less than half the
+BC4908's and its tube's size and gun are not known; the H8397A Fig. 6 levels are not judged. The
+fit also meets the BC4390's limits it was not made on (2.20 % at 50 ms and 0.72 % at 150 ms with
+6 nA bias, against at most 3 % and 1 %).
 
 ## Electronics
 
@@ -641,15 +651,15 @@ in blue (`0.09 %`; bound `<= 1/3` of green). Exposing to `1x` white for `3 s` wi
 takes all elements to the `45 V` plate and saturates `h` uniformly, erasing the contrast
 (`0.000 %` against `0.18 %`; bound `<= 10 %` `[est]`, RCA AN-5042).
 
-**Saticon sticking and beam-off burn.** Normal `0.2 uA` white reaches `39.6 V`, above the
-`38 V` knee, leaving under `2 %` (`0.5 %` prototype) at the 10th field (`3.5x` beam, `30 C`).
+**Saticon sticking and beam-off burn.** Normal `0.2 uA` white reaches `41.7 V`, above the
+`38 V` knee, leaving under `2 %` (`0.99 %`) at the 10th field (`3.5x` beam, `30 C`).
 After `20x` peak white (`4 uA` for `10 s`), the field collapses and the 10th-field residual is
-about `15 %` of `0.2 uA` (inside the `8` to `27 %` band of US 4,330,733 Fig. 6; ratio `>= 8`).
-With the beam on, a `1x` spot for `10 s` leaves `0.17 %` of peak (`< 0.5 %`) `0.5 s` later;
-with the beam off, elements climb to `50 V` and fill `h`, leaving `3.1 %` (`>= 1 %` and `>= 5x`
+`21.9 %` of `0.2 uA` (inside the `8` to `27 %` band of US 4,330,733 Fig. 6; ratio `>= 8`).
+With the beam on, a `1x` spot for `10 s` leaves `0.16 %` of peak (`< 0.5 %`) `0.5 s` later;
+with the beam off, elements climb to `50 V` and fill `h`, leaving `2.95 %` (`>= 1 %` and `>= 5x`
 beam-on `[est]`, RCA 1978, US 4,492,982). Nothing makes lag rise with signal: at a fixed
 `800 nA` beam (BC4908, Neuhauser 1978 Fig. 12), `50 ms` lag falls across `30 / 50 / 200 nA`
-(`8.6 / 5.3 / 1.39 %`, data `12.4 / 8.7 / 3.6 %`; ratio `>= 1.7`).
+(`12.08 / 8.00 / 3.06 %`, data `12.4 / 8.7 / 3.6 %`; ratio `>= 1.7`, got `3.9`).
 
 **Antimony trisulphide burn (`VIDICON_BURN`).** Only `vidicon` carries reversible burn
 (`rate_per_s = 5.5e-6`, `recovery_s = 600.0` s, `dark_gain = 0.75`; `Burn::NONE` for all

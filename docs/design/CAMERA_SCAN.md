@@ -237,7 +237,8 @@ one of them carries three identical tubes behind the prism.
 
 - **Kinds** (`TubeKind`, config names in brackets): `Vidicon` (`vidicon`, Sb2S3, a 2/3-inch home
   camera tube), `Newvicon` (`newvicon`, ZnSe/ZnCdTe, 2/3 inch), `Saticon` (`saticon`, Se-As-Te,
-  the low-lag H8397A, 2/3 inch), `Chalnicon` (`chalnicon`, CdSe). The three Plumbicon kinds keep
+  the low-lag H8397A, 2/3 inch, with its lag fitted to RCA's equivalent, the BC4908), `Chalnicon`
+  (`chalnicon`, CdSe). The three Plumbicon kinds keep
   every constant they have, except blue's capacitance (below).
 - **Transfer.** `photo_current = peak * light^gamma` with `gamma` per channel: PbO 0.95, Sb2S3 0.65
   (the home camera's tube, Panasonic WV-3110), Newvicon 1.0, Saticon 1.0, Chalnicon 0.925 (0.90 to
@@ -272,8 +273,12 @@ one of them carries three identical tubes behind the prism.
   green ("negligible"), Newvicon ("free of photoconductive lag") and Chalnicon ("mainly capacitive").
 - **Fit data** (`tests/camera_materials.rs`; the RCA procedure is a 30 nA signal, 5 nA bias, a
   100 nA beam, 60 Hz, a dark target exposed for a number of fields, lag in percent of the signal
-  current): XQ1410B blue floor at 200 ms against bias (20/300 nA, 50 Hz); XQ1427B blue and BC4391
-  Saticon exposure families; H8397A against bias at 50 ms (0.2 uA, 60 Hz); Newvicon S4075 10 % at
+  current): XQ1410B blue floor at 200 ms against bias (20/300 nA, 50 Hz); XQ1427B blue exposure
+  family; the BC4391 Saticon exposure family by its shape only (each reading as a share of the
+  256-field one); the BC4908 Saticon family at 50 ms (30 / 50 / 200 nA with 0 / 5 / 10 nA bias,
+  800 nA beam, 60 Hz; RCA 1977, Neuhauser 1978 Fig. 12, `docs/design/CAMERA_RETENTION.md`), which
+  sets the Saticon's `C` (0.80 nF) and traps; the two RCA Saticon families cannot both be met in level,
+  and neither can the H8397A's unbiased 6.7 % at 0.2 uA (Fig. 6); Newvicon S4075 10 % at
   50 ms (0.2 uA, 60 Hz) and T12 8 to 13 % at 60 ms (50 Hz); Chalnicon 10 % at 50 ms (200 nA, 60 Hz
   [est conditions]); home vidicon 20 % at 50 ms (200 nA, 20 nA dark, 60 Hz), XQ1240 8 % at 200 ms, and
   the bias cut of RCA's vidicon (13 to 9.2 % at 50 ms, 3.3 to 1.2 % at 200 ms with 20 nA).

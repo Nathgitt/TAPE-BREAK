@@ -78,9 +78,9 @@ proposed for a rise was checked against the H8397A numbers [DER]:
 
 Decision: no mechanism makes the lag rise with signal, and the H8397A's 0.2 uA absolute level is **not**
 restored as a test. The test file instead pins what the H8397A's RCA equivalent shows: at a fixed beam
-the 50 ms lag falls from 30 to 50 to 200 nA, by at least half the BC4908 ratio. The existing Saticon
-constants (fitted to the BC4391 family and the H8397A's relative cut) stay. Whether to refit the Saticon
-to the BC4908 family is a decision for the lead (see "Decisions for the lead").
+the 50 ms lag falls from 30 to 50 to 200 nA, by at least half the BC4908 ratio. The Saticon constants
+fitted to the BC4391 family and the H8397A's relative cut stayed with this stage; the lead has since
+had the Saticon refitted to the whole BC4908 family (see "Decisions for the lead", item 2).
 
 ### Lead oxide holds carriers where its layer field falls
 
@@ -156,8 +156,9 @@ the photoconductor" [DS]. RCA AN-5042 says PbO lags more above room temperature 
 - **Collection laws from the published curves.** PbO red from RCA Fig. 2's red curve, PbO blue from its
   blue curve, PbO green as red (RCA groups red and green for burn; green light is absorbed deep in the
   layer as red is) [DER]. The PbO knee is the target voltage, so the law is the curve normalised there.
-  Saticon from Hyoron Fig. 8 with the knee at 38 V, just below the 39.6 V its element reaches at 200 nA,
-  so the Saticon's normal readings are untouched.
+  Saticon from Hyoron Fig. 8 with the knee at 38 V, just below the 39.6 V its element reached at 200 nA
+  with the merged capacitance (41.7 V after the BC4908 refit), so the Saticon's normal readings are
+  untouched.
 - **Reversible burn for Sb2S3 only.** A slow per-element state, driven by the light on the element and
   recovering exponentially, that lowers the element's photosensitivity and raises its dark current, fitted
   to US 3,546,520. Other materials have no burn data and get none (`Burn::NONE`).
@@ -257,7 +258,7 @@ In `tube.rs`:
 | `PBO_COLLECTION[R]` | `zero_v 5, scale_v 10, knee_v 45, capacity_nas 10, release_s 2` | zero and scale through RCA AN-5042 Fig. 2 red (0.57 at 13 V, 0.89 at 25 V, 0.96 at 35 V against 0.60, 0.90, 0.96) [FIG]; knee at the 45 V target [DER]; capacity and release [est], fitted with the law to the XQ1020 high-key 1.2 / 0.4 % (Philips 5b 1975) [DS] |
 | `PBO_COLLECTION[G]` | as red | [DER: RCA groups red and green; no green curve] |
 | `PBO_COLLECTION[B]` | `zero_v 3, scale_v 6, knee_v 45, capacity_nas 1, release_s 2` | RCA Fig. 2 blue (0.70 at 10 V, 0.87 at 15 V, 0.94 at 20 V against 0.70, 0.84, 0.92) [FIG]; capacity a tenth of red's [est: "almost negligible in the blue", AN-5042] |
-| `SATICON_COLLECTION` | `zero_v 8, scale_v 8, knee_v 38, capacity_nas 14, release_s 0.25` | Hyoron Fig. 8 Te-doped (0.22, 0.44, 0.64, 0.90 at 10, 12.5, 16, 25 V against 0.21, 0.43, 0.64, 0.85) [FIG]; knee below the 200 nA swing [DER]; capacity and release [est] fitted to US 4,330,733's 8 to 27 % (prototype: about 15 %) [FIG], release also within the RCA "about 2 s" for a residue [DS] |
+| `SATICON_COLLECTION` | `zero_v 8, scale_v 8, knee_v 38, capacity_nas 14, release_s 0.25` | Hyoron Fig. 8 Te-doped (0.22, 0.44, 0.64, 0.90 at 10, 12.5, 16, 25 V against 0.21, 0.43, 0.64, 0.85) [FIG]; knee below the 200 nA swing [DER]; capacity and release [est] fitted to US 4,330,733's 8 to 27 % (prototype: about 15 %; 21.9 % after the BC4908 refit) [FIG], release also within the RCA "about 2 s" for a residue [DS] |
 | `VIDICON_BURN` | `rate_per_s 5.5e-6, recovery_s 600, dark_gain 0.75` | US 3,546,520: -12 % after 120 s, dark 10 to nearly 11 nA, normal within 30 min [DS]; recovery 600 s leaves 5 % after 30 min [DER]; rate for `b(120 s) = 0.12` at `BURN_LAMP_LIGHT` [DER]; `dark_gain = 0.09 / 0.12` [DER] |
 | `WARM_UP_S` | 600 s | [est] |
 
@@ -359,12 +360,13 @@ collection that is not `FULL`, a burn), so the other kinds cost nothing.
   takes). The prototype ran `camera_tube`, `camera_lag`, `camera_materials`, `camera_highlights`,
   `camera_scan` and `camera_blooming` unchanged and they passed [DER].
 - **Saticon** readings at or below 2.4 times its peak white do not reach the 38 V knee; the materials
-  tests are unchanged. Its 3-times highlight held 2 s (`camera_highlights.rs`) fills the held charge,
+  tests are unchanged. (After the BC4908 refit, 0.80 nF, peak white leaves the layer at 41.7 V.) Its 3-times highlight held 2 s (`camera_highlights.rs`) fills the held charge,
   which is gone (0.02 nA) 2 s later, as that test requires.
 - **Vidicon** readings change by the burn of their own light: 5 s at peak white burns `2.8e-5`, a change of
   under 1e-4 in every existing reading [DER].
 - No constant fitted before this stage changes: `TARGET_CAPACITANCE_F`, `PBO_BLUE_TRAPS`,
-  `SATICON_CAPACITANCE_F`, `SATICON_TRAPS` and the rest stay as merged.
+  `SATICON_CAPACITANCE_F`, `SATICON_TRAPS` and the rest stay as merged. (The two Saticon constants were
+  refitted afterwards to the BC4908 family, decision 2.)
 - Cost: sub-steps only on elements whose layer falls below the knee (highlights, high key); burn adds one
   exponential per piece on vidicon elements. The prototype's 300 nA decay took about 17 times the merged
   time for one uniform column (every element is at high key); a normal picture has few such elements.
@@ -376,9 +378,9 @@ collection that is not `FULL`, a burn), so the other kinds cost nothing.
 | `the_retention_constants_follow_the_published_curves` | RCA AN-5042 Fig. 2, Hyoron Fig. 8 [FIG] | the law within 0.06 of each normalised point; which kinds carry what | passes |
 | `lead_oxide_holds_carriers_only_where_its_field_falls` | XQ1520 R family, XQ1020/1520 G low key (Mullard 1987) | identical to `FULL` within 1e-3 relative | identical to four decimals |
 | `the_lead_oxide_high_key_tail_is_the_xq1020s` | Philips 5b 1975: 1.2 / 0.4 % at 60 / 200 ms, 300/600 nA [DS] | factor 1.3 each | 1.23 / 0.42 % |
-| `a_saticon_sticks_after_twenty_times_peak_white` | US 4,330,733 Fig. 6: 8 to 27 % of 0.2 uA at the 10th field [FIG] | the band; 0.2 uA leaves under 2 % at the same time; ratio at least 8 [DER] | about 15 % against 0.5 % |
-| `a_saticon_burns_with_the_beam_off_and_not_with_it_on` | RCA 1978, US 4,492,982 [DS] | beam on: under 0.5 % of peak 0.5 s after; beam off: at least 1 % and 5 times the beam-on value [est] | 0.17 % against 3.1 % |
-| `the_saticon_lag_falls_with_signal_as_its_rca_equivalent_shows` | BC4908 Fig. 12, 30 / 50 / 200 nA at 800 nA beam [FIG] | strictly falling; 30 over 200 nA at least 1.7 (data 3.4) | 8.6 / 5.3 / 1.39 % (data 12.4 / 8.7 / 3.6) |
+| `a_saticon_sticks_after_twenty_times_peak_white` | US 4,330,733 Fig. 6: 8 to 27 % of 0.2 uA at the 10th field [FIG] | the band; 0.2 uA leaves under 2 % at the same time; ratio at least 8 [DER] | about 15 % against 0.5 % (refit: 21.9 % against 0.99 %) |
+| `a_saticon_burns_with_the_beam_off_and_not_with_it_on` | RCA 1978, US 4,492,982 [DS] | beam on: under 0.5 % of peak 0.5 s after; beam off: at least 1 % and 5 times the beam-on value [est] | 0.17 % against 3.1 % (refit: 0.16 % against 2.95 %) |
+| `the_saticon_lag_falls_with_signal_as_its_rca_equivalent_shows` | BC4908 Fig. 12, 30 / 50 / 200 nA at 800 nA beam [FIG] | strictly falling; 30 over 200 nA at least 1.7 (data 3.4) | 8.6 / 5.3 / 1.39 % (refit: 12.08 / 8.00 / 3.06 %, ratio 3.9; data 12.4 / 8.7 / 3.6) |
 | `a_lead_oxide_highlight_burns_in_red_and_green_not_blue` | RCA AN-5042 [DS] | 3 s after a 20-times highlight of 5 s: red and green at least 0.2 % of peak [est, a few code values after gamma], blue at most a third of green's share | R / G / B 0.78 / 0.39 / 0.09 % |
 | `white_light_with_the_beam_off_erases_a_lead_oxide_burn` | RCA AN-5042: "erased almost completely and almost instantly" [DS] | residual contrast under 10 % of the unerased one [est] | 0.000 % against 0.18 % |
 | `an_antimony_trisulphide_burn_recovers_within_half_an_hour` | US 3,546,520 [DS] | sensitivity 0.875 within 0.03; dark rise 5 to 12 %; after 30 min under 1 % each | 0.888 and +8.4 %; then 0.995 and +0.4 % |
@@ -393,16 +395,32 @@ The longest, the vidicon burn, reads 120 s of frames (about 2.5 s); its recovery
 
 1. **The H8397A's absolute level is not restored.** The proposed mechanisms cannot produce it together
    with the BC4391 family or the H8397A's own bias cut, and the H8397A's RCA equivalent contradicts it.
-2. **Saticon refit, not made.** The BC4908 family (the H8397A's equivalent, 30 / 50 / 200 nA at 0 / 5 /
-   10 nA) would need a larger charge constant (`K` about 0.17 nA s, `C` about 1.0 nF at 0.17 V, inside
-   the 0.58 to 1.16 nF data) and a bias-proof trap of about 1.5 % at 200 nA. It is irreconcilable with the
-   merged BC4391 exposure family (30 nA with 5 nA bias: 6.1 % against 2.45 %, outside the factor 1.7) and
-   with the H8397A relative cut at 16 nA (outside the factor 1.5). A refit to the BC4908 would touch
-   `SATICON_CAPACITANCE_F`, `SATICON_TRAPS`, and in `camera_materials.rs` the Saticon rows of
-   `trap_tails_grow_with_exposure_as_the_rca_families_show` (absolute levels to shape only) and
-   `the_saticon_lag_falls_with_bias_light_as_the_h8397a_shows` (replaced by the BC4908 family). Not
-   proposed here: the BC4391's size and gun are unknown (it is in no RCA list found), so the evidence does
-   not say which family the 2/3-inch `saticon` kind should follow.
+2. **Saticon refit, made.** The lead chose the BC4908 family (the H8397A's RCA equivalent, 30 / 50 /
+   200 nA at 0 / 5 / 10 nA of bias, 800 nA beam) for the `saticon` kind. The estimate here was a larger
+   charge constant (`K` about 0.17 nA s, `C` about 1.0 nF) and a bias-proof trap of about 1.5 % at
+   200 nA. The fit on the scanned target, with the held charge and its 38 V knee in place, settled on
+   `SATICON_CAPACITANCE_F = 0.80 nF` (`K` 0.136 nA s, inside the 0.58 to 1.16 nF data) and
+   `SATICON_TRAPS` of a small fast trap that a few nA of bias keep full (capture 0.95, 0.14 nA s,
+   47 ms) and a large trap that stays proportional to the light (capture 0.027, 20 nA s [est], 0.10 s),
+   about 1.5 % at 50 ms [DER]; with `C` 1.0 nF the best grid missed by a factor 1.27. All nine points
+   come within a factor 1.18 [DER]:
+
+   | Bias | 30 nA | 50 nA | 200 nA |
+   |---|---|---|---|
+   | 0 nA | 12.08 (12.4) | 8.00 (8.7) | 3.06 (3.6) |
+   | 5 nA | 5.48 (6.1) | 4.07 (4.3) | 2.25 (2.4) |
+   | 10 nA | 2.96 (2.9) | 2.54 (2.2) | 1.93 (1.85) |
+
+   (50 ms lag in %, model with the data in brackets; 60 Hz, 30 deg C.) Unfitted checks: the BC4390's
+   at most 3 % and 1 % at 50 and 150 ms with 6 nA of bias read 2.20 and 0.72 % [DS]; sticking 21.9 %
+   (8 to 27 %); beam-on and beam-off retention 0.16 and 2.95 %. As expected, the BC4391 levels are not
+   met (4.4 to 5.6 % at 50 ms against 1.5 to 2.55 %), so `camera_materials.rs` judges that family by
+   its shape only (each reading as a share of the 256-field one, within 1.7; the 200 ms tail grows
+   3.3 times, data 2.5), and the H8397A bias test is replaced by the BC4908 family
+   (`the_saticon_lag_falls_with_signal_and_bias_light_as_the_bc4908_shows`, factor 1.3, falling with
+   signal and with bias). The H8397A Fig. 6 itself now reads 3.06 / 2.25 / 1.94 / 1.80 % at 0 / 5 / 10 /
+   16 nA (data 6.7 / 3.9 / 2.0 / 0.8): the bias-proof trap the BC4908 needs at 200 nA is the floor that
+   its 16 nA point does not show.
 3. **The held-charge capacities and release times are [est]**, two numbers per material fitted to one
    datum each (PbO to the XQ1020 high key, Saticon to US 4,330,733's band). The PbO burn's lifetime
    (2 s) follows from that fit, not from a burn measurement; no source times a PbO burn.
