@@ -26,10 +26,16 @@ from vhsgui.model import (
     LOG_CHARS,
     PREVIEW_MAX_SIZE,
     AUDIO_MODES,
+    CAMERA_BEAM_RATIO_RANGE,
+    CAMERA_BLOOMING_RANGE,
+    CAMERA_COLD_START_RANGE,
     CAMERA_LAYOUTS,
     CAMERA_PROCESSING,
     CAMERA_TEMPERATURE_RANGE,
     CAMERA_TUBES,
+    DEFAULT_CAMERA_BEAM_RATIO,
+    DEFAULT_CAMERA_BLOOMING,
+    DEFAULT_CAMERA_COLD_START_C,
     DEFAULT_CAMERA_LAYOUT,
     DEFAULT_CAMERA_PROCESSING,
     DEFAULT_CAMERA_TEMPERATURE_C,
@@ -355,18 +361,38 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> None:
             base[key] = value
 
 
-def _iris_in_range(value: Any) -> bool:
-    """True for a real number inside IRIS_STOPS_RANGE (a bool is not a number here)."""
+def _in_range(value: Any, span: tuple[float, float], *, positive: bool = False) -> bool:
+    """True for a real number inside `span` inclusive (and > 0 when `positive`)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    return IRIS_STOPS_RANGE[0] <= value <= IRIS_STOPS_RANGE[1]
+    if positive and value <= 0:
+        return False
+    return span[0] <= value <= span[1]
+
+
+def _iris_in_range(value: Any) -> bool:
+    """True for a real number inside IRIS_STOPS_RANGE (a bool is not a number here)."""
+    return _in_range(value, IRIS_STOPS_RANGE)
 
 
 def _temperature_in_range(value: Any) -> bool:
     """True for a real number inside CAMERA_TEMPERATURE_RANGE (a bool is not a number here)."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    return CAMERA_TEMPERATURE_RANGE[0] <= value <= CAMERA_TEMPERATURE_RANGE[1]
+    return _in_range(value, CAMERA_TEMPERATURE_RANGE)
+
+
+def _beam_ratio_in_range(value: Any) -> bool:
+    """True for a positive real number inside CAMERA_BEAM_RATIO_RANGE."""
+    return _in_range(value, CAMERA_BEAM_RATIO_RANGE, positive=True)
+
+
+def _blooming_in_range(value: Any) -> bool:
+    """True for a real number inside CAMERA_BLOOMING_RANGE."""
+    return _in_range(value, CAMERA_BLOOMING_RANGE)
+
+
+def _cold_start_in_range(value: Any) -> bool:
+    """True for a real number inside CAMERA_COLD_START_RANGE."""
+    return _in_range(value, CAMERA_COLD_START_RANGE)
 
 
 def merge_config(look: Look) -> str:
@@ -390,6 +416,20 @@ def merge_config(look: Look) -> str:
     if not _temperature_in_range(look.camera_temperature_c):
         raise GuiError(
             f"The camera temperature must be between {CAMERA_TEMPERATURE_RANGE[0]:g} and {CAMERA_TEMPERATURE_RANGE[1]:g} °C"
+        )
+    if not _beam_ratio_in_range(look.camera_beam_ratio):
+        raise GuiError(
+            f"The camera beam current must be between {CAMERA_BEAM_RATIO_RANGE[0]:g} and {CAMERA_BEAM_RATIO_RANGE[1]:g}"
+        )
+    if not _blooming_in_range(look.camera_blooming):
+        raise GuiError(
+            f"The camera blooming must be between {CAMERA_BLOOMING_RANGE[0]:g} and {CAMERA_BLOOMING_RANGE[1]:g}"
+        )
+    if not isinstance(look.camera_cold_start, bool):
+        raise GuiError("The camera cold start switch must be true or false")
+    if not _cold_start_in_range(look.camera_cold_start_c):
+        raise GuiError(
+            f"The camera cold-start temperature must be between {CAMERA_COLD_START_RANGE[0]:g} and {CAMERA_COLD_START_RANGE[1]:g} °C"
         )
     doc: dict[str, Any] = {"condition": dict(look.condition)} if look.condition else {}
     if look.signal != DEFAULT_SIGNAL:
@@ -419,6 +459,10 @@ def save_look(look: Look) -> str:
         "camera_temperature_c": float(look.camera_temperature_c),
         "camera_spectral": bool(look.camera_spectral),
         "camera_geometry": bool(look.camera_geometry),
+        "camera_beam_ratio": float(look.camera_beam_ratio),
+        "camera_blooming": float(look.camera_blooming),
+        "camera_cold_start": bool(look.camera_cold_start),
+        "camera_cold_start_c": float(look.camera_cold_start_c),
         "advanced": look.advanced,
     }
     lines = ["[look]"] + [f"{key} = {_toml_value(value)}" for key, value in fields.items()]
@@ -483,6 +527,24 @@ def load_look(text: str) -> Look:
     camera_geometry = section.get("camera_geometry", defaults.camera_geometry)
     if not isinstance(camera_geometry, bool):
         raise GuiError("Look file: camera_geometry must be true or false")
+    camera_beam_ratio = section.get("camera_beam_ratio", defaults.camera_beam_ratio)
+    if not _beam_ratio_in_range(camera_beam_ratio):
+        raise GuiError(
+            f"Look file: camera_beam_ratio must be a number from {CAMERA_BEAM_RATIO_RANGE[0]:g} to {CAMERA_BEAM_RATIO_RANGE[1]:g}"
+        )
+    camera_blooming = section.get("camera_blooming", defaults.camera_blooming)
+    if not _blooming_in_range(camera_blooming):
+        raise GuiError(
+            f"Look file: camera_blooming must be a number from {CAMERA_BLOOMING_RANGE[0]:g} to {CAMERA_BLOOMING_RANGE[1]:g}"
+        )
+    camera_cold_start = section.get("camera_cold_start", defaults.camera_cold_start)
+    if not isinstance(camera_cold_start, bool):
+        raise GuiError("Look file: camera_cold_start must be true or false")
+    camera_cold_start_c = section.get("camera_cold_start_c", defaults.camera_cold_start_c)
+    if not _cold_start_in_range(camera_cold_start_c):
+        raise GuiError(
+            f"Look file: camera_cold_start_c must be a number from {CAMERA_COLD_START_RANGE[0]:g} to {CAMERA_COLD_START_RANGE[1]:g}"
+        )
     advanced = section.get("advanced", defaults.advanced)
     if not isinstance(advanced, str):
         raise GuiError("Look file: advanced must be a string")
@@ -510,6 +572,10 @@ def load_look(text: str) -> Look:
         camera_temperature_c=float(camera_temperature_c),
         camera_spectral=camera_spectral,
         camera_geometry=camera_geometry,
+        camera_beam_ratio=float(camera_beam_ratio),
+        camera_blooming=float(camera_blooming),
+        camera_cold_start=camera_cold_start,
+        camera_cold_start_c=float(camera_cold_start_c),
     )
 
 
@@ -553,6 +619,12 @@ def run_args(binary: Path | str, req: RunRequest, config_path: Path | str | None
             args.append("--camera-spectral")
         if req.look.camera_geometry:
             args.append("--camera-geometry")
+        if req.look.camera_beam_ratio != DEFAULT_CAMERA_BEAM_RATIO:
+            args += ["--camera-beam-ratio", repr(float(req.look.camera_beam_ratio))]
+        if req.look.camera_blooming != DEFAULT_CAMERA_BLOOMING:
+            args += ["--camera-blooming", repr(float(req.look.camera_blooming))]
+        if req.look.camera_cold_start:
+            args += ["--camera-cold-start", repr(float(req.look.camera_cold_start_c))]
     if config_path is not None:
         args += ["--config", str(config_path)]
     frame, seconds = snap_start(req.start, req.look.standard)

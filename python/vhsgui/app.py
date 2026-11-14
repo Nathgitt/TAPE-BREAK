@@ -61,11 +61,17 @@ from PySide6.QtWidgets import (
 from vhsgui import backend
 from vhsgui.model import (
     AUDIO_MODES,
+    CAMERA_BEAM_RATIO_RANGE,
+    CAMERA_BLOOMING_RANGE,
+    CAMERA_COLD_START_RANGE,
     CAMERA_LAYOUTS,
     CAMERA_PROCESSING,
     CAMERA_TEMPERATURE_RANGE,
     CAMERA_TUBES,
     CONDITION_FIELDS,
+    DEFAULT_CAMERA_BEAM_RATIO,
+    DEFAULT_CAMERA_BLOOMING,
+    DEFAULT_CAMERA_COLD_START_C,
     DEFAULT_CAMERA_LAYOUT,
     DEFAULT_CAMERA_PROCESSING,
     DEFAULT_CAMERA_TEMPERATURE_C,
@@ -159,6 +165,12 @@ CAMERA_LAYOUT_LABELS = ("Three tubes (prism)", "One tube, stripe filter")  # in 
 CAMERA_PROCESSING_LABELS = ("Studio", "Home camera")  # in the order of CAMERA_PROCESSING
 CAMERA_TEMPERATURE_STEP = 1.0  # degrees per click of the temperature box
 CAMERA_TEMPERATURE_DECIMALS = 1
+CAMERA_BEAM_RATIO_STEP = 0.1
+CAMERA_BEAM_RATIO_DECIMALS = 1
+CAMERA_BLOOMING_STEP = 0.1
+CAMERA_BLOOMING_DECIMALS = 1
+CAMERA_COLD_START_STEP = 1.0
+CAMERA_COLD_START_DECIMALS = 0
 PREVIEW_AUDIO = "none"  # a preview is only looked at, so the sound is never rendered for it
 
 SPLIT_DEFAULT = 0.5  # the divider starts in the middle
@@ -200,6 +212,10 @@ CAMERA_PROCESSING_HELP = "The camera's electronics: a studio processing amplifie
 CAMERA_TEMPERATURE_HELP = "Temperature of the tube targets: warmer targets have more dark current, which lifts the black. Needs a tube."
 CAMERA_SPECTRAL_HELP = "Real colour: the prism, the infrared filter and each target's spectral response, with the colour matrix. Needs a tube."
 CAMERA_GEOMETRY_HELP = "Real scan: deflection, registration of the tubes, black and white shading, lens flare and corner focus. Needs a tube."
+CAMERA_BEAM_RATIO_HELP = "Beam current as a multiple of what peak white needs (2 is the data sheet's). A weaker beam cannot wipe bright parts in one scan: more lag and longer tails. Needs a tube."
+CAMERA_BLOOMING_HELP = "Beam bending: a highlight charged far above the rest pulls the beam towards itself, so it spreads into its surroundings. 0 is off. Needs a tube."
+CAMERA_COLD_START_HELP = "Switch the camera on cold: the tubes start at the temperature below and warm up over about ten minutes, so the black creeps. Needs a tube."
+CAMERA_COLD_START_C_HELP = "Faceplate temperature of the tubes at switch-on. Needs a tube and Cold start."
 LOOK_HELP = {
     "preset": "The starting condition of the tape and decks; the lines below start from its values.",
     "seed": "Seeds the random defects: the same seed always gives the same damage.",
@@ -214,6 +230,10 @@ LOOK_HELP = {
     "camera_temperature_c": CAMERA_TEMPERATURE_HELP,
     "camera_spectral": CAMERA_SPECTRAL_HELP,
     "camera_geometry": CAMERA_GEOMETRY_HELP,
+    "camera_beam_ratio": CAMERA_BEAM_RATIO_HELP,
+    "camera_blooming": CAMERA_BLOOMING_HELP,
+    "camera_cold_start": CAMERA_COLD_START_HELP,
+    "camera_cold_start_c": CAMERA_COLD_START_C_HELP,
 }
 SCHEMATIC_MIN_WIDTH = 1240
 SCHEMATIC_MIN_HEIGHT = 880
@@ -1227,6 +1247,10 @@ class MainWindow(QMainWindow):
             camera_temperature_c=self.camera_temperature_spin.value(),
             camera_spectral=self.camera_spectral_check.isChecked(),
             camera_geometry=self.camera_geometry_check.isChecked(),
+            camera_beam_ratio=self.camera_beam_ratio_spin.value(),
+            camera_blooming=self.camera_blooming_spin.value(),
+            camera_cold_start=self.camera_cold_start_check.isChecked(),
+            camera_cold_start_c=self.camera_cold_start_spin.value(),
         )
 
     def open_input(self, path: str) -> None:
@@ -1559,6 +1583,64 @@ class MainWindow(QMainWindow):
         self.camera_geometry_check.setToolTip(CAMERA_GEOMETRY_HELP)
         self.camera_geometry_check.toggled.connect(self._on_look_changed)
 
+        def make_camera_spin(
+            name: str,
+            label_text: str,
+            span: tuple[float, float],
+            step: float,
+            decimals: int,
+            default: float,
+            help_text: str,
+            suffix: str = "",
+        ) -> tuple[QLabel, QDoubleSpinBox]:
+            spin = QDoubleSpinBox()
+            spin.setObjectName(name)
+            spin.setDecimals(decimals)
+            spin.setRange(*span)
+            spin.setSingleStep(step)
+            if suffix:
+                spin.setSuffix(suffix)
+            spin.setValue(default)
+            label = QLabel(label_text)
+            for widget in (label, spin):
+                widget.setToolTip(help_text)
+            spin.valueChanged.connect(self._on_look_changed)
+            return label, spin
+
+        camera_beam_ratio_label, self.camera_beam_ratio_spin = make_camera_spin(
+            "field_camera_beam_ratio",
+            "Beam current",
+            CAMERA_BEAM_RATIO_RANGE,
+            CAMERA_BEAM_RATIO_STEP,
+            CAMERA_BEAM_RATIO_DECIMALS,
+            DEFAULT_CAMERA_BEAM_RATIO,
+            CAMERA_BEAM_RATIO_HELP,
+            " x white",
+        )
+        camera_blooming_label, self.camera_blooming_spin = make_camera_spin(
+            "field_camera_blooming",
+            "Blooming",
+            CAMERA_BLOOMING_RANGE,
+            CAMERA_BLOOMING_STEP,
+            CAMERA_BLOOMING_DECIMALS,
+            DEFAULT_CAMERA_BLOOMING,
+            CAMERA_BLOOMING_HELP,
+        )
+        self.camera_cold_start_check = QCheckBox("Cold start")
+        self.camera_cold_start_check.setObjectName("field_camera_cold_start")
+        self.camera_cold_start_check.setToolTip(CAMERA_COLD_START_HELP)
+        self.camera_cold_start_check.toggled.connect(self._on_camera_tube_changed)
+        camera_cold_start_label, self.camera_cold_start_spin = make_camera_spin(
+            "field_camera_cold_start_c",
+            "Start temperature",
+            CAMERA_COLD_START_RANGE,
+            CAMERA_COLD_START_STEP,
+            CAMERA_COLD_START_DECIMALS,
+            DEFAULT_CAMERA_COLD_START_C,
+            CAMERA_COLD_START_C_HELP,
+            " °C",
+        )
+
         self._update_camera_enabled()
 
         self.save_look_button = QPushButton("Save look...")
@@ -1596,8 +1678,15 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.camera_temperature_spin, 10, 1)
         grid.addWidget(self.camera_spectral_check, 11, 1, 1, 2)
         grid.addWidget(self.camera_geometry_check, 12, 1, 1, 2)
-        grid.addWidget(self.reset_button, 13, 0, 1, 3)
-        grid.addLayout(look_files, 14, 0, 1, 3)
+        grid.addWidget(camera_beam_ratio_label, 13, 0)
+        grid.addWidget(self.camera_beam_ratio_spin, 13, 1)
+        grid.addWidget(camera_blooming_label, 14, 0)
+        grid.addWidget(self.camera_blooming_spin, 14, 1)
+        grid.addWidget(self.camera_cold_start_check, 15, 1, 1, 2)
+        grid.addWidget(camera_cold_start_label, 16, 0)
+        grid.addWidget(self.camera_cold_start_spin, 16, 1)
+        grid.addWidget(self.reset_button, 17, 0, 1, 3)
+        grid.addLayout(look_files, 18, 0, 1, 3)
         grid.setColumnStretch(1, 1)
         return box
 
@@ -1933,6 +2022,10 @@ class MainWindow(QMainWindow):
             "camera_temperature_c": look.camera_temperature_c,
             "camera_spectral": look.camera_spectral,
             "camera_geometry": look.camera_geometry,
+            "camera_beam_ratio": look.camera_beam_ratio,
+            "camera_blooming": look.camera_blooming,
+            "camera_cold_start": look.camera_cold_start,
+            "camera_cold_start_c": look.camera_cold_start_c,
         }
 
     def _sync_schematic(self) -> None:
@@ -1966,6 +2059,10 @@ class MainWindow(QMainWindow):
             "camera_temperature_c": DEFAULT_CAMERA_TEMPERATURE_C,
             "camera_spectral": False,
             "camera_geometry": False,
+            "camera_beam_ratio": DEFAULT_CAMERA_BEAM_RATIO,
+            "camera_blooming": DEFAULT_CAMERA_BLOOMING,
+            "camera_cold_start": False,
+            "camera_cold_start_c": DEFAULT_CAMERA_COLD_START_C,
         }
         for view in self._schematic_views:
             view.set_baseline(self._schematic_baseline)
@@ -2031,6 +2128,14 @@ class MainWindow(QMainWindow):
                 self.camera_spectral_check.setChecked(bool(value))
             elif control_id == "camera_geometry":
                 self.camera_geometry_check.setChecked(bool(value))
+            elif control_id == "camera_beam_ratio":
+                self.camera_beam_ratio_spin.setValue(float(value))
+            elif control_id == "camera_blooming":
+                self.camera_blooming_spin.setValue(float(value))
+            elif control_id == "camera_cold_start":
+                self.camera_cold_start_check.setChecked(bool(value))
+            elif control_id == "camera_cold_start_c":
+                self.camera_cold_start_spin.setValue(float(value))
         finally:
             self._sync_guard = False
         self._sync_schematic()
@@ -2052,6 +2157,7 @@ class MainWindow(QMainWindow):
     def _update_camera_enabled(self) -> None:
         # Without a tube the camera adds nothing, so its settings have no effect to set.
         has_tube = self.camera_tube_combo.currentData() != backend.DEFAULT_CAMERA_TUBE
+        cold_start = has_tube and self.camera_cold_start_check.isChecked()
         for widget in (
             self.iris_spin,
             self.camera_layout_combo,
@@ -2059,8 +2165,12 @@ class MainWindow(QMainWindow):
             self.camera_temperature_spin,
             self.camera_spectral_check,
             self.camera_geometry_check,
+            self.camera_beam_ratio_spin,
+            self.camera_blooming_spin,
+            self.camera_cold_start_check,
         ):
             widget.setEnabled(has_tube)
+        self.camera_cold_start_spin.setEnabled(cold_start)
         view = getattr(self, "camera", None)
         if view is not None:
             for cid in (
@@ -2070,8 +2180,12 @@ class MainWindow(QMainWindow):
                 "camera_temperature_c",
                 "camera_spectral",
                 "camera_geometry",
+                "camera_beam_ratio",
+                "camera_blooming",
+                "camera_cold_start",
             ):
                 view.set_enabled(cid, has_tube)
+            view.set_enabled("camera_cold_start_c", cold_start)
 
     def _on_camera_tube_changed(self, *_args: object) -> None:
         self._update_camera_enabled()
@@ -2141,6 +2255,16 @@ class MainWindow(QMainWindow):
         self.camera_temperature_spin.setValue(look.camera_temperature_c)
         self.camera_spectral_check.setChecked(look.camera_spectral)
         self.camera_geometry_check.setChecked(look.camera_geometry)
+        for widget, setter, value in (
+            (self.camera_beam_ratio_spin, self.camera_beam_ratio_spin.setValue, look.camera_beam_ratio),
+            (self.camera_blooming_spin, self.camera_blooming_spin.setValue, look.camera_blooming),
+            (self.camera_cold_start_check, self.camera_cold_start_check.setChecked, look.camera_cold_start),
+            (self.camera_cold_start_spin, self.camera_cold_start_spin.setValue, look.camera_cold_start_c),
+        ):
+            widget.blockSignals(True)
+            setter(value)
+            widget.blockSignals(False)
+        self._update_camera_enabled()
         self.advanced_edit.setPlainText(look.advanced)
         self._set_stale(True)
         self._sync_schematic()
