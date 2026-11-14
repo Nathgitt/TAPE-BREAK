@@ -131,7 +131,7 @@ The outside-world page uses four equal columns of `270 px` width separated by `2
 
 ## Page 3: The camera (`python/vhsgui/schematic/camera/`)
 
-The camera page draws the camera ahead of the recorder in the order the light and then the signal travel through it: scene and lens with its iris, the colour split (a dichroic prism, or a stripe filter), the pickup tube(s), the head amplifier, the processing amplifier, the encoder, and the TV that shows the result. It holds every camera setting of the window and nothing else; the circuit page keeps only the drawing of its `camera` block. The data files are `docs/design/camera_page/layout.json` and `docs/design/camera_page/glyphs.json`, copied unchanged to `python/vhsgui/schematic/camera/`; the tables below say what they contain.
+The camera page draws the camera ahead of the recorder in the order the light and then the signal travel through it: scene and lens with its iris, the colour split (a dichroic prism, or a stripe filter), the pickup tube(s), the head amplifier, the processing amplifier, the encoder, and the TV that shows the result. It holds every camera setting of the window and nothing else; the circuit page keeps only the drawing of its `camera` block. The data files are `python/vhsgui/schematic/camera/layout.json` and `glyphs.json`; the tables below say what they contain.
 
 ### Grid
 
