@@ -7,7 +7,7 @@ Development status and forward roadmap for `vhs-phys`.
 Active tasks in the current development cycle:
 
 - **PAL deck tuning**: Playback equaliser and head resonance scaled to the PAL carrier (vhs-decode RF peak ~4.3 MHz vs 3.9 MHz for NTSC); normalised 58 um track pitch reference for carrier-to-noise ratio.
-- **Camera tube limits** (`docs/CAMERA.md`): Addressing low build-up lag, short light-bias tail, target saturation fitting at 50 Hz, and blooming / burn-in models.
+- **Camera tube limits** (`docs/CAMERA.md`): *(Completed)* Scanned target engine (`camera.rs`, `camera_processing.rs`) with time-based lag, ACT (`plumbicon-act`), DBC (`plumbicon-dbc`), beam-bending blooming, target materials (`vidicon`, `newvicon`, `saticon` refitted to BC4908, `chalnicon`), spectral taking and colour matrices (`spectral.rs`), scan geometry (`geometry.rs`), single-tube stripe layout (`stripe.rs`), retention/burn-in/warm-up (`docs/design/CAMERA_RETENTION.md`), and the camera schematic page. Trinicon single-tube cameras, permanent burn damage thresholds, and stripe-camera spectra remain out of scope.
 - **Engine-generic audio I/O**: Refactoring CLI audio I/O across 525-line and 625-line engines and standard verification checks in configuration overrides.
 - **Schematic UI integration**: Television standard, camera tube selection, and conditional spec displays in the PySide6 schematic view.
 

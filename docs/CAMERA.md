@@ -689,19 +689,19 @@ within `3 %` at `0`, `WARM_UP_S` and `2 * WARM_UP_S`, and `50 ms` `200 nA` lag s
 
 ## Known limits
 
-* The slow tail with light bias is too short: at 200 ms the model leaves under 1 % where the
-  XQ1410 data shows 2 to 3.5 %. That tail is the PbO photoconductive lag, which is left out
-  because the data sheet calls it negligible for the plain tube; with bias it is what is left.
 * Beam bending models electrostatic attraction from stored target potential toward elements above
-  `10 V` within `4.0` frame lines; out-of-scope highlight effects are not modelled: burn-in,
-  optical flare and the anti-halation disc, DBC feedback loop delay, beam spot growth and
-  deflection-geometry shift, landing-energy displacement (approach vs departure asymmetry),
-  and cross-channel bending across separate prism targets.
+  `10 V` within `4.0` frame lines; out-of-scope highlight and retention effects are not modelled:
+  DBC feedback loop delay, beam spot growth with beam current, dynamic beam-current deflection
+  shift, landing-energy displacement (approach vs departure asymmetry), cross-channel bending
+  across separate prism targets, permanent burn damage thresholds, and burn-in kinetics for
+  non-Sb2S3 materials (sign of Saticon/Chalnicon retained image vs target voltage).
 * The capacitances are fitted at 625/50 and used unchanged at 525/60; elapsed-time lag is
   checked on both raster engines.
 * Spectral taking and the colour matrix cover the three-tube prism cameras behind the fitted
   dichroic prism and IR-cut filter; stripe-camera spectra, illuminant shifts and metameric
   residuals outside the three primary spectra are out of scope.
+* Lag vs temperature beyond dark current and beam temperature vs beam current ("reduced beam")
+  are not modelled.
 
 ## Why tails end magenta
 
@@ -727,16 +727,48 @@ are on the tape.
 
     vhsphys run in.mp4 out.mp4 --preset worn --camera-tube plumbicon --iris-stops 2
 
-`--camera-tube` takes `off`, `plumbicon` (XQ1020), `plumbicon-bias` (XQ1410),
-`plumbicon-act` (XQ1520), `plumbicon-dbc` (diode gun with dynamic beam control), `vidicon`,
-`newvicon`, `saticon` and `chalnicon`. `--iris-stops N` is the exposure in stops: 0 is the light that
-gives peak white, 2 overexposes by a factor of four, so that bright parts of the picture are
-beyond what the beam can take off and leave tails. In a config file:
+Command-line flags:
+
+* `--camera-tube`: `off` (default), `plumbicon` (XQ1020), `plumbicon-bias` (XQ1410),
+  `plumbicon-act` (XQ1520), `plumbicon-dbc` (diode gun with dynamic beam control, XQ3440),
+  `vidicon` (Sb2S3), `newvicon` (ZnSe/ZnCdTe), `saticon` (Se-As-Te, H8397A) and `chalnicon`
+  (CdSe).
+* `--iris-stops <N>`: exposure of the camera tubes in stops (`0` is the light that gives peak
+  white; `2` overexposes by a factor of four, so bright parts of the picture are beyond what the
+  beam can take off and leave tails).
+* `--camera-temperature <DEG_C>`: target temperature of the camera tubes in degrees Celsius
+  (default `25`); warmer tubes have more dark current.
+* `--camera-cold-start <DEG_C>`: faceplate temperature of the camera tubes at switch-on in
+  degrees Celsius; the black creeps as they warm to `--camera-temperature` (`WARM_UP_S = 600` s).
+* `--camera-processing <PROFILE>`: camera electronics profile, `studio` (three-tube broadcast,
+  default) or `consumer` (home camera).
+* `--camera-layout three-tube|stripe`: how the camera sees colour, `three-tube` (a prism and a
+  tube per colour, default) or `stripe` (one tube behind a colour stripe filter).
+* `--camera-spectral`: take the scene through the camera's prism, infrared filter and target
+  spectral responses, with its colour matrix, instead of ideal colour.
+* `--camera-geometry`: give the camera its scan geometry (deflection, registration, black and
+  white shading, lens flare and corner focus).
+
+In a config file:
 
     [camera]
     tube = "plumbicon"
     iris_stops = 2.0
     beam_ratio = 2.0
+    temperature_c = 25.0
+    processing = "studio"
+    layout = "three-tube"
+    spectral = false
+    geometry = false
+    # cold_start_c = 10.0
+
+In the desktop front end (`python -m vhsgui --page camera`), the **Camera** button in schematic
+mode opens the camera page (`docs/design/SCHEMATIC.md`, "Page 3: The camera"). It draws the
+camera chain ahead of the recorder (`lens` -> `split` -> `tubes` -> `head_amp` -> `processing`
+-> `encoder` -> `tv`) with all seven camera controls (`IRIS`, `LAYOUT`, `SPECTRAL COLOUR`, `TUBE`,
+`TUBE TEMP`, `SCAN GEOMETRY`, `ELECTRONICS`). Switching `LAYOUT` switches the `split` and
+`tubes` drawings between a prism with three tubes (`three-tube`) and a stripe filter with one
+tube (`stripe`); while `TUBE` is `off`, the six other camera lines dim and are inert.
 
 The tube's memory starts after its dark settling scan when a session starts. A render that starts
 part-way into a clip (`--start`) with a tube on therefore needs a few frames of pre-roll

@@ -120,9 +120,13 @@ tape and deck as the picture, so at PAL speed it is that tape's.
 `standard` line above `[condition]` so that the output works as a `--config` file.
 
 The camera pickup tube ahead of the recorder works in every standard: `--camera-tube` takes `off`
-(the default), `plumbicon`, `plumbicon-bias` or `plumbicon-act`, and `--iris-stops N` sets the
-exposure in stops (positive overexposes, so highlights leave comet tails). The model is in
-`docs/CAMERA.md`.
+(the default), `plumbicon`, `plumbicon-bias`, `plumbicon-act`, `plumbicon-dbc`, `vidicon`,
+`newvicon`, `saticon` or `chalnicon`; `--iris-stops N` sets the exposure in stops (positive
+overexposes, so highlights leave comet tails). `--camera-layout` chooses `three-tube` or `stripe`,
+`--camera-processing` chooses `studio` or `consumer`, `--camera-temperature DEG_C` and
+`--camera-cold-start DEG_C` set operating and switch-on faceplate temperatures, and
+`--camera-spectral` and `--camera-geometry` enable spectral taking/colour matrixing and scan
+geometry. The model is in `docs/CAMERA.md`.
 
 ```sh
 vhsphys run in.mp4 out.mp4 --preset worn --standard pal
@@ -176,10 +180,17 @@ right:
 
 The same controls can be shown as a phosphor-green electrical drawing: the **Schematic** button of the
 mode bar replaces the settings column by a drawing of the deck, the cassette and the TV, every control
-a labelled line with its value (drag a value, scroll over it, or click it and type). A second page,
-**Outside**, draws the things that are not part of the circuit (see below). Both pages show the live
-preview on the TV and edit the same settings as the panels, so the two views can never disagree.
-`python -m vhsgui --schematic [--page outside] [--screenshot out.png] [input-video]`. The drawing
+a labelled line with its value (drag a value, scroll over it, or click it and type). Three pages
+share the schematic view (**Camera**, **Circuit**, **Outside**): **Camera** draws the camera ahead
+of the recorder (`lens` with `IRIS`, `split` with `LAYOUT` and `SPECTRAL COLOUR`, `tubes` with
+`TUBE`, `TUBE TEMP` and `SCAN GEOMETRY`, `head_amp`, `processing` with `ELECTRONICS`, `encoder` and
+the `tv` preview; the `split` and `tubes` drawings switch between `three-tube` and `stripe`, and the
+six other camera lines dim and are inert while `TUBE` is `off`), **Circuit** draws the recorder
+signal chain, and **Outside** draws the things that are not part of the circuit (see below). All
+three pages show the live preview on the TV and edit the same settings as the panels, so the two
+views can never disagree.
+`python -m vhsgui --schematic [--page camera|circuit|outside] [--screenshot out.png] [input-video]`
+(for example `python -m vhsgui --page camera`). The drawing
 is data (`python/vhsgui/schematic/*/layout.json`, `glyphs.json`, format in `docs/design/FORMAT.md`,
 design notes in `docs/design/SCHEMATIC.md`).
 
@@ -384,7 +395,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 
 ### Currently being worked on
 * **PAL deck tuning**: Playback equaliser and head resonance scaled to the PAL carrier; 58 um track pitch reference for CNR.
-* **Camera tube limits**: Build-up lag, light-bias tail, target saturation fitting at 50 Hz, and blooming/burn-in models (`docs/CAMERA.md`).
+* **Camera tube limits**: *(Completed)* Scanned target engine, target materials (`vidicon`, `newvicon`, `saticon` refitted to BC4908, `chalnicon`), ACT/DBC/blooming, spectral taking and colour matrices, scan geometry, stripe layout, retention/burn-in/warm-up, and the camera schematic page (`docs/CAMERA.md`).
 * **Engine-generic audio I/O**: Generic CLI audio I/O across 525-line and 625-line engines and standard verification checks.
 * **Schematic UI integration**: Television standard, camera tube selection, and conditional spec displays in the PySide6 schematic view.
 
