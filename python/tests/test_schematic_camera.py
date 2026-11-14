@@ -2,7 +2,7 @@
 """The camera page of the schematic: a third drawing beside the circuit and the outside world.
 
 It holds every setting of the camera (tube, iris, layout, electronics, tube temperature, spectral colour,
-scan geometry, beam current, blooming, cold start), drawn as the light travels: lens and iris, colour split, pickup tubes, head amplifier,
+scan geometry, beam current, blooming, cold start, lens cap, beam off), drawn as the light travels: lens and iris, colour split, pickup tubes, head amplifier,
 processing amplifier, encoder, TV. The layout switch changes the drawing itself (a prism and three tubes,
 or a stripe filter and one tube). Without a tube the camera's other lines are inert, as the window's own
 camera controls are disabled. The surface fixed here, beside the one in test_schematic_view.py:
@@ -45,10 +45,10 @@ CAMERA_DIR = DATA / "camera"
 CW, CH = 1180, 620
 LEFT, NOBTN, NOMOD = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier
 CAMERA_IDS = {"camera_tube", "iris_stops", "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry",
-              "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c"}
+              "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c", "camera_idle_s", "camera_beam_off_s"}
 # The camera's lines that have nothing to act on without a tube (the tube itself always works).
 NEEDS_A_TUBE = ("iris_stops", "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry",
-                "camera_beam_ratio", "camera_blooming", "camera_cold_start")
+                "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_idle_s", "camera_beam_off_s")
 # The switch-on temperature works only while the cold-start switch is on as well.
 NEEDS_COLD_START = "camera_cold_start_c"
 THREE_TUBE_GLYPHS = {"prism", "tubes_three"}
@@ -307,6 +307,8 @@ def test_the_camera_page_starts_as_the_window_does_and_follows_its_editors(app, 
     child(window, QDoubleSpinBox, "field_camera_blooming").setValue(1.0)
     child(window, QCheckBox, "field_camera_cold_start").setChecked(True)
     child(window, QDoubleSpinBox, "field_camera_cold_start_c").setValue(-5.0)
+    child(window, QDoubleSpinBox, "field_camera_idle_s").setValue(60.0)
+    child(window, QDoubleSpinBox, "field_camera_beam_off_s").setValue(1.5)
     assert_camera_mirrors(window)
     assert STRIPE_GLYPHS <= set(window.camera.visible_glyphs())
     assert all(window.camera.is_edited(cid) for cid in CAMERA_IDS), "every camera line now differs from its default"

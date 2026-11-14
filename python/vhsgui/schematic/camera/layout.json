@@ -467,6 +467,20 @@
    "decimals": 1
   },
   {
+   "id": "camera_idle_s",
+   "block": "lens",
+   "label": "LENS CAP",
+   "x": 26,
+   "y": 200,
+   "w": 258,
+   "kind": "slider",
+   "unit": "s",
+   "min": 0.0,
+   "max": 1800.0,
+   "step": 10.0,
+   "decimals": 0
+  },
+  {
    "id": "camera_layout",
    "block": "split",
    "label": "LAYOUT",
@@ -581,6 +595,20 @@
    "max": 60.0,
    "step": 1.0,
    "decimals": 0
+  },
+  {
+   "id": "camera_beam_off_s",
+   "block": "tubes",
+   "label": "BEAM OFF",
+   "x": 316,
+   "y": 332,
+   "w": 258,
+   "kind": "slider",
+   "unit": "s",
+   "min": 0.0,
+   "max": 60.0,
+   "step": 0.5,
+   "decimals": 1
   },
   {
    "id": "camera_processing",

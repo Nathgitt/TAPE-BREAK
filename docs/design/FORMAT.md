@@ -75,17 +75,17 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
 | `power` | `deck_age_years`, `deck_temp_c`, `deck_humidity`, `psu_smps` (toggle), `mains_hz`, `mains_sag` |
 | `output` | `signal` (choice svideo, notch, comb1h, comb2h), `audio` (choice process, copy, none) |
 | `tv` | `standard` (choice ntsc, pal, pal60); the TV shows the picture (a glyph with a `screen`) |
-| `lens` (camera page) | `iris_stops` (slider -2..6, step 0.5) |
+| `lens` (camera page) | `iris_stops` (slider -2..6, step 0.5), `camera_idle_s` (slider 0..1800 s, step 10) |
 | `split` (camera page) | `camera_layout` (choice three-tube, stripe), `camera_spectral` (toggle) |
-| `tubes` (camera page) | `camera_tube` (choice), `camera_temperature_c` (slider 0..60 °C, step 1), `camera_geometry` (toggle), `camera_beam_ratio` (slider 0.5..4, step 0.1), `camera_blooming` (slider 0..3, step 0.1), `camera_cold_start` (toggle), `camera_cold_start_c` (slider -20..60 °C, step 1) |
+| `tubes` (camera page) | `camera_tube` (choice), `camera_temperature_c` (slider 0..60 °C, step 1), `camera_geometry` (toggle), `camera_beam_ratio` (slider 0.5..4, step 0.1), `camera_blooming` (slider 0..3, step 0.1), `camera_cold_start` (toggle), `camera_cold_start_c` (slider -20..60 °C, step 1), `camera_beam_off_s` (slider 0..60 s, step 0.5) |
 | `processing` (camera page) | `camera_processing` (choice studio, consumer) |
 
   The numeric ranges, steps and choices of the condition controls are those of
   `python/vhsgui/model.py` (`CONDITION_FIELDS`); a test keeps the two in step. The choices of `standard`,
   `camera_tube`, `camera_layout` and `camera_processing` and the ranges of `iris_stops`, `camera_temperature_c`,
-  `camera_beam_ratio`, `camera_blooming` and `camera_cold_start_c` are `STANDARDS`, `CAMERA_TUBES`, `CAMERA_LAYOUTS`,
+  `camera_beam_ratio`, `camera_blooming`, `camera_cold_start_c`, `camera_idle_s` and `camera_beam_off_s` are `STANDARDS`, `CAMERA_TUBES`, `CAMERA_LAYOUTS`,
   `CAMERA_PROCESSING`, `IRIS_STOPS_RANGE`, `CAMERA_TEMPERATURE_RANGE`, `CAMERA_BEAM_RATIO_RANGE`,
-  `CAMERA_BLOOMING_RANGE` and `CAMERA_COLD_START_RANGE` there.
+  `CAMERA_BLOOMING_RANGE`, `CAMERA_COLD_START_RANGE`, `CAMERA_IDLE_RANGE` and `CAMERA_BEAM_OFF_RANGE` there.
 - `labels.when` (optional): `{control_id: [values]}`, one choice control of the same page. The label is drawn only
   while that control has one of the values, so labels for different values may share a place. The circuit page
   uses it to print the figures of the chosen standard (lines and frame rate, FM band, colour-under, drum, tape speeds).

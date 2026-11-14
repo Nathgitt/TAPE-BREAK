@@ -40,7 +40,7 @@ MARGIN = 4
 LOOK_IDS_OF_PAGE = {
     "circuit": {"preset", "seed", "generations", "signal", "audio", "standard"},
     "camera": {"camera_tube", "iris_stops", "camera_layout", "camera_processing", "camera_temperature_c", "camera_spectral", "camera_geometry",
-               "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c"},
+               "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c", "camera_idle_s", "camera_beam_off_s"},
     "outside": set(),
 }
 LOOK_IDS = set().union(*LOOK_IDS_OF_PAGE.values())
@@ -57,9 +57,9 @@ BLOCKS_OF_PAGE = {
         "tv": ["standard"],
     },
     "camera": {
-        "lens": ["iris_stops"],
+        "lens": ["iris_stops", "camera_idle_s"],
         "split": ["camera_layout", "camera_spectral"],
-        "tubes": ["camera_tube", "camera_temperature_c", "camera_geometry", "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c"],
+        "tubes": ["camera_tube", "camera_temperature_c", "camera_geometry", "camera_beam_ratio", "camera_blooming", "camera_cold_start", "camera_cold_start_c", "camera_beam_off_s"],
         "head_amp": [],
         "processing": ["camera_processing"],
         "encoder": [],
