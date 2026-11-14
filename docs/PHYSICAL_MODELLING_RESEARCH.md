@@ -74,7 +74,9 @@ than a smoothed correction.
 fields of a frame; each helical pass is really an independent field. Taking
 59.94 fps (progressive or already-interlaced) input and mapping each field to its
 own pass would remove that duplication and let interlace comb filtering of a
-moving picture behave as it does on a real deck. Candidate; see the handover.
+moving picture behave as it does on a real deck. Status: the core API is in (`Session::push_fields(f0, f1)`,
+which with a camera tube on holds each picture over its own field interval); the command line tool still reads
+progressive frames.
 
 ### 2.6 Hi-Fi depth-multiplex audio
 

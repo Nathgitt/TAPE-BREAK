@@ -13,8 +13,8 @@ this page shows where each is ahead.
 
 | | ntsc-rs | vhs-phys |
 |---|---|---|
-| What is modelled | composite encode/decode, noise, head switching, tracking noise, ringing, chroma errors, a small VHS block (edge wave, tape-speed low-pass, chroma loss, sharpen) | FM record, saturating tape, head readback with spacing, azimuth and tracking, a defect map in tape coordinates, deck electronics, TV-style decode, composite separation as an option |
-| Controls | dozens of direct sliders (head-switching height, tracking-noise height, ...), JSON presets | 21 physical knobs (years, deg C, um) plus any raw parameter; look files |
+| What is modelled | composite encode/decode, noise, head switching, tracking noise, ringing, chroma errors, a small VHS block (edge wave, tape-speed low-pass, chroma loss, sharpen) | FM record, saturating tape, head readback with spacing, azimuth and tracking, a defect map in tape coordinates, deck electronics, TV-style decode, composite separation as an option; ahead of the recorder, an optional tube camera (scanned pickup-tube targets, head and processing amplifiers, spectral colour) |
+| Controls | dozens of direct sliders (head-switching height, tracking-noise height, ...), JSON presets | 37 physical knobs (years, deg C, um, V/m ...) plus any raw parameter; look files |
 | Origin | algorithms of composite-video-simulator, zhuker/ntsc and ntscQT | closed-form head physics, the VHS standard's figures, estimates tagged `[est]` |
 
 ## No pixel-space filtering
@@ -53,6 +53,11 @@ afterwards.
   available as a simplified model (`audio.hifi`).
 - **Tape speeds from geometry.** LP and EP are narrower tracks (28.9 and 19.3 um): the noise, the
   crosstalk and the tighter tracking tolerance follow. ntsc-rs lowers two low-pass cut-offs.
+- **The camera.** The picture can be taken by a tube camera before it is recorded: a scanned pickup-tube target that
+  holds charge from frame to frame, so a moving highlight leaves lag and a comet tail whose length and colour come from
+  the tube's capacitance, beam and traps (nine tube types, from the Plumbicon to the Saticon), with the camera's own
+  head and processing amplifiers, spectral colour and a single-tube stripe layout (`docs/CAMERA.md`). ntsc-rs
+  starts from the picture it is given.
 - **Dubbing.** `--generations N` re-records through a different deck and tape each time.
 - **Checks.** Closed-form head physics against numerical integration, the VHS standard's numbers,
   a bit-exact guard on the plain path, and frozen acceptance tests for each model.
@@ -60,7 +65,7 @@ afterwards.
 ## Where ntsc-rs is ahead
 
 - **Speed.** It runs in real time per its site, at resolutions well above NTSC; vhs-phys does
-  about 12-14 fps at standard definition on 8 cores (`docs/PERFORMANCE.md`).
+  about 12-14 fps at standard definition on 8 cores, and about 2 fps with a camera tube on (`docs/PERFORMANCE.md`).
 - **Integration and maturity.** Plugins for After Effects, Premiere and OpenFX hosts (Resolve,
   Hitfilm, Vegas), a web app, keyframing in hosts, an app with timeline, zoom and presets,
   releases for three platforms. vhs-phys is a command line tool and a window.

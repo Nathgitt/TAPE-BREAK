@@ -161,7 +161,9 @@ Temperature drives both dark current and lag. Dark current doubles every **7-8 Â
 
 ## What the evidence means for the existing camera stage
 
-The current model already has the right core: a capacitor per element, exponential landing, and a beam-current clip. Most of its documented limits trace to how the law is parameterised and stepped.
+This section and the model structure below it were written against the first camera stage, which had one lag law updated
+once per frame and three Plumbicon types. The camera stage as built (`docs/CAMERA.md`) carries out the changes the table
+lists; what it leaves out is under "Known limits" there. The first stage already had the right core: a capacitor per element, exponential landing, and a beam-current clip. Most of its documented limits trace to how the law is parameterised and stepped.
 
 | Documented limit | What the evidence says | Change implied |
 |---|---|---|

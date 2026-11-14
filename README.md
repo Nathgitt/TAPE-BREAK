@@ -172,8 +172,10 @@ right:
 
 * **Settings**: choose the input video, preset, and seed; set the generations,
   the signal, the sound and the television standard; set up the camera (tube, iris, colour
-  pickup, electronics, tube temperature, spectral colour and scan geometry; the
-  six settings after the tube are inert while the tube is off); adjust the
+  pickup, electronics, tube temperature, spectral colour, scan geometry, beam
+  current, blooming, and a cold start with its start temperature; the settings
+  after the tube are inert while the tube is off, and the start temperature works
+  only while the cold start is on); adjust the
   condition controls across Tape, Heads and drum, Playback deck, Transport and
   tracking, Recording deck and the outside world ("Reset to preset" restores
   them); an Advanced box accepts raw TOML overrides (such as `[tape]` /
@@ -202,10 +204,12 @@ mode bar replaces the settings column by a drawing of the deck, the cassette and
 a labelled line with its value (drag a value, scroll over it, or click it and type). Three pages
 share the schematic view (**Camera**, **Circuit**, **Outside**): **Camera** draws the camera ahead
 of the recorder (`lens` with `IRIS`, `split` with `LAYOUT` and `SPECTRAL COLOUR`, `tubes` with
-`TUBE`, `TUBE TEMP` and `SCAN GEOMETRY`, `head_amp`, `processing` with `ELECTRONICS`, `encoder` and
-the `tv` preview; the `split` and `tubes` drawings switch between `three-tube` and `stripe`, and the
-six other camera lines dim and are inert while `TUBE` is `off`), **Circuit** draws the recorder
-signal chain (its camera block points to the Camera page), and **Outside** draws the things that are not part of the circuit (see below). All
+`TUBE`, `TUBE TEMP`, `SCAN GEOMETRY`, `BEAM`, `BLOOMING`, `COLD START` and `START TEMP`, `head_amp`,
+`processing` with `ELECTRONICS`, `encoder` and the `tv` preview; the `split` and `tubes` drawings
+switch between `three-tube` and `stripe`, and the other camera lines dim and are inert while
+`TUBE` is `off`; `START TEMP` works only while `COLD START` is on), **Circuit** draws the recorder
+signal chain (its camera block points to the Camera page), and **Outside** draws the things that are
+not part of the circuit (see below). All
 three pages show the live preview on the TV and edit the same settings as the panels, so the two
 views can never disagree.
 `python -m vhsgui --schematic [--page camera|circuit|outside] [--screenshot out.png] [input-video]`
@@ -258,10 +262,11 @@ end, by the picture tube model.
 * **Lag.** Near the cathode potential only the faster electrons of the beam can land, so the last of the
   charge on a target element comes off over the next scans. Light bias, a warmer target (dark current acts
   like bias light) and a brighter scene all shorten it. The constants are fitted to the lag figures of the
-  data sheets, at 50 and 60 Hz.
-* **Comet tails.** The beam is set to twice what peak white needs. A highlight beyond that leaves charge the
-  scan cannot take off in one pass; it builds up to the target plate limit and drains over several frames
-  as clipped white. On a Plumbicon the tail ends magenta, because red and blue outlast green.
+  data sheets and checked at both frame rates.
+* **Comet tails.** The beam is set to twice what peak white needs (`--camera-beam-ratio N`, default 2). A highlight
+  beyond that leaves charge the scan cannot take off in one pass; it builds up to the target plate limit and
+  drains over several frames as clipped white. A stronger beam shortens the tail, a weaker one lengthens it
+  and adds lag. On a Plumbicon the tail ends magenta, because red and blue outlast green.
 * **Tube types.** `--camera-tube` takes nine values (below). The four Plumbicon tubes (lead oxide) differ in
   their light bias and in how the beam deals with a highlight; the other four materials differ in transfer
   curve, dark current, target capacitance and traps, and so in how long and how strongly they lag.
@@ -283,8 +288,8 @@ end, by the picture tube model.
 A white box and a dim grey box cross a dark scene (`--iris-stops 3`, so the white box is eight times the light that
 gives peak white). Left to right, top to bottom: source, `plumbicon`, `plumbicon-act`, `plumbicon-dbc`, `vidicon`
 and `saticon`. The Plumbicon leaves a comet tail behind the white box that ends magenta, the ACT and DBC guns
-discharge the highlight, and the other materials lag in their own way. The tape is `pristine`, so what differs between
-the panels is the tube.
+discharge the highlight and leave only a short lag, the vidicon holds it as clipped white for longer, and the Saticon
+smears it softly. The tape is `pristine`, so what differs between the panels is the tube.
 
 ![the target materials on colour bars](docs/img/features_camera_materials.jpg)
 
@@ -300,6 +305,8 @@ The rest of the camera, each a flag and a config key (`docs/CAMERA.md`, "Using i
   overexposes by a factor of four and `3` by eight. An automation track can move it in time.
 * **Temperature** (`--camera-temperature DEG_C`): the target temperature. Dark current doubles every 7.5 to 9.6
   degrees on the materials that have a published law, and acts on the target like bias light.
+  `--camera-cold-start DEG_C` switches the camera on with the faceplate at another temperature; it warms to the
+  operating temperature with a time constant of 600 s, and the black creeps as it does.
 * **Electronics** (`--camera-processing studio|consumer`): the head amplifier (shot, feedback-resistor and FET
   noise, a 5.5 MHz band), clamp, gain, knee, gamma, aperture correction with coring and clip. The studio profile
   has the colour matrix, a knee and vertical aperture correction; the consumer profile has none of these and
@@ -308,13 +315,18 @@ The rest of the camera, each a flag and a config key (`docs/CAMERA.md`, "Using i
   cyan and yellow stripe filter whose 3.58 MHz carrier is decoded by frequency separation, as in a home camera.
   The stripe camera has a colour bandwidth near 0.5 MHz, and in a highlight beyond the beam its carrier is lost
   and the picture turns green.
+* **Blooming** (`--camera-blooming N`, default 0, off): a target element charged far above its surroundings pulls the
+  beams that scan nearby lines towards itself, so a bright highlight spreads into the dark around it. Peak white does
+  not bend the beam; no measurement sets the scale of the effect.
 * **Spectral colour** (`--camera-spectral`): the scene's light goes through the lens infrared filter, the prism and each
   target's spectral response, instead of ideal colour.
 * **Scan geometry** (`--camera-geometry`): deflection distortion, registration of the three tubes, black and white
   shading, veiling glare, halation, and corner focus, with the studio camera's correctors.
 * **Retention**: held charge in lead oxide and the Saticon (more lag at high key, sticking after an overload), reversible
   burn on a vidicon, and warm-up of a cold tube. They all happen on the target, as charge, and nothing is applied to the
-  picture after the scan.
+  picture after the scan. In a config file, `idle_s` caps the lens with the beam on before the first frame, and
+  `beam_off_s` holds the beam off with the lens open for the start of the shot (a Saticon burns in, a lead-oxide
+  burn is erased).
 
 ```sh
 vhsphys run in.mp4 out.mp4 --preset good --camera-tube plumbicon --iris-stops 3
@@ -371,7 +383,9 @@ Set with `--audio process|copy|none` (default `process`; `copy` leaves the input
 ![signal flow schematic](docs/img/signal_flow.png)
 
 ```
-frame -> NTSC raster (sync, burst, vsync, half-line field offset)
+frame -> optional camera: iris, prism, pickup-tube targets scanned line by line (charge, lag, comet
+         tails, beam), head amplifier noise, processing amplifier (knee, gamma, aperture, clip)
+  -> NTSC raster (sync, burst, vsync, half-line field offset)
   -> record deck: luma bandwidth, 1.3 us emphasis, white/dark clip, FM 3.4-4.4 MHz,
                   FM high-pass, colour-under 629 kHz with +/-90 deg line rotation, burst x2
   -> record head/tape: saturating relay (coercivity) on FM + chroma current
@@ -437,7 +451,7 @@ See [`docs/COMPARISON.md`](docs/COMPARISON.md) for a full breakdown of where eac
 
 ## Validation
 
-* 165 Rust tests (`cargo test --release`): carrier frequencies match the VHS
+* Over 450 Rust tests (`cargo test --release`): carrier frequencies match the VHS
   standard, the discriminator is exact, the chroma duty-cycle recording gain
   matches theory, spacing loss follows 54.6 dB per wavelength, the azimuth
   filter follows the sinc law, adjacent tracks are line aligned, creases sit at a
@@ -448,7 +462,10 @@ See [`docs/COMPARISON.md`](docs/COMPARISON.md) for a full breakdown of where eac
   outside world: field laws with distance, GSM burst timing, hum bars crawling at
   the mains difference, dimmer marks at the firing times, a magnet's beam
   deflection integrated along the tube, and an unchanged picture with all
-  sources off.
+  sources off; for the camera: lag, build-up and decay against published
+  figures at 50 and 60 Hz, comet tails with and without the ACT and
+  diode guns, retention and burn, the colour matrices, the scan geometry and the
+  stripe camera's decoder, and an unchanged picture with the tube off.
 * Python lab (`python/`): checks the closed-form head physics against a full
   numerical Karlqvist integration, and measures the real CLI end to end.
 
@@ -473,16 +490,18 @@ cd python && ../.venv/bin/python -m pytest -q tests
 ## Layout
 
 ```
-crates/vhsphys-core   physics library (record, tape, head, mech, electronics, decode, pipeline)
+crates/vhsphys-core   physics library (camera, record, tape, head, mech, electronics, decode, pipeline)
 crates/vhsphys-cli    `vhsphys` command line tool (ffmpeg pipes)
 python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
 docs/                 RESEARCH, ARCHITECTURE, ROADMAP, PLUGIN, PERFORMANCE, COMPARISON,
                       PHYSICAL_MODELLING_RESEARCH, TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE,
-                      PAL, CAMERA, BOUNCE, design/, images
+                      PAL, CAMERA, CAMERA_RESEARCH, MEASUREMENTS_WANTED, BOUNCE, design/, images
 scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
 scripts/interference.sh  regenerate the interference images
+scripts/camera.sh     regenerate the camera feature images
+scripts/screenshots.sh  regenerate the pictures of the window and of the camera and circuit pages
 ```
 
 ## License
@@ -497,9 +516,9 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 
 ### Currently being worked on
 * **PAL deck tuning**: Playback equaliser and head resonance scaled to the PAL carrier; 58 um track pitch reference for CNR.
-* **Camera tube limits**: *(Completed)* Scanned target engine, target materials (`vidicon`, `newvicon`, `saticon` refitted to BC4908, `chalnicon`), ACT/DBC/blooming, spectral taking and colour matrices, scan geometry, stripe layout, retention/burn-in/warm-up, and the camera schematic page (`docs/CAMERA.md`).
+* **Camera tube limits**: *(Completed)* Scanned target engine, target materials (`vidicon`, `newvicon`, `saticon` refitted to BC4908, `chalnicon`), ACT/DBC/blooming, spectral taking and colour matrices, scan geometry, stripe layout, retention/burn-in/warm-up, beam current, blooming and cold-start settings, and the camera schematic page (`docs/CAMERA.md`).
 * **Engine-generic audio I/O**: Generic CLI audio I/O across 525-line and 625-line engines and standard verification checks.
-* **Schematic UI integration**: Television standard, camera tube selection, and conditional spec displays in the PySide6 schematic view.
+* **Schematic UI integration**: *(Completed)* Television standard on the circuit page, camera tube selection and its settings on the camera page, and drawings that follow the settings (the stripe or prism camera) in the PySide6 schematic view.
 
 ### Near-term physical modelling
 * **HQ non-linear noise reduction** (SP only): Diode limiter circuit on pre-emphasised signal with inverse filter on playback (`hq = true`). *(Completed)*
@@ -515,6 +534,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 * **Walkthrough shell version**: Interactive terminal wizard (`vhsphys wizard`) to guide options without verbose command lines. *(Completed)*
 * **Separate viewing window**: Detachable / floating preview viewport for multi-monitor workflows. *(Completed)*
 * **Support button & easter eggs**: Period-authentic deck easter eggs (dew sensor trip, tape eject jam, retro OSD modes).
+* **Technicolor film source**: Three-strip Technicolor film transferred to VHS through a tube film chain, reusing the camera's spectral taking and registration, with new models for film response, dye-transfer printing and the projector or telecine lamp (first step: a research report on dye spectra and printing).
 
 ### Ultra-long-term goals
 * **GPU compute architecture**: Compute shaders (WGPU / Vulkan / Metal / DirectX) for Lorentzian pulse rendering, delay-line discriminator, and RF filters to achieve real-time ($\ge 24$ fps) playback.

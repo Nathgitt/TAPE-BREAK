@@ -56,7 +56,11 @@ against real captures by another project, **[svc]** service literature,
 | Chroma rotation | channel 1 none, channel 2 -90 deg per line (`PAL_ROTATION = [0, -1]`) | vhs-decode [meas] |
 | Deck chroma comb | 2H (crosstalk turns -90 deg per line relative to the wanted signal; the V switch flips every line) | [derived] |
 
-### 1.2 Camera pickup tubes (`tube.rs`)
+### 1.2 Camera pickup tubes (`tube.rs`, `camera.rs`)
+
+The figures below are the ones the Plumbicon model is built on. The scanned target engine, the other four target
+materials, the camera electronics and the checks are in `docs/CAMERA.md`; the data and sources behind them are in
+`docs/CAMERA_RESEARCH.md`.
 
 | Parameter | Value | Source |
 |---|---|---|
@@ -66,9 +70,12 @@ against real captures by another project, **[svc]** service literature,
 | Lag, XQ1520 (ACT gun) | build-up 85/95/70 %; decay 13/9/15 %, 3.5/3/5.5 % | Philips T10 [data] |
 | Operating point | peak signal 300 nA (G), 150 nA (R, B); beam set to twice what peak white needs | Philips T10 [data] |
 | Transfer gamma, dark current, target voltage | 0.95 +/- 0.05; <= 1..3 nA; 45 V | Philips T10 [data] |
-| Target | PbO 10-18 um thick, scanned area 12.8 x 17.1 mm; permittivity ~25 [est] => 3.2 nF | Philips T10 [data]; [est] |
-| Lag mechanisms | PbO photoconductive lag negligible; discharge lag set by layer capacitance and beam resistance, worst at low key, reduced by light bias | Philips T10, Plumbicon notes 1.4 [data] |
+| Target | PbO 10-18 um thick, scanned area 12.8 x 17.1 mm; the first estimate (permittivity ~25 [est] => 3.2 nF) gave way to a fit on the scanned target: 1.38 / 1.15 / 1.32 nF for R / G / B | Philips T10 [data]; [est] then fitted to the lag figures [derived] |
+| Lag mechanisms | PbO photoconductive lag negligible in red and green (blue has two trap populations); discharge lag set by layer capacitance and beam resistance, worst at low key, reduced by light bias | Philips T10, Plumbicon notes 1.4 [data] |
 | Comet tails, ACT | highlights beyond the beam current lose stabilisation and take several scans to recover; the ACT gun recharges them during line flyback (about 100 uA defocused beam) | Philips T10, notes 1.6 [data] |
+| Beam landing | exponential energy distribution, landing current `I_b exp(u / V_T)` below the cathode potential; `V_T` = 0.17 V (triode gun), 0.10 V (diode gun) | US 4,388,556 [data]; the scan law is [derived] |
+| Other targets | Sb2S3 vidicon, Newvicon, Saticon and Chalnicon differ in gamma, dark current (doubling every 7.5 to 9.6 deg C), target capacitance and traps | Philips T10, T12, Hitachi H8397A, Toshiba 1973 [data]; see `docs/CAMERA.md` |
+| Camera electronics | head amplifier (shot, thermal and rising FET noise, 5.5 MHz band), clamp, gain, knee, 0.45 gamma, aperture correction with coring, clip | US 4032974, US 3743766, BBC Engineering 91 [data]; see `docs/CAMERA.md` |
 | CRT phosphor afterglow | P22 decays in microseconds (blue, green) to about a millisecond (red), far below one 20 ms field: not a source of visible trails | [lit] |
 
 ## 2. Playback signal path (what the deck does)

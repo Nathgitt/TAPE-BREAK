@@ -7,9 +7,9 @@ Development status and forward roadmap for `vhs-phys`.
 Active tasks in the current development cycle:
 
 - **PAL deck tuning**: Playback equaliser and head resonance scaled to the PAL carrier (vhs-decode RF peak ~4.3 MHz vs 3.9 MHz for NTSC); normalised 58 um track pitch reference for carrier-to-noise ratio.
-- **Camera tube limits** (`docs/CAMERA.md`): *(Completed)* Scanned target engine (`camera.rs`, `camera_processing.rs`) with time-based lag, ACT (`plumbicon-act`), DBC (`plumbicon-dbc`), beam-bending blooming, target materials (`vidicon`, `newvicon`, `saticon` refitted to BC4908, `chalnicon`), spectral taking and colour matrices (`spectral.rs`), scan geometry (`geometry.rs`), single-tube stripe layout (`stripe.rs`), retention/burn-in/warm-up (`docs/design/CAMERA_RETENTION.md`), and the camera schematic page. Trinicon single-tube cameras, permanent burn damage thresholds, and stripe-camera spectra remain out of scope.
+- **Camera tube limits** (`docs/CAMERA.md`): *(Completed)* Scanned target engine (`camera.rs`, `camera_processing.rs`) with time-based lag, ACT (`plumbicon-act`), DBC (`plumbicon-dbc`), beam-bending blooming, target materials (`vidicon`, `newvicon`, `saticon` refitted to BC4908, `chalnicon`), spectral taking and colour matrices (`spectral.rs`), scan geometry (`geometry.rs`), single-tube stripe layout (`stripe.rs`), retention/burn-in/warm-up (`docs/design/CAMERA_RETENTION.md`), the beam current, blooming and cold-start settings, and the camera schematic page. Trinicon single-tube cameras, permanent burn damage thresholds, and stripe-camera spectra remain out of scope.
 - **Engine-generic audio I/O**: Refactoring CLI audio I/O across 525-line and 625-line engines and standard verification checks in configuration overrides.
-- **Schematic UI integration**: Television standard, camera tube selection, and conditional spec displays in the PySide6 schematic view.
+- **Schematic UI integration**: *(Completed)* Television standard on the circuit page, camera tube selection and its settings on the camera page, and drawings that follow the settings (the stripe or prism camera) in the PySide6 schematic view (`docs/design/SCHEMATIC.md`).
 
 ## 2. Near-term physical modelling roadmap
 
@@ -40,6 +40,8 @@ Tooling, workflow integration, and usability improvements:
 - **Ko-fi button and retro easter eggs**:
   - Project funding/support links in the GUI About dialog and documentation.
   - Period-authentic deck easter eggs (e.g. simulated "DEW DETECTED" shutdown, tape eject jam, retro blue screen / OSD counter modes).
+- **Technicolor film source**:
+  - Three-strip Technicolor film transferred to VHS through a tube film chain: the film is projected or scanned by a telecine lamp and taken by the camera's pickup tubes. It reuses the camera's spectral taking (prism and filters) and registration code. It needs new models for film response, dye-transfer printing with dye absorption spectra, and the projector or telecine lamp. The first step is a research report on dye spectra and printing.
 
 ## 4. Ultra-long-term goals
 

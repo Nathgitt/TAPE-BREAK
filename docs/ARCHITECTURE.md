@@ -222,6 +222,10 @@ To preview an excerpt, the backend runs the CLI with `--start` beginning a few f
   the physical effect enters (usually a `Controls` array in `render_rf`, or a
   stage in `electronics::process_segment`), and map a `Condition` field to them
   in `condition.rs`. Serde derives expose them to TOML automatically.
+* A camera target material: add a `TubeKind` in `tube.rs` with its channel constants (`channels_at`: transfer
+  exponent, peak current, target voltage, dark current law, capacitance, traps, held charge, burn), its spectral
+  responses in `spectral.rs` (`materials`) and its optics in `geometry.rs`, then the command line value, the window's
+  tube list and the checks. `docs/CAMERA.md` gives the constants of every kind and how each was fitted.
 * PAL: the `pal` engine records and plays 625-line PAL (`PAL.md`). Standard-specific behaviour is
   chosen by `consts::STANDARD` or follows from a constant: the burst angle (`video`), the V switch
   and the eighth-of-a-turn carrier rotation (`record::v_switched`, `record::line_rotation`), the

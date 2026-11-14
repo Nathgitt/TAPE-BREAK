@@ -54,6 +54,8 @@ vhsphys run in.mp4 out.mp4 --config bounce.toml --record bounce.json
   last generation only. A composite hop between two decks is a `composite` link.
 * `--record FILE` writes what was built: every generation's standard, seed and first frame,
   every link's ports and timing, and for a converter its tables, checksums and edge rules.
+* A camera tube (`[camera]`, `--camera-tube`) takes the picture that enters the first generation; the
+  later generations are handed the signal of the one before, so the camera has no effect in them.
 * Automation keyframes are in frames of the generation that reads them: the camera track in
   frames of the first generation, the deck and picture-tube tracks in frames of the last.
 
