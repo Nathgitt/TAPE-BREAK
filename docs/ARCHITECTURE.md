@@ -37,10 +37,13 @@ constants); a shared module is `crate::x`.
 Shared, compiled once and common to both engines (nothing in them depends on the raster):
 
 * `standard`: the television standards (`TvStandard`) and the PAL delay-line decoding rules
-* `tube`: the camera pickup tube model
+* `tube`: the camera pickup tubes: the target materials, their lag and trap constants, and the physics of one target element (charge, beam landing, retention)
+* `spectral`: the camera's taking spectra: scene primaries, prism, infrared filter, material responses and the colour matrix
+* `geometry`: the camera's optics and scan geometry: deflection, registration, shading, veiling glare, halation and corner focus
 * `frame`: the RGB `Frame` (`video` re-exports it), so a frame made by one engine is a frame of the other
 * `dsp`: filters and resamplers
 * `rng`: the seeded random numbers
+* `automation`: the schedule of time-varying parameters (`--automate`)
 * `interference_params`: the outside world as parameters
 
 Above the engines, naming both and holding no raster constant of their own:
@@ -60,9 +63,15 @@ inside engine files that assert 525-line figures return early in the other engin
 | `consts` | timing and format constants with their sources (`consts_pal` for the 625-line engine) |
 | `frame` | the RGB frame, shared by both engines |
 | `standard` | television standards and PAL delay-line decoding (shared) |
-| `tube` | camera pickup tube model (shared) |
+| `tube` | camera pickup tube materials and target-element physics (shared) |
+| `spectral` | spectral taking and the colour matrix of the camera (shared) |
+| `geometry` | camera optics and scan geometry (shared) |
+| `automation` | time-varying parameter schedules, including the camera's iris (shared) |
 | `dsp` | biquads, Butterworth, first-order emphasis sections, Kaiser FIR, cubic resampling |
 | `rng` | seeded, order-independent random numbers (hash of seed/stream/index) |
+| `camera` | the camera ahead of the recorder: the scanned target stage (sub-row grid, read times, ACT, dynamic beam control, beam bending), from input pictures to the line signal in nA |
+| `camera_processing` | the camera's head amplifier (noise and band) and processing amplifier (clamp, gain, knee, gamma, aperture, clip) |
+| `stripe` | the single-tube camera: optical low-pass, colour stripe filter and the frequency-separation decoder |
 | `video` | the raster of the engine's standard including vsync structure; RGB <-> YUV; encode/decode helpers |
 | `record` | record deck chain (with the PAL V switch) and the saturating tape relay; produces `Transition`s |
 | `emphasis` | the LP/EP sub-preemphasis (a level-dependent high-frequency boost, table 4 of ST 32) and its exact inverse on playback |
@@ -93,6 +102,16 @@ Session::process(batch)
                           run the deck electronics (state warmed up on 2 lines either side)
   4 decode_frame(k)      parallel over frames   sync/AFC/colour decode of fields 2k, 2k+1
 ```
+
+Ahead of all this, a session with a camera tube on hands each pushed frame to `CameraTube::encode_baseband` instead of
+`video::encode_frame` (`push_fields` goes to `encode_fields`). The camera lets the held input pictures charge the target of
+each channel, reads the target row by row at every element's own time (`read_time_s`), passes the line signal in nA through the
+head amplifier and the processing amplifier and encodes the clipped, gamma-corrected signals straight to baseband Y/C; the
+chain after it is unchanged. The stage is built only when a tube is selected, so with `tube = "off"` nothing of it runs and the
+golden renders do not change. It keeps the charge of every target element from frame to frame, which starts at dark equilibrium
+with the session, so an excerpt that starts part-way into a clip needs a few frames of pre-roll to match a render of the whole
+clip (`docs/CAMERA.md`). In a `Chain` only the first generation is fed through the camera, and the iris automation track counts that
+generation's frames (`docs/BOUNCE.md`).
 
 The luma passes these stages in order (the LP/EP pair only when `RecordParams.sub_emphasis` and
 `DeckParams.sub_deemphasis` are set, which `Condition::to_params` does at LP and EP):
@@ -191,9 +210,9 @@ The desktop front end lives in `python/vhsgui`:
 * `backend.py`: non-Qt operations including tool discovery, probing, config text generation, command lines, and background jobs.
 * `app.py`: the main application window and preview player.
 * `__main__.py`: CLI entry point and screenshot support.
-* `schematic/`: the phosphor schematic, a QPainter view drawn from data (`layout.json` and `glyphs.json` per page: the circuit, and the
-  outside world in `schematic/outside/`). The format is in `docs/design/FORMAT.md`; the window mirrors every editor of a page and the
-  panels through one path, so the views cannot disagree.
+* `schematic/`: the phosphor schematic, a QPainter view drawn from data (`layout.json` and `glyphs.json` per page: the circuit, the
+  camera in `schematic/camera/`, and the outside world in `schematic/outside/`). The format is in `docs/design/FORMAT.md`; the window
+  mirrors every editor of a page and the panels through one path, so the views cannot disagree.
 
 To preview an excerpt, the backend runs the CLI with `--start` beginning a few frames early (`LEAD_FRAMES` = 3). The first frames of a fresh render lack the neighbouring frames the model looks at, so they are dropped. Because the tape is a function of the absolute frame index, the remaining frames match a render of the whole file (about 38-41 dB PSNR against it, codec noise only; a one-frame offset gives about 17 dB).
 
