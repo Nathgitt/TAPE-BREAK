@@ -96,7 +96,7 @@ def schematic_page(app: QApplication, window: MainWindow, page: str, out: Path) 
     )
     app.processEvents()
     if (view.width(), view.height()) != SCHEMATIC_SIZE:
-        sys.exit(f"the {page} page is {view.width()}x{view.height()}, not {SCHEMATIC_SIZE[0]}x{SCHEMATIC_SIZE[1]}")
+        sys.exit(f"the {page} page is {view.width()}x{view.height()} and must be {SCHEMATIC_SIZE[0]}x{SCHEMATIC_SIZE[1]}")
     view.skip_boot()
     app.processEvents()
     save_jpeg(view.grab().toImage(), out)

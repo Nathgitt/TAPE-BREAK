@@ -2,7 +2,7 @@
 
 Measured on 8 cores with the `worn` preset: about 12-14 fps on the 754x480 core raster
 (0.5 CPU-seconds per frame, ffmpeg included). Generations multiply the cost: 2 are about 8 fps,
-3 about 6 fps. Real time (29.97 fps) is not reached; the picture model is the cost, not the I/O. A camera tube is slower still
+3 about 6 fps. Real time (29.97 fps) is not reached; the time goes into the picture model, and the I/O costs little. A camera tube is slower still
 (see "The camera" below): about 2 fps with a Plumbicon.
 
 ## Where the time goes

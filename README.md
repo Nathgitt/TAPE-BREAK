@@ -175,9 +175,9 @@ right:
 * **Settings**: choose the input video, preset, and seed; set the generations,
   the signal, the sound and the television standard; set up the camera (tube, iris, colour
   pickup, electronics, tube temperature, spectral colour, scan geometry, beam
-  current, blooming, and a cold start with its start temperature; the settings
-  after the tube are inert while the tube is off, and the start temperature works
-  only while the cold start is on); adjust the
+  current, blooming, a cold start with its start temperature, the lens cap before
+  the shot and the beam off at its start; the settings after the tube are inert while
+  the tube is off, and the start temperature works only while the cold start is on); adjust the
   condition controls across Tape, Heads and drum, Playback deck, Transport and
   tracking, Recording deck and the outside world ("Reset to preset" restores
   them); an Advanced box accepts raw TOML overrides (such as `[tape]` /
@@ -205,8 +205,8 @@ The same controls can be shown as a phosphor-green electrical drawing: the **Sch
 mode bar replaces the settings column by a drawing of the deck, the cassette and the TV, every control
 a labelled line with its value (drag a value, scroll over it, or click it and type). Three pages
 share the schematic view (**Camera**, **Circuit**, **Outside**): **Camera** draws the camera ahead
-of the recorder (`lens` with `IRIS`, `split` with `LAYOUT` and `SPECTRAL COLOUR`, `tubes` with
-`TUBE`, `TUBE TEMP`, `SCAN GEOMETRY`, `BEAM`, `BLOOMING`, `COLD START` and `START TEMP`, `head_amp`,
+of the recorder (`lens` with `IRIS` and `LENS CAP`, `split` with `LAYOUT` and `SPECTRAL COLOUR`, `tubes` with
+`TUBE`, `TUBE TEMP`, `SCAN GEOMETRY`, `BEAM`, `BLOOMING`, `COLD START`, `START TEMP` and `BEAM OFF`, `head_amp`,
 `processing` with `ELECTRONICS`, `encoder` and the `tv` preview; the `split` and `tubes` drawings
 switch between `three-tube` and `stripe`, and the other camera lines dim and are inert while
 `TUBE` is `off`; `START TEMP` works only while `COLD START` is on), **Circuit** draws the recorder
@@ -326,9 +326,11 @@ The rest of the camera, each a flag and a config key (`docs/CAMERA.md`, "Using i
   shading, veiling glare, halation, and corner focus, with the studio camera's correctors.
 * **Retention**: held charge in lead oxide and the Saticon (more lag at high key, sticking after an overload), reversible
   burn on a vidicon, and warm-up of a cold tube. They all happen on the target, as charge, and nothing is applied to the
-  picture after the scan. In a config file, `idle_s` caps the lens with the beam on before the first frame, and
-  `beam_off_s` holds the beam off with the lens open for the start of the shot (a Saticon burns in, a lead-oxide
-  burn is erased).
+  picture after the scan. `--camera-idle SECONDS` (config key `idle_s`) caps the lens with the beam on before the
+  first frame, so a cold camera warms under the cap, and `--camera-beam-off SECONDS` (config key `beam_off_s`)
+  holds the beam off with the lens open for the start of the shot (a Saticon burns in, a lead-oxide burn is erased).
+  The window has both in Settings ("Lens cap before", "Beam off at start") and on the camera page (`LENS CAP`,
+  `BEAM OFF`).
 
 ```sh
 vhsphys run in.mp4 out.mp4 --preset good --camera-tube plumbicon --iris-stops 3

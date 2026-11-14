@@ -705,10 +705,10 @@ within `3 %` at `0`, `WARM_UP_S` and `2 * WARM_UP_S`, and `50 ms` `200 nA` lag s
 `10 %` of the steady tube at `T(t)` with cold lag `>= 1.2x` warm lag.
 
 The same sequence is available as settings (`tests/camera_switch_on.rs`; `docs/design/CAMERA_RETENTION.md`,
-"Switching on as camera settings"). `CameraParams::idle_s` (config key `idle_s`, default `0`) is the
+"Switching on as camera settings"). `CameraParams::idle_s` (config key `idle_s`, flag `--camera-idle`, default `0`) is the
 lens-capped time with the beam on before the first frame: `CameraTube::seeded` ends with `idle(idle_s)`,
 after the dark settle and the cold offset, so a cold camera warms under the cap. `beam_off_s` (config key
-`beam_off_s`, default `0`) holds the beam off with the lens open for the first
+`beam_off_s`, flag `--camera-beam-off`, default `0`) holds the beam off with the lens open for the first
 `round(beam_off_s * FRAME_RATE)` frames of the shot: the targets store the scene unread, and the read of
 the first frame with the beam on lands what built up. A negative or non-finite value of either counts as
 `0`, and a hand call of `set_beam_on` cancels a pending switch-on.
