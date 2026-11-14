@@ -500,6 +500,108 @@ lose chroma near the noise floor and dim greys lean green (~0.05 greener at 18 %
 - The 625-line PAL engine (`4.95` samples per carrier cycle) runs the same alignment and meets the
   same white and 50 % grey bounds.
 
+## Geometry
+
+With `CameraParams::geometry = true` (default `false`; config key `geometry`), each frame runs
+the profile's optical, deflection, shading, corner-focus and corrector parameters
+(`Processing::geometry(kind)` in `geometry.rs`, `camera.rs` and `camera_processing.rs`; contract
+in `docs/design/CAMERA_SCAN.md`, section "Geometry"; sources in `docs/CAMERA_RESEARCH.md`). When
+`geometry = false`, `GeometrySpec::NONE` is used and the engine produces bit-identical output to
+the non-geometry path. Positions `(x, y)` are measured from picture centre in picture heights
+(`PH`), with `X_EDGE_PH = TARGET_ASPECT / 2 = 2/3`, `RHO_CORNER_PH = 5/6`, normalised axes
+`u = x / X_EDGE_PH`, `v = 2 y`, and `picture_position_ph(r, s)`.
+
+**Effects and sources.**
+- **Deflection and three-tube registration.** A beam aimed at nominal `(x, y)` lands at
+  `(x + dx_ch, y + dy_ch)` with `dx_ch = kappa (x^2 - X_EDGE_PH^2) / (2 X_EDGE_PH) + p x rho^2 + s_ch x + q_ch x rho^2`
+  and `dy_ch = p y rho^2 + s_ch y + q_ch y rho^2` (green `s_G = q_G = 0`, red `(+s, +q)`, blue
+  `(-s, -q)` `[est: the signs]`; scan-line timing scale `PH_PER_NS = 2.56e-5`). Target coordinates
+  extend beyond the active picture on all four sides (`UniformColumn` has no geometry), with
+  out-of-picture elements lit from their nearest active-picture sample `[est]`. For target column
+  `j` on row `r`, the beam read time solves `x(s_j) + dx_ch(x(s_j), y_r) = x(j)` (to `<= 1e-6`
+  sample), passes are centred at `c_r + dy_ch(x(s_j), y_r) ACTIVE_H` with per-column normalised
+  vertical shares `w_rk(j)`, and the horizontal spot reads at continuous column
+  `X(s) = s + dx_ch(x(s), y_r) ACTIVE_W / TARGET_ASPECT` scaled by speed `X'(s)`. Thus the line
+  signal follows local scan gain `J_ch = (1 + d(dx_ch)/dx) (1 + d(dy_ch)/dy)` `[DS: Philips T10 4.2]`.
+  Zones are defined as A (`rho <= 0.5`), B (`rho <= 2/3`), and C (beyond `2/3`) `[est: the research
+  gives the registration bands by zone but not the zones]`.
+- **Black shading.** Target dark and bias currents at `(x, y)` multiply by `1 + b(u, v)`, where
+  `b(u, v) = h_saw u + h_par (u^2 - 1/3) + v_saw v + v_par (v^2 - 1/3)` has zero picture mean. Both
+  profiles use `h_saw = v_saw = 0.0125`, `h_par = v_par = 0.075` (`+12.5 %` bottom-right, `+7.5 %`
+  top-left, `-5 %` centre) `[DS: up to 12.5 % at corners, split est]`. The target starts at
+  uniform dark equilibrium and settles over the first frames as a switched-on camera.
+- **White shading.** Sensitivity before transfer multiplies target light by
+  `1 + w_ch = 1 - fall_ch (rho / RHO_CORNER_PH)^2` (centre-high): Plumbicon kinds use
+  `fall = [0.03, 0.03, 0.0]` `[DS: "a few per cent" in red and green, blue flat; 3 est]`; Saticon
+  uses `0.15` `[DS: up to 15 %]`; vidicon, Newvicon and Chalnicon use `0.0` `[no data]`.
+- **Veiling glare.** Light reaching target `ch` is `(1 - f_ch) l + f_ch (K * l)` with exponential
+  kernel `K(d) = exp(-d / a_ch) / (2 pi a_ch^2)` over the active picture only. Fitted to the
+  `BLACK_SQUARE_PH = 0.1` black-square chart (`1 % / 0.5 %` H8397A; `5 % / 1 %` T10) `[DER on DS]`:
+  Saticon `f = 0.0215`, `a = 0.40 PH` (also used for PbO, Newvicon and Chalnicon `[est: no data]`);
+  vidicon `f = 0.0116`, `a = 0.15 PH` `[DER]` (with transfer `0.65`, a shift-invariant veil gives a
+  corner reading `>= 0.51` of the centre reading, leaving the vidicon's `1 %` corner open).
+- **Halation (PbO kinds).** Total internal reflection from the faceplate front face adds
+  `h_ch (K_h * l)`, where `h_ch = reflectance_ch (1 - 1 / n^2)`, `n = GLASS_INDEX = 1.5` `[est]`,
+  `reflectance = [0.15, 0.08, 0.05]` `[est]`, `faceplate_mm = 1.5` `[est]`,
+  `disc_mm = ANTI_HALATION_DISC_MM = 6.0` `[DS]`, `target_height_mm = 12.8` `[DS]`, and
+  `K_h(d) = (1 + tan^2 theta_c) / (pi (2 t)^2) / (1 + (d / 2t)^2)^2` for `d >= 2 t tan theta_c`, 0
+  inside `[DER]`. Without the 6 mm disc the ring starts at `0.21 PH`; the disc moves it to
+  `1.05 PH` (past the `0.833 PH` corner). Optics act on each held field picture in order: taking,
+  veil, halation, white shading, transfer (evaluated via padded 2D FFT on a `171 x 128` grid to
+  well within `1e-4` of peak light).
+- **Corner focus.** Both spot sigmas multiply by `F_ch = 1 + focus_ch (rho / RHO_CORNER_PH)^2`:
+  vidicon and Newvicon `0.45` (`31 %` corner loss `[DS: 25-35 %]`); Chalnicon `0.25` (`20 %`
+  `[DS]`); PbO kinds and Saticon `0.25` (`20 %` `[est: no corner figure; low end for studio
+  tubes]`).
+- **Processing amplifier and correctors.** After clamp and gain `L1 = (I - black) / peak`,
+  correctors enabled by `ProcessingSpec::corrections` run before `linearise -> matrix -> knee ->
+  gamma -> aperture -> clip`:
+  1. Flare (`US 4001502`): `L2 = L1 - c_ch APL_ch`, where `APL_ch` is the frame mean of `L1` `[est]`
+     and `c_ch` is `flare_reading[ch] / (1 - BLACK_SQUARE_PH^2 / TARGET_ASPECT)` measured at
+     construction on the centre black-square chart at unit exposure.
+  2. Black shading (`US 4032974`): `L3 = L2 - black_reference_na[ch] (J_ch (1 + b) - 1) / peak_ch`
+     using the `25 deg C` dark-plus-bias reference, so temperature drift from `25 deg C` remains.
+  3. White shading (`US 4032974`): `L4 = L3 / (J_ch (1 + w_ch)^gamma_ch)`.
+- **Single-tube stripe camera.** `Layout::Stripe` forces `[Registration::NONE; 3]` (one target).
+  Veil acts on scene RGB light before `optical_lowpass` and stripes; deflection, shading,
+  halation and corner focus act on the target, lowering carrier modulation toward the corners.
+
+**Profiles.**
+
+| Parameter | Studio | Consumer |
+|---|---|---|
+| Deflection `kappa`, `p` | `-0.012`, `0.0155` (<= `0.48 %` in H circle, <= `0.90 %` outside; `[DS]` bounds `0.5 %`, `1 %`) | `-0.045`, `0.031` (`1.6 %`, `1.8 %`; `[DS]` bound `2 %`) |
+| Registration `s`, `q` | `8.7e-4`, `3.2e-3` (<= `33 / 60 / 101 ns` in zones A / B / C; `[DS]` `25-40 / 40-80 / 80-120 ns`) | `1.12e-3`, `3.69e-3` (`40 / 72 / 120 ns` `[est]`) |
+| Black shading | `h_saw = v_saw = 0.0125`, `h_par = v_par = 0.075` `[DS]` | `h_saw = v_saw = 0.0125`, `h_par = v_par = 0.075` `[DS]` |
+| White shading, flare, halation, focus | tube kind's | tube kind's |
+| Correctors | flare, black shading, white shading (`US 4032974`, `US 4001502`) | none `[est]` |
+| Colour matrix | yes (with `spectral`) | no |
+
+**Checks and bounds (`tests/camera_geometry.rs`).**
+- Geometry off matches `GeometrySpec::NONE` bit for bit.
+- Studio deflection stays within `0.005` inside `rho <= 0.5` and `0.01` outside (each >= half bound);
+  consumer stays within `0.02` (corners >= `0.01`). Zone registration peaks sit inside
+  `[25, 40]`, `[40, 80]`, `[80, 120] ns` for studio (`Consumer` at `<= 120 ns` in C).
+- Beam landing placement matches `picture_position_ph` to `<= 0.1` sample horizontally and
+  `<= 0.3` line vertically; non-linear sweep signal current tracks `1 + kappa x / X_EDGE_PH`
+  (`kappa = -0.2`) to `0.5 %`, spot width scales inversely with speed to `0.02` of peak (`SAME_CHARGE = 0.01`),
+  and R/B registration edges sit within `0.07` sample.
+- Black shading reaches `+12.5 %` / `+7.5 %` / `-5 %` (within `0.01` after `15` frames); studio
+  corrector flattens `25 deg C` dark shading within `1e-3` while temperature drift stays visible.
+  White shading lowers corners by `2-5 %` (PbO R/G) and `10-15 %` (Saticon); studio corrector
+  flattens white within `1e-3`.
+- Flare black-square checks: Saticon `0.010` centre / `0.005` corner (within `0.0012`); vidicon
+  `0.05` centre (within `0.005`, corner below `0.6x` centre); studio flare corrector brings centre
+  black square within `0.0015` of black (corner `-0.009..-0.002`) and matches `c_ch` within `12 %`.
+- PbO halation (without disc) produces a ring on `[0.23, 0.27] PH` matching derivation within `10 %`
+  with red/green ratio matching reflectances within `5 %`; the `6 mm` anti-halation disc drops
+  inner/ring flare below `1e-9`.
+- Corner focus second-moment spot sigma matches the `F_ch`-broadened moving Gaussian within `2 %`,
+  growing by at least `1.3x` at the corner (`Newvicon` `0.45`, corner limiting-resolution losses:
+  vidicon/Newvicon `25-35 %`, Chalnicon `20 % +- 2 %`, studio `15-35 %`).
+- Whole camera on a `0.5` linear grey field (`8` frames): studio corners match centre within
+  `FLAT = 0.01` linear light; consumer left corners sit at least `0.03` above centre.
+
 ## Known limits
 
 * The slow tail with light bias is too short: at 200 ms the model leaves under 1 % where the

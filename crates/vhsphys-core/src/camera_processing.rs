@@ -8,11 +8,15 @@
 //! FET noise), BBC Engineering 91 and BBC Monograph 47 (horizontal/vertical aperture correction and
 //! coring), EBU Tech 3335 (0.45 gamma law), and Panasonic WV-3110 / PK-958 (consumer camera figures).
 
-use super::camera::TargetSignal;
+use super::camera::{picture_position_ph, TargetSignal};
 use super::consts::{ACTIVE_H, FS_BB};
 use crate::dsp::sample_cubic;
+use crate::geometry::{
+    black_shading_factor, profile_geometry, scan_gain, white_shading_factor, GeometrySpec,
+    BLACK_SQUARE_PH,
+};
 use crate::rng::Rng;
-use crate::tube::TubeChannel;
+use crate::tube::{TubeChannel, TubeKind, TARGET_ASPECT};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -102,11 +106,20 @@ pub struct ApertureSpec {
     pub coring: f64,
 }
 
+/// Geometry correctors carried by the processing amplifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Corrections {
+    pub flare: bool,
+    pub black_shading: bool,
+    pub white_shading: bool,
+}
+
 /// Complete specification of a camera electronics profile.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProcessingSpec {
     pub head_amp: HeadAmpSpec,
     pub matrix: bool,
+    pub corrections: Corrections,
     pub knee_range: Option<f64>,
     pub aperture: ApertureSpec,
 }
@@ -124,6 +137,7 @@ impl Processing {
                     band_hz: BAND_HZ,
                 },
                 matrix: true,
+                corrections: Corrections { flare: true, black_shading: true, white_shading: true },
                 knee_range: Some(STUDIO_KNEE_RANGE),
                 aperture: ApertureSpec {
                     delay_s: STUDIO_DELAY_S,
@@ -140,6 +154,7 @@ impl Processing {
                     band_hz: BAND_HZ,
                 },
                 matrix: false,
+                corrections: Corrections { flare: false, black_shading: false, white_shading: false },
                 knee_range: None,
                 aperture: ApertureSpec {
                     delay_s: CONSUMER_DELAY_S,
@@ -148,6 +163,11 @@ impl Processing {
                 },
             },
         }
+    }
+
+    /// The profile's spec for a tube kind (`GeometrySpec::NONE` for `Off`).
+    pub fn geometry(self, kind: TubeKind) -> GeometrySpec {
+        profile_geometry(matches!(self, Processing::Studio), kind)
     }
 }
 
@@ -314,16 +334,21 @@ impl HeadAmplifier {
     }
 }
 
-/// Camera processing amplifier: clamp, gain, linearise, matrix, knee, gamma, aperture correction with coring, clip.
+/// Camera processing amplifier: clamp, gain, shading/flare correctors, linearise, matrix,
+/// knee, gamma, aperture correction with coring, clip.
 #[derive(Clone)]
 pub struct VideoProcessor {
     spec: ProcessingSpec,
     peak_na: [f64; 3],
     black_na: [f64; 3],
+    gamma: [f64; 3],
     inv_gamma: [Option<f64>; 3],
     matrix: Option<[[f64; 3]; 3]>,
     knee_slope: Option<f64>,
     k_h: f64,
+    geometry: GeometrySpec,
+    has_geometry: bool,
+    flare_coeff: [f64; 3],
 }
 
 impl VideoProcessor {
@@ -342,10 +367,23 @@ impl VideoProcessor {
         peak: [f64; 3],
     ) -> Self {
         let spec = processing.spec();
+        let gamma = std::array::from_fn(|k| channels[k].gamma);
         let inv_gamma = std::array::from_fn(|k| channels[k].linearise.then(|| 1.0 / channels[k].gamma));
         let knee_slope = spec.knee_range.map(|r| (gamma_inverse(WHITE_CLIP) - 1.0) / (r - 1.0));
         let k_h = horizontal_gain(spec.aperture.delay_s, channels[1].sigma_h_s, spec.head_amp.band_hz);
-        Self { spec, peak_na: peak, black_na: black, inv_gamma, matrix: None, knee_slope, k_h }
+        Self {
+            spec,
+            peak_na: peak,
+            black_na: black,
+            gamma,
+            inv_gamma,
+            matrix: None,
+            knee_slope,
+            k_h,
+            geometry: GeometrySpec::NONE,
+            has_geometry: false,
+            flare_coeff: [0.0; 3],
+        }
     }
 
     /// The colour matrix the processor applies after linearising; `new` starts with the identity,
@@ -353,6 +391,25 @@ impl VideoProcessor {
     pub fn with_matrix(mut self, m: [[f64; 3]; 3]) -> Self {
         self.matrix = (m != IDENTITY_MATRIX).then_some(m);
         self
+    }
+
+    /// Fit the profile's correctors, aligned to `geometry`; `flare_reading` is the black-square
+    /// chart's centre reading per channel, a share of peak.
+    pub fn with_geometry(mut self, geometry: &GeometrySpec, flare_reading: [f64; 3]) -> Self {
+        self.geometry = *geometry;
+        self.has_geometry = *geometry != GeometrySpec::NONE;
+        if self.spec.corrections.flare {
+            let chart_mean = 1.0 - BLACK_SQUARE_PH * BLACK_SQUARE_PH / TARGET_ASPECT;
+            self.flare_coeff = std::array::from_fn(|k| flare_reading[k] / chart_mean);
+        } else {
+            self.flare_coeff = [0.0; 3];
+        }
+        self
+    }
+
+    /// `c_ch` of the flare corrector (0 without it).
+    pub fn flare_coefficient(&self) -> [f64; 3] {
+        self.flare_coeff
     }
 
     /// The colour matrix held by this processor (identity when none is applied).
@@ -365,24 +422,86 @@ impl VideoProcessor {
         self.k_h
     }
 
+    /// Clamp, gain, geometry correctors and linearise for one channel sample at `(x, y)` PH.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn linear_sample(
+        &self,
+        k: usize,
+        i_na: f32,
+        flare_offset: f64,
+        pos: Option<(f64, f64)>,
+        do_black: bool,
+        do_white: bool,
+    ) -> f64 {
+        let mut l = (i_na as f64 - self.black_na[k]) / self.peak_na[k];
+        if flare_offset != 0.0 {
+            l -= flare_offset;
+        }
+        if let Some((px, py)) = pos {
+            let j = if do_black || do_white { scan_gain(&self.geometry, k, px, py) } else { 1.0 };
+            if do_black {
+                let b = black_shading_factor(&self.geometry.black_shading, px, py);
+                let beta = self.geometry.black_reference_na[k] * (j * (1.0 + b) - 1.0)
+                    / self.peak_na[k];
+                l -= beta;
+            }
+            if do_white {
+                let wf = white_shading_factor(self.geometry.white_fall[k], px, py);
+                l /= j * wf.powf(self.gamma[k]);
+            }
+        }
+        if let Some(exp) = self.inv_gamma[k] {
+            l = if l == 0.0 { 0.0 } else { l.abs().powf(exp).copysign(l) };
+        }
+        l
+    }
+
     /// Clamp, gain, linearise, matrix, knee, gamma, aperture correction, clip.
     pub fn process(&self, sig: &TargetSignal) -> CameraVideo {
+        let do_flare = self.spec.corrections.flare && self.flare_coeff.iter().any(|&c| c != 0.0);
+        let flare_offset = if do_flare {
+            let sums: [f64; 3] = sig
+                .rows
+                .par_iter()
+                .map(|row| {
+                    std::array::from_fn(|k| {
+                        let black = self.black_na[k];
+                        let peak = self.peak_na[k];
+                        row[k].iter().map(|&v| (v as f64 - black) / peak).sum::<f64>()
+                    })
+                })
+                .reduce(|| [0.0; 3], |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
+            let count: usize = sig.rows.iter().map(|row| row[0].len()).sum();
+            let inv_n = if count > 0 { 1.0 / count as f64 } else { 0.0 };
+            std::array::from_fn(|k| self.flare_coeff[k] * sums[k] * inv_n)
+        } else {
+            [0.0; 3]
+        };
+        let do_black = self.spec.corrections.black_shading && self.has_geometry;
+        let do_white = self.spec.corrections.white_shading && self.has_geometry;
+        let need_pos = do_black || do_white;
+
         let gamma_rows: Vec<[Vec<f32>; 3]> = sig
             .rows
             .par_iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(r, row)| {
                 let Some(m) = self.matrix else {
                     return std::array::from_fn(|k| {
-                        let black = self.black_na[k];
-                        let peak = self.peak_na[k];
-                        let inv_gamma = self.inv_gamma[k];
                         row[k]
                             .iter()
-                            .map(|&i_na| {
-                                let mut l = (i_na as f64 - black) / peak;
-                                if let Some(exp) = inv_gamma {
-                                    l = if l == 0.0 { 0.0 } else { l.abs().powf(exp).copysign(l) };
-                                }
+                            .enumerate()
+                            .map(|(x, &i_na)| {
+                                let pos = need_pos.then(|| picture_position_ph(r, x as f64));
+                                let mut l = self.linear_sample(
+                                    k,
+                                    i_na,
+                                    flare_offset[k],
+                                    pos,
+                                    do_black,
+                                    do_white,
+                                );
                                 if let Some(s) = self.knee_slope {
                                     if l > 1.0 {
                                         l = 1.0 + (l - 1.0) * s;
@@ -396,12 +515,9 @@ impl VideoProcessor {
                 let w = row[0].len();
                 let mut out: [Vec<f32>; 3] = std::array::from_fn(|_| Vec::with_capacity(w));
                 for x in 0..w {
+                    let pos = need_pos.then(|| picture_position_ph(r, x as f64));
                     let lin: [f64; 3] = std::array::from_fn(|k| {
-                        let mut l = (row[k][x] as f64 - self.black_na[k]) / self.peak_na[k];
-                        if let Some(exp) = self.inv_gamma[k] {
-                            l = if l == 0.0 { 0.0 } else { l.abs().powf(exp).copysign(l) };
-                        }
-                        l
+                        self.linear_sample(k, row[k][x], flare_offset[k], pos, do_black, do_white)
                     });
                     for k in 0..3 {
                         let mut l = m[k][0] * lin[0] + m[k][1] * lin[1] + m[k][2] * lin[2];

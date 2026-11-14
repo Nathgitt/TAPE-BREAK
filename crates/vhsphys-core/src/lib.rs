@@ -11,8 +11,8 @@
 //! once and compiled twice: `ntsc` against `consts.rs`, `pal` against `consts_pal.rs`. The
 //! crate root re-exports the 525-line engine, so `vhsphys_core::pipeline::Session` is
 //! `vhsphys_core::ntsc::pipeline::Session`. What needs no raster constant is compiled once
-//! and shared by both engines: `dsp`, `frame`, `interference_params`, `rng`, `spectral`,
-//! `standard` and `tube`.
+//! and shared by both engines: `dsp`, `frame`, `geometry`, `interference_params`, `rng`,
+//! `spectral`, `standard` and `tube`.
 //!
 //! Decks of the two engines are joined by `rack`: tagged signals (`signal`), explicit links and
 //! a standards converter (`convert`, `aperture`); see `docs/BOUNCE.md`.
@@ -21,6 +21,7 @@
 pub mod automation;
 pub mod dsp;
 pub mod frame;
+pub mod geometry;
 pub mod interference_params;
 pub mod rng;
 pub mod spectral;
