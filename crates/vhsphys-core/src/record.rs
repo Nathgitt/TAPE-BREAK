@@ -19,6 +19,10 @@ use crate::standard::TvStandard;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
+/// RF samples the record stage takes through all its RF steps at a time: three lines, a
+/// multiple of `OS`, so that the piece's buffers stay in the cache.
+const RECORD_PIECE_RF: usize = 3 * RF_PER_LINE;
+
 /// One magnetisation reversal on tape.
 #[derive(Clone, Copy, Debug)]
 pub struct Transition {
@@ -184,6 +188,21 @@ pub fn fm_modulate(y_rf: &[f32], p: &RecordParams, offset_hz: f64, out: &mut Vec
     }
 }
 
+/// Upsample `x[k0..k1]` by 3 with cubic interpolation into `out`, clamping indices against
+/// the full `x` slice so piece boundaries match whole-array `upsample3`.
+fn upsample3_range(x: &[f32], k0: usize, k1: usize, out: &mut Vec<f32>) {
+    out.clear();
+    out.reserve(k1.saturating_sub(k0) * 3);
+    let n = x.len();
+    for k in k0..k1 {
+        let g = |j: i64| x[j.clamp(0, n as i64 - 1) as usize];
+        let (p0, p1, p2, p3) = (g(k as i64 - 1), x[k], g(k as i64 + 1), g(k as i64 + 2));
+        out.push(p1);
+        out.push(cubic(p0, p1, p2, p3, 1.0 / 3.0));
+        out.push(cubic(p0, p1, p2, p3, 2.0 / 3.0));
+    }
+}
+
 /// Run the record chain for one track and return the magnetisation reversals.
 ///
 /// `g0` is the global RF index of the first window sample (multiple of 3);
@@ -245,56 +264,83 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
         cv[i] = fv.tick(cv[i] as f64) as f32;
         y[i] = fy.tick(y[i] as f64) as f32;
     }
-    let (mut cu_rf, mut cv_rf, mut y_rf) = (Vec::new(), Vec::new(), Vec::new());
-    upsample3(&cu, &mut cu_rf);
-    upsample3(&cv, &mut cv_rf);
-    upsample3(&y, &mut y_rf);
-
-    // ---- luma: sub-emphasis, emphasis, clip ----
+    // ---- RF chain: state carried across pieces ----
     // LP and EP: the level-dependent boost of fine detail comes first, so the main emphasis
     // sees the boosted signal and the playback can undo the two in the reverse order
-    if let Some(se) = &p.sub_emphasis {
-        let mut sub = SubPreemphasis::new(se, FS_RF);
-        sub.settle(0.0);
-        sub.process(&mut y_rf);
-    }
+    let mut sub = p.sub_emphasis.as_ref().map(|se| {
+        let mut s = SubPreemphasis::new(se, FS_RF);
+        s.settle(0.0);
+        s
+    });
     let tau = p.emph_tau;
     let mut emph = Biquad::first_order_pz(1.0 / tau, p.emph_ratio / tau, FS_RF);
     emph.settle(0.0);
-    emph.process(&mut y_rf);
-    for v in y_rf.iter_mut() {
-        *v = v.clamp(p.dark_clip_ire, p.white_clip_ire);
-    }
-
-    // ---- FM carrier, record high-pass ----
-    let mut fm = Vec::new();
     // the channel-1 head (parity 1) records its carrier fH/2 above the channel-2 head's at LP and EP
     let offset_hz = if parity == 1 { p.carrier_interleave_hz } else { 0.0 };
-    fm_modulate(&y_rf, p, offset_hz, &mut fm);
+    let mut phase = 0.0f64;
+    let k = 2.0 * PI / FS_RF;
+    let f0 = (F_SYNC_TIP + offset_hz) * (1.0 + p.fm_freq_error);
     let mut hpf = butter_hp(2, p.fm_hpf_hz, FS_RF);
-    hpf.process(&mut fm);
 
-    // ---- colour-under + sum + relay ----
     let (tc, ts) = carrier_table();
     let a = (p.chroma_level / 100.0) as f32;
     let off = PAD * OS;
     let thr = p.relay_threshold as f32;
     let mut out: Vec<Transition> = Vec::with_capacity(n_rf / 5);
-    let mut state: i8 = if fm[off] > 0.0 { 1 } else { -1 };
+    let mut state: i8 = 0;
     let mut prev_i = 0.0f32;
     let mut line = g0.div_euclid(RF_PER_LINE as i64);
-    let mut r0 = g0.rem_euclid(RF_PER_LINE as i64) as usize;
-    let mut n = 0usize;
-    while n < n_rf {
-        let take = (RF_PER_LINE - r0).min(n_rf - n);
-        // line rotation is constant across a line, so compute it once per line run
-        let (rc, rs) = line_rotation(parity, line);
-        for r in r0..r0 + take {
+    let mut r = g0.rem_euclid(RF_PER_LINE as i64) as usize;
+    let (mut rc, mut rs) = line_rotation(parity, line);
+
+    let total_rf = 3 * tot;
+    let piece_cap = RECORD_PIECE_RF.min(total_rf);
+    let mut cu_p = Vec::with_capacity(piece_cap);
+    let mut cv_p = Vec::with_capacity(piece_cap);
+    let mut y_p = Vec::with_capacity(piece_cap);
+    let mut fm_p = Vec::with_capacity(piece_cap);
+
+    let mut r0 = 0usize;
+    while r0 < total_rf {
+        let r1 = (r0 + RECORD_PIECE_RF).min(total_rf);
+        let (k0, k1) = (r0 / 3, r1 / 3);
+
+        upsample3_range(&cu, k0, k1, &mut cu_p);
+        upsample3_range(&cv, k0, k1, &mut cv_p);
+        upsample3_range(&y, k0, k1, &mut y_p);
+
+        // luma: sub-emphasis, emphasis, clip
+        if let Some(sub) = sub.as_mut() {
+            sub.process(&mut y_p);
+        }
+        emph.process(&mut y_p);
+        for v in y_p.iter_mut() {
+            *v = v.clamp(p.dark_clip_ire, p.white_clip_ire);
+        }
+
+        // FM carrier, record high-pass
+        fm_p.clear();
+        for &yv in &y_p {
+            let f = f0 + (yv as f64 - SYNC_IRE as f64) * HZ_PER_IRE * p.fm_deviation_scale;
+            phase += k * f;
+            if phase > PI {
+                phase -= 2.0 * PI;
+            }
+            fm_p.push(phase.sin() as f32);
+        }
+        hpf.process(&mut fm_p);
+
+        // colour-under + sum + relay over the active window [off, off + n_rf)
+        let j0 = off.saturating_sub(r0);
+        let j1 = (off + n_rf).saturating_sub(r0).min(fm_p.len());
+        for j in j0..j1 {
+            let n = r0 + j - off;
             // carrier phasor e^{j(theta + rho)}
             let (cr, ci) = (tc[r] * rc - ts[r] * rs, tc[r] * rs + ts[r] * rc);
-            let u = a * (cu_rf[off + n] * cr - cv_rf[off + n] * ci);
-            let i_rec = fm[off + n] + u + p.drive_offset as f32;
+            let u = a * (cu_p[j] * cr - cv_p[j] * ci);
+            let i_rec = fm_p[j] + u + p.drive_offset as f32;
             if n == 0 {
+                state = if fm_p[j] > 0.0 { 1 } else { -1 };
                 prev_i = i_rec;
             } else {
                 if state < 0 && i_rec > thr {
@@ -308,10 +354,15 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
                 }
                 prev_i = i_rec;
             }
-            n += 1;
+            r += 1;
+            if r == RF_PER_LINE {
+                r = 0;
+                line += 1;
+                (rc, rs) = line_rotation(parity, line);
+            }
         }
-        line += 1;
-        r0 = 0;
+
+        r0 = r1;
     }
     out
 }
@@ -442,5 +493,32 @@ mod tests {
         let exact = ((-(h + c) / a).acos() + ((h - c) / a).acos()) / PI - 1.0;
         let small = 2.0 / (PI * a * (1.0 - (h / a).powi(2)).sqrt()) * c;
         assert!((amp - small).abs() < 0.03, "measured {amp}, small-signal {small}, exact {exact}");
+    }
+
+    #[test]
+    fn upsample3_range_matches_whole_array() {
+        let mut rng = 0x1234_5678u32;
+        let x: Vec<f32> = (0..2000)
+            .map(|_| {
+                rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (rng as i32 as f32) / i32::MAX as f32
+            })
+            .collect();
+        let mut want = Vec::new();
+        upsample3(&x, &mut want);
+        let want_bits: Vec<u32> = want.iter().map(|v| v.to_bits()).collect();
+        for step in [1usize, 7, 910] {
+            let mut got = Vec::new();
+            let mut piece = Vec::new();
+            let mut k0 = 0;
+            while k0 < x.len() {
+                let k1 = (k0 + step).min(x.len());
+                upsample3_range(&x, k0, k1, &mut piece);
+                got.extend_from_slice(&piece);
+                k0 = k1;
+            }
+            let got_bits: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
+            assert_eq!(got_bits, want_bits, "step={step}");
+        }
     }
 }
