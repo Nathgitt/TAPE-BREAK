@@ -28,6 +28,7 @@ use crate::standard::{self, ColourTv, TvStandard};
 use super::record::{line_rotation, pal60_switched, v_switched, CU_WHOLE_CYCLES_PER_LINE};
 use super::video::{write_standard_burst, Baseband, Frame};
 use std::f64::consts::PI;
+use std::sync::OnceLock;
 
 // Keep the ACC aperture inside the settled centre of each format's burst.
 pub(crate) const BURST_MEASURE_LEN: usize = if BURST_LEN < 36 { 12 } else { 20 };
@@ -220,11 +221,27 @@ fn television(cur: &[[f32; 2]], prev: Option<&[[f32; 2]]>, switched: bool, p: &D
     })
 }
 
+/// cos/sin of the colour-under carrier across one line at the baseband rate, by column.
+fn demod_carrier_table() -> &'static (Vec<f32>, Vec<f32>) {
+    static T: OnceLock<(Vec<f32>, Vec<f32>)> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut c = Vec::with_capacity(BB_PER_LINE);
+        let mut s = Vec::with_capacity(BB_PER_LINE);
+        for col in 0..BB_PER_LINE {
+            let th = 2.0 * PI * CU_WHOLE_CYCLES_PER_LINE * col as f64 / BB_PER_LINE as f64;
+            c.push(th.cos() as f32);
+            s.push(th.sin() as f32);
+        }
+        (c, s)
+    })
+}
+
 /// Demodulate the colour-under over `[start, start+len)` (global baseband
 /// indices) into complex baseband `(re, im)`.
 pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &DecodeParams) -> (Vec<f32>, Vec<f32>) {
     let mut re = vec![0.0f32; len];
     let mut im = vec![0.0f32; len];
+    let (tc, ts) = demod_carrier_table();
     for k in 0..len {
         let n = start + k as i64;
         let idx = n - view.bb0;
@@ -232,19 +249,21 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
             continue;
         }
         let line = n.div_euclid(BB_PER_LINE as i64);
-        let col = n.rem_euclid(BB_PER_LINE as i64) as f64;
-        let th = 2.0 * PI * CU_WHOLE_CYCLES_PER_LINE * col / BB_PER_LINE as f64;
+        let col = n.rem_euclid(BB_PER_LINE as i64) as usize;
         let (rc, rs) = line_rotation(head_parity_at(n), line);
-        let (c, s) = (th.cos() as f32, th.sin() as f32);
+        let (c, s) = (tc[col], ts[col]);
         // carrier phasor e^{j(th+rho)}
         let (pc, ps) = (c * rc - s * rs, c * rs + s * rc);
         let u = 2.0 * view.cunder[idx as usize];
         re[k] = u * pc;
         im[k] = -u * ps;
     }
-    for ch in [&mut re, &mut im] {
-        let mut f = butter_lp(4, p.chroma_lpf_hz, FS_BB);
-        f.process(ch);
+    // The two fourth-order low-passes are independent, so advance them together in one pass.
+    let mut fr = butter_lp(4, p.chroma_lpf_hz, FS_BB);
+    let mut fi = butter_lp(4, p.chroma_lpf_hz, FS_BB);
+    for k in 0..len {
+        re[k] = fr.tick(re[k] as f64) as f32;
+        im[k] = fi.tick(im[k] as f64) as f32;
     }
     (re, im)
 }
@@ -479,5 +498,17 @@ mod tests {
     fn noise_without_a_pulse_is_not_sync() {
         let v: Vec<f32> = (0..600).map(|i| ((i * 7919) % 23) as f32 - 11.0).collect();
         assert!(find_sync(&v, 0, 300.0, 40).is_none());
+    }
+
+    #[test]
+    fn demod_carrier_table_matches_formula() {
+        let (tc, ts) = demod_carrier_table();
+        assert_eq!(tc.len(), BB_PER_LINE);
+        assert_eq!(ts.len(), BB_PER_LINE);
+        for col in 0..BB_PER_LINE {
+            let th = 2.0 * PI * CU_WHOLE_CYCLES_PER_LINE * col as f64 / BB_PER_LINE as f64;
+            assert_eq!(tc[col].to_bits(), (th.cos() as f32).to_bits(), "cos col {col}");
+            assert_eq!(ts[col].to_bits(), (th.sin() as f32).to_bits(), "sin col {col}");
+        }
     }
 }
