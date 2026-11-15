@@ -34,6 +34,15 @@ use std::sync::OnceLock;
 pub(crate) const BURST_MEASURE_LEN: usize = if BURST_LEN < 36 { 12 } else { 20 };
 pub(crate) const BURST_MEASURE_START: usize = BURST_START + (BURST_LEN - BURST_MEASURE_LEN) / 2;
 
+/// Window a sync tip must fall in, IRE: 25 IRE either side of the 525-line sync tip, used as
+/// they stand at both rasters.
+const SYNC_TIP_MIN_IRE: f32 = -65.0;
+const SYNC_TIP_MAX_IRE: f32 = -15.0;
+/// Samples after the sync leading edge at which the back-porch clamp gate opens.
+const CLAMP_GATE_START: usize = 120;
+/// Length of the back-porch clamp gate in baseband samples.
+const CLAMP_GATE_LEN: usize = 14;
+
 // The chroma PLL `freq += k_i err; phi += freq + k_p err` has the characteristic polynomial
 // `z^2 - (2 - k_p - k_i) z + (1 - k_p)` and settles only for `0 < k_p < 2` and `0 < k_i < 4 - 2 k_p`;
 // above `k_p = 1` it rings with alternating sign from line to line. The gains from `pll_omega_n`
@@ -148,7 +157,7 @@ pub fn find_sync(luma: &[f32], bb0: i64, n0: f64, search: i64) -> Option<f64> {
     for (_, i) in cands.into_iter().take(6) {
         let i = i as usize;
         let tip = luma[i + 8..i + 24].iter().sum::<f32>() / 16.0;
-        if !(-65.0..=-15.0).contains(&tip) {
+        if !(SYNC_TIP_MIN_IRE..=SYNC_TIP_MAX_IRE).contains(&tip) {
             continue;
         }
         let mid = tip - 0.5 * SYNC_IRE;
@@ -300,6 +309,12 @@ fn outside_luma(y: f32, gain: f32, add: f32) -> f32 {
     y * (1.0 + gain) + add
 }
 
+/// Loop-filter gains `(k_p, k_i)` from `DecodeParams`; negative or NaN figures act as 0.
+fn pll_gains(p: &DecodeParams) -> (f64, f64) {
+    let (omega_n, zeta) = (p.pll_omega_n.max(0.0), p.pll_zeta.max(0.0));
+    (2.0 * zeta * omega_n, omega_n * omega_n)
+}
+
 /// Luma and chroma of frame `k` as the deck delivers them, placed on the nominal raster
 /// (the active picture of each line, timed by the AFC); the rest of the frame is blank.
 /// `itf` adds to the luma what reaches the TV's video stages (nothing while `!itf.video_on()`).
@@ -314,8 +329,7 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
     let cat = |n: f64, c: &[f32]| -> f32 { sample_cubic(c, n - cstart as f64) };
 
     // the PLL's gains as configured (the same for every line); see the note at the top
-    let pll_kp = (2.0 * p.pll_zeta * p.pll_omega_n).max(0.0);
-    let pll_ki = (p.pll_omega_n * p.pll_omega_n).max(0.0);
+    let (pll_kp, pll_ki) = pll_gains(p);
 
     let mut planes = Baseband::blank();
     // the outside world's terms for the pixels of the current line, filled once per line
@@ -341,9 +355,10 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             // clamp on the back porch
             let mut off = 0.0f32;
             if p.clamp {
-                let b0 = (s_blank_ref + 120.0).round() as i64 - view.bb0;
-                if b0 >= 0 && (b0 + 14) < view.luma.len() as i64 {
-                    off = view.luma[b0 as usize..b0 as usize + 14].iter().sum::<f32>() / 14.0;
+                let b0 = (s_blank_ref + CLAMP_GATE_START as f64).round() as i64 - view.bb0;
+                if b0 >= 0 && (b0 + CLAMP_GATE_LEN as i64) < view.luma.len() as i64 {
+                    off = view.luma[b0 as usize..b0 as usize + CLAMP_GATE_LEN].iter().sum::<f32>()
+                        / CLAMP_GATE_LEN as f32;
                 }
             }
             // burst measurement (complex mean over the burst middle)
@@ -510,5 +525,19 @@ mod tests {
             assert_eq!(tc[col].to_bits(), (th.cos() as f32).to_bits(), "cos col {col}");
             assert_eq!(ts[col].to_bits(), (th.sin() as f32).to_bits(), "sin col {col}");
         }
+    }
+
+    #[test]
+    fn pll_gains_clamp_negative_and_nan_inputs_to_zero() {
+        let def = DecodeParams::default();
+        let (kp, ki) = pll_gains(&def);
+        assert!((kp - 0.3535).abs() < 1e-12, "default kp: {kp}");
+        assert!((ki - 0.0625).abs() < 1e-12, "default ki: {ki}");
+
+        let neg = DecodeParams { pll_omega_n: -0.25, pll_zeta: 0.707, ..def.clone() };
+        assert_eq!(pll_gains(&neg), (0.0, 0.0));
+
+        let nan = DecodeParams { pll_omega_n: f64::NAN, pll_zeta: f64::NAN, ..def };
+        assert_eq!(pll_gains(&nan), (0.0, 0.0));
     }
 }
