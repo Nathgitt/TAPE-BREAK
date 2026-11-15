@@ -12,7 +12,7 @@
 //! crate root re-exports the 525-line engine, so `vhsphys_core::pipeline::Session` is
 //! `vhsphys_core::ntsc::pipeline::Session`. What needs no raster constant is compiled once
 //! and shared by both engines: `dsp`, `frame`, `geometry`, `interference_params`, `rng`,
-//! `spectral`, `standard`, `trig` and `tube`.
+//! `spectral`, `standard` and `tube`.
 //!
 //! Decks of the two engines are joined by `rack`: tagged signals (`signal`), explicit links and
 //! a standards converter (`convert`, `aperture`); see `docs/BOUNCE.md`.
@@ -26,7 +26,6 @@ pub mod interference_params;
 pub mod rng;
 pub mod spectral;
 pub mod standard;
-pub mod trig;
 pub mod tube;
 
 // What joins decks of either engine. These modules name both engines (`crate::ntsc`,
