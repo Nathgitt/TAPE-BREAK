@@ -7,6 +7,9 @@
 
 use std::f64::consts::PI;
 
+/// Number of adjacent FIR outputs updated together in the unclamped interior.
+const FIR_OUTPUT_BLOCK: usize = 16;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Biquad {
     b0: f64,
@@ -294,7 +297,33 @@ pub fn fir_centred(x: &[f32], h: &[f32]) -> Vec<f32> {
     let n = x.len();
     let half = h.len() / 2;
     let mut y = vec![0.0f32; n];
-    for i in 0..n {
+    if h.is_empty() {
+        return y;
+    }
+    let interior_start = half.min(n);
+    let interior_end = n.saturating_sub(h.len() - half - 1);
+    let interior_end = interior_end.max(interior_start).min(n);
+    for i in 0..interior_start {
+        let mut acc = 0.0f32;
+        for (k, &c) in h.iter().enumerate() {
+            let j = (i + k).saturating_sub(half).min(n - 1);
+            acc += c * x[j];
+        }
+        y[i] = acc;
+    }
+    let mut i0 = interior_start;
+    while i0 < interior_end {
+        let count = FIR_OUTPUT_BLOCK.min(interior_end - i0);
+        let mut sums = [0.0f32; FIR_OUTPUT_BLOCK];
+        for (k, &c) in h.iter().enumerate() {
+            for j in 0..count {
+                sums[j] += c * x[i0 + j + k - half];
+            }
+        }
+        y[i0..i0 + count].copy_from_slice(&sums[..count]);
+        i0 += count;
+    }
+    for i in interior_end..n {
         let mut acc = 0.0f32;
         for (k, &c) in h.iter().enumerate() {
             let j = (i + k).saturating_sub(half).min(n - 1);
@@ -314,6 +343,39 @@ mod tests {
     use super::*;
 
     const FS: f64 = 42_954_545.0;
+
+    fn fir_centred_reference(x: &[f32], h: &[f32]) -> Vec<f32> {
+        let n = x.len();
+        let half = h.len() / 2;
+        let mut y = vec![0.0f32; n];
+        for i in 0..n {
+            let mut acc = 0.0f32;
+            for (k, &c) in h.iter().enumerate() {
+                let j = (i + k).saturating_sub(half).min(n - 1);
+                acc += c * x[j];
+            }
+            y[i] = acc;
+        }
+        y
+    }
+
+    #[test]
+    fn centred_fir_matches_scalar_reference_bits() {
+        let mut state = 0x1234_5678u32;
+        let mut random = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state as i32 as f32) / i32::MAX as f32
+        };
+        for h_len in [1, 5, 25, 41] {
+            let h: Vec<f32> = (0..h_len).map(|_| random()).collect();
+            for n in [0, 1, 7, 40, 1000, 4099] {
+                let x: Vec<f32> = (0..n).map(|_| random()).collect();
+                let got = fir_centred(&x, &h);
+                let want = fir_centred_reference(&x, &h);
+                assert_eq!(got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "h_len={h_len}, n={n}");
+            }
+        }
+    }
 
     #[test]
     fn butterworth_is_3db_at_corner() {

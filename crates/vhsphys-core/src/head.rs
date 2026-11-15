@@ -60,6 +60,7 @@ pub fn render_pulses(
     out: &mut [f32],
 ) {
     let n = out.len() as i64;
+    debug_assert!(out.len() <= i32::MAX as usize);
     for t in tr {
         let tt = t.t + shift;
         if tt < -60.0 || tt > (n + 60) as f64 {
@@ -79,11 +80,16 @@ pub fn render_pulses(
         let h2 = h * h;
         let lo = i0.max(0);
         let hi = (i0 + 2 * r).min(n - 1);
-        let mut i = lo;
-        while i <= hi {
-            let x = i as f32 - tc as f32;
-            out[i as usize] += c / (h2 + x * x);
-            i += 1;
+        if lo <= hi {
+            let start = lo as usize;
+            let end = hi as usize + 1;
+            let tc_f32 = tc as f32;
+            // Track windows are below 2^24 samples, so i32 indices convert to f32 exactly.
+            for (j, sample) in out[start..end].iter_mut().enumerate() {
+                let index = (lo as i32 + j as i32) as f32;
+                let x = index - tc_f32;
+                *sample += c / (h2 + x * x);
+            }
         }
     }
 }
@@ -259,6 +265,56 @@ mod tests {
     /// These tests pin the figures of the 525-line format; the other engine runs the same
     /// file against its own constants, so they return early there.
     const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
+
+    fn render_pulses_reference(
+        tr: &[Transition], shift: f64, ctl: &Controls, lateral: Option<&[f32]>, h0: f64, out: &mut [f32],
+    ) {
+        let n = out.len() as i64;
+        for t in tr {
+            let tt = t.t + shift;
+            if tt < -60.0 || tt > (n + 60) as f64 { continue; }
+            let mag = Controls::at(&ctl.mag, tt);
+            let w = lateral.map_or(1.0, |l| Controls::at(l, tt));
+            let amp = 2.0 * t.s as f32 * mag * w;
+            if amp == 0.0 { continue; }
+            let tc = tt + Controls::at(&ctl.warp, tt) as f64;
+            let h = (h0 + Controls::at(&ctl.dd, tt) as f64 / UM_PER_SAMPLE) as f32;
+            let r = ((8.0 * h) as i64).clamp(16, 56);
+            let i0 = tc.floor() as i64 - r;
+            let c = amp * h / PI32;
+            let h2 = h * h;
+            let lo = i0.max(0);
+            let hi = (i0 + 2 * r).min(n - 1);
+            let mut i = lo;
+            while i <= hi {
+                let x = i as f32 - tc as f32;
+                out[i as usize] += c / (h2 + x * x);
+                i += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn pulse_render_matches_scalar_reference_bits() {
+        let n = 12_000;
+        let mut ctl = Controls::new(n);
+        let mut lateral = vec![1.0f32; ctl.mag.len()];
+        for i in 0..ctl.mag.len() {
+            ctl.mag[i] = 0.55 + (i % 11) as f32 * 0.037;
+            ctl.dd[i] = (i % 7) as f32 * 0.013;
+            ctl.warp[i] = (i % 9) as f32 * 0.21 - 0.8;
+            lateral[i] = 0.4 + (i % 5) as f32 * 0.12;
+        }
+        let tr: Vec<Transition> = (0..2000).map(|i| Transition {
+            t: if i == 0 { 0.0 } else if i == 1999 { (n - 1) as f64 } else { i as f64 * 5.7 },
+            s: if i % 2 == 0 { 1 } else { -1 },
+        }).collect();
+        let mut got = vec![0.0f32; n];
+        let mut want = vec![0.0f32; n];
+        render_pulses(&tr, 0.0, &ctl, Some(&lateral), 2.65, &mut got);
+        render_pulses_reference(&tr, 0.0, &ctl, Some(&lateral), 2.65, &mut want);
+        assert_eq!(got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+    }
 
     /// An alternating pulse train at frequency f has fundamental amplitude
     /// (4/pi) w exp(-w h) per the Lorentzian spectrum: this is Wallace's law.
