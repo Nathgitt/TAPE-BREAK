@@ -998,6 +998,63 @@ picture element.
   rays inside the critical angle.
 - Blemishes, mesh microphonics; burn and its shading (Retention).
 
+## The edge of the scan
+
+A tube camera blanks its beam only for the deflection retrace, and blanks the picture for longer: "The blanking
+voltage pulse should be as long as the retrace time of the deflecting circuit and narrower than the final picture
+blanking. A spurious signal which is developed at the very edge of the scan ... should be blanked off on both sides
+and top and bottom from the final video signal by the wider system blanking pulse. To accomplish this vertically, it
+is desirable to generate a vertical system blanking pulse that starts several scan lines before the camera vertical
+retrace" (*Photosensitive Camera Tubes and Devices Handbook*, 11.5.4). The target beyond the scanned area is lit and
+never read, so it charges up, and the beam's wings at the outermost lines read it (US 4,404,499 calls the margin the
+overscan). Measured on the engine before this section (flat cards, 6 frames, decoded, green): the first and last rows
+read up to `+32` levels high and `-41` low without geometry, and up to `+103` high with it; a capped vidicon with
+geometry reads `+73` in its top row. Columns are within `0.6` levels on both paths: along a line the scan is continuous.
+
+### Rules
+
+- **Guard lines.** The tube scans `GUARD_FIELD_LINES = 4` `[est]` ("several") field lines beyond the active picture
+  at the top and the bottom of each field: `GUARD_ROWS = 2 * GUARD_FIELD_LINES = 8` frame rows at each edge, rows
+  `-8..-1` and `ACTIVE_H..ACTIVE_H + 8`. Guard row `r` of field `p = r.rem_euclid(2)` is frame line
+  `FIELD_FIRST_LINE[p] + r.div_euclid(2)` and is read at `read_time_s` of that line, inside the vertical blanking
+  interval (`20.5` lines a field at 525 lines, `25` at 625). Active rows keep their read times.
+- **Their light.** A guard row sees the nearest active row of the held picture, the out-of-picture rule
+  (`docs/MEASUREMENTS_WANTED.md`). In the geometry path the pad beyond the guard rows is the unscanned border, lit
+  the same way, as before.
+- **The target.** Without geometry the target grid is `SUB_ROWS * (ACTIVE_H + 2 * GUARD_ROWS)` sub-rows and ends at
+  the outermost guard line; the beam shares `S_k` sum over every pass, guard passes included. Nothing that reaches
+  an active row (the beam's `3 sigma_v`, the bending radius `BEND_RADIUS_MAX_LINES`, the vertical aperture's two
+  rows) reaches past the guard rows, so an unscanned border would change no output and is left out there.
+- **Everything a scanned line has, a guard line has:** dark current, traps and held charge, the ACT flyback before
+  its pass, dynamic beam control, beam bending, burn and retention, `idle`, the beam-off start and the stripe filter.
+- **Electronics and blanking.** Guard rows pass the head amplifier, with noise from their own stream
+  (`STREAM_CAMERA_GUARD`, so every active row's noise is unchanged), and the processing amplifier, where the
+  vertical aperture corrector takes them as the neighbours of the edge rows. The system blanking then drops them:
+  only active rows reach the encoder. `CameraTube::guard_rows()` keeps the last frame's processed guard rows (top
+  eight, then bottom eight, each `[R, G, B]` in the processing amplifier's output scale) for the checks.
+- **Black.** The clamp reference of a tube camera is the beam-off level of the blanking interval, zero signal
+  current (handbook 11.5.4); the dark current then lifts the picture, and the studio operator sets black on the
+  capped camera. `black` stands for that set-up: the settled dark reading averaged over the centre half of the
+  active rows (`ACTIVE_H / 4..3 * ACTIVE_H / 4`), the bulk of the waveform the operator watches. A camera without a
+  line-up is in `docs/MEASUREMENTS_WANTED.md`.
+- **Cost.** Sixteen more rows a frame: `3.3 %` at 480 rows, `2.8 %` at 576.
+
+### What the tests check (`tests/camera_guard_band.rs`)
+
+- On flat cards (capped, grey, white), for every tube with and without geometry, in both layouts and both engines,
+  the first and last four rows match the rows just inside them within `1.5` levels.
+- The spurious signal is still made: a capped vidicon with geometry reads well above black in its outermost guard
+  row, and the active rows do not.
+- Rows more than 32 rows from either edge match the engine before this section on a moving scene (frozen per-row
+  sums), so the interior is untouched.
+- A capped camera's centre rows average black within the noise, for every tube.
+
+### Out of scope
+
+- Edge hooking (US 4,404,499): the beam bending towards the charged margin around the scan. It is left to what
+  the geometry path's pad gives the bending model.
+- The horizontal guard time (a few microseconds of video delay at the right edge): the columns measure clean.
+
 ## Stages
 
 | Stage | Content |
