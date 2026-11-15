@@ -318,11 +318,14 @@ fn segment(p: &Params, rf: &HashMap<i64, Arc<Vec<f32>>>, n: i64) -> SegMid {
     let (g_a, g_b) = (switch_time(n), switch_time(n + 1));
     let (s0, s1) = (g_a - w, g_b + w);
     let mut buf = Vec::with_capacity((s1 - s0) as usize);
-    for g in s0..s1 {
-        let m = if g < g_a { n - 1 } else if g < g_b { n } else { n + 1 };
+    // The head-switched RF is three contiguous runs, one per track, so look each track up once.
+    let mut push_run = |m: i64, lo: i64, hi: i64| {
         let (gr, _) = track_window(m);
-        buf.push(rf[&m][(g - gr) as usize]);
-    }
+        buf.extend_from_slice(&rf[&m][(lo - gr) as usize..(hi - gr) as usize]);
+    };
+    push_run(n - 1, s0, g_a);
+    push_run(n, g_a, g_b);
+    push_run(n + 1, g_b, s1);
     let out = process_segment(&buf, &p.deck, s0);
     let (a, b) = ((w as usize) / OS, (w as usize + FIELD_RF) / OS);
     let doc = out.dropout[a..b].iter().map(|v| *v as f32).sum::<f32>() / (b - a) as f32;
@@ -593,8 +596,14 @@ impl Session {
             .par_iter()
             .map(|&k| {
                 let parts = [&segm[&(2 * k)], &segm[&(2 * k + 1)], &segm[&(2 * k + 2)]];
-                let luma: Vec<f32> = parts.iter().flat_map(|s| s.luma.iter().copied()).collect();
-                let cu: Vec<f32> = parts.iter().flat_map(|s| s.cunder.iter().copied()).collect();
+                let mut luma = Vec::with_capacity(parts.iter().map(|s| s.luma.len()).sum());
+                for s in &parts {
+                    luma.extend_from_slice(&s.luma);
+                }
+                let mut cu = Vec::with_capacity(parts.iter().map(|s| s.cunder.len()).sum());
+                for s in &parts {
+                    cu.extend_from_slice(&s.cunder);
+                }
                 let view = StreamView { bb0: parts[0].bb_start, luma: &luma, cunder: &cu };
                 decode_baseband(k, &view, &p.decode, &p.composite, &p.interference)
             })
