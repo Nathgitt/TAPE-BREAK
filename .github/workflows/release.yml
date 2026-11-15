@@ -16,7 +16,7 @@ jobs:
             platform: linux-x86_64
           - os: windows-2022
             platform: windows-x86_64
-          - os: macos-14
+          - os: macos-latest
             platform: macos-arm64
     steps:
       - uses: actions/checkout@v4
