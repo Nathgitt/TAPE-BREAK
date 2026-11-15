@@ -8,10 +8,10 @@
 //! delay) come from the deck's nominal design; faults perturb the *actual*
 //! values only.
 
-use serde::{Deserialize, Serialize};
 use super::consts::*;
-use crate::dsp::*;
 use super::emphasis::SubDeemphasis;
+use crate::dsp::*;
+use serde::{Deserialize, Serialize};
 
 /// Nominal discriminator delay assumed by the downstream scaling (samples).
 pub const DEMOD_DELAY_NOMINAL: f64 = 3.0;
@@ -96,7 +96,10 @@ impl Default for DeckParams {
     fn default() -> Self {
         let carrier_scale = (F_SYNC_TIP + 0.5e6) / 3.9e6;
         Self {
-            eq_peaks: vec![(5.4e6 * carrier_scale, 0.9, 6.0), (7.2e6 * carrier_scale, 1.2, 3.0)],
+            eq_peaks: vec![
+                (5.4e6 * carrier_scale, 0.9, 6.0),
+                (7.2e6 * carrier_scale, 1.2, 3.0),
+            ],
             fm_gain: 1.0,
             agc_enabled: true,
             agc_ms: 6.0,
@@ -147,7 +150,9 @@ pub fn supply_disturbance(s: &SupplyParams, g: i64) -> (f32, f32) {
     let (mut add, mut gain) = (0.0, 0.0);
     if s.hum_ire != 0.0 {
         let w = 2.0 * std::f64::consts::PI * 2.0 * s.mains_hz * t + s.phase;
-        let saw = (w.sin() + 0.35 * s.ripple_peakiness * (2.0 * w).sin() + 0.2 * s.ripple_peakiness * (3.0 * w).sin())
+        let saw = (w.sin()
+            + 0.35 * s.ripple_peakiness * (2.0 * w).sin()
+            + 0.2 * s.ripple_peakiness * (3.0 * w).sin())
             / (1.0 + 0.35 * s.ripple_peakiness);
         add += 0.5 * s.hum_ire * saw;
         gain += 0.5 * s.hum_ire / 100.0 * 0.8 * saw;
@@ -164,42 +169,61 @@ pub fn supply_disturbance(s: &SupplyParams, g: i64) -> (f32, f32) {
 pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
     let n = rf.len();
     let mut x: Vec<f32> = rf.to_vec();
-
-    // ---- playback equaliser and level ----
-    for &(f, q, g) in &p.eq_peaks {
-        let mut b = Biquad::peaking(f, q, g, FS_RF);
-        b.process(&mut x);
-    }
+    let mut eq: Vec<Biquad> = p
+        .eq_peaks
+        .iter()
+        .map(|&(f, q, g)| Biquad::peaking(f, q, g, FS_RF))
+        .collect();
     let gain = p.fm_gain as f32;
-    for v in x.iter_mut() {
-        *v *= gain;
+    let reference = if p.agc_enabled {
+        p.agc_target as f32
+    } else {
+        1.0
+    };
+    let k = n.min(4000);
+    let mut avg = 0.0f32;
+    for i in 0..k {
+        let mut v = x[i] as f64;
+        for b in &mut eq {
+            v = b.tick(v) as f32 as f64;
+        }
+        x[i] = v as f32 * gain;
     }
-
-    // ---- slow RF level control (feed-forward AGC on the mean rectified level) ----
-    let reference = if p.agc_enabled { p.agc_target as f32 } else { 1.0 };
     if p.agc_enabled {
-        let alpha = (1.0 - (-1.0 / (p.agc_ms * 1e-3 * FS_RF)).exp()) as f32;
-        let k = n.min(4000);
-        let mut avg = x[..k].iter().map(|v| v.abs()).sum::<f32>() / k as f32;
-        let (gmin, gmax) = (0.25f32, p.agc_max_gain as f32);
-        for v in x.iter_mut() {
-            let a = v.abs();
+        avg = x[..k].iter().map(|v| v.abs()).sum::<f32>() / k as f32;
+    }
+    let alpha = (1.0 - (-1.0 / (p.agc_ms * 1e-3 * FS_RF)).exp()) as f32;
+    let (gmin, gmax) = (0.25f32, p.agc_max_gain as f32);
+    let mut fm_hp = butter_hp(4, p.fm_hpf_hz, FS_RF);
+    let mut env = reference;
+    let mut active = false;
+    let mut hold = 0usize;
+    let decay = (-1.0 / (0.35e-6 * FS_RF)).exp() as f32;
+    let (trip, rel) = (
+        p.doc_trip as f32 * reference,
+        p.doc_release as f32 * reference,
+    );
+    let rec = p.doc_recirculation as f32;
+    let mut doc = vec![0u8; n];
+    let nb = n / OS;
+    let mut cu = Vec::with_capacity(nb);
+    let mut fmx = Vec::with_capacity(n);
+    let mut cu_samples = [0.0f32; 3];
+    for i in 0..n {
+        if i >= k {
+            let mut v = x[i] as f64;
+            for b in &mut eq {
+                v = b.tick(v) as f32 as f64;
+            }
+            x[i] = v as f32 * gain;
+        }
+        if p.agc_enabled {
+            let a = x[i].abs();
             let g = (reference / (avg * std::f32::consts::FRAC_PI_2).max(1e-6)).clamp(gmin, gmax);
             avg += alpha * (a - avg);
-            *v *= g;
+            x[i] *= g;
         }
-    }
-
-    // ---- dropout compensator: envelope detect, hysteresis, 1 H recirculation ----
-    let mut doc = vec![0u8; n];
-    if p.doc_enabled {
-        let decay = (-1.0 / (0.35e-6 * FS_RF)).exp() as f32;
-        let mut env = reference;
-        let mut active = false;
-        let mut hold = 0usize;
-        let (trip, rel) = (p.doc_trip as f32 * reference, p.doc_release as f32 * reference);
-        let rec = p.doc_recirculation as f32;
-        for i in 0..n {
+        if p.doc_enabled {
             env = (x[i].abs()).max(env * decay);
             if !active && env < trip {
                 active = true;
@@ -219,14 +243,14 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
                 doc[i] = 1;
             }
         }
+        cu_samples[i % OS] = x[i];
+        if i % OS == OS - 1 {
+            cu.push((cu_samples[0] + cu_samples[1] + cu_samples[2]) / 3.0);
+        }
+        fmx.push(fm_hp.tick(x[i] as f64) as f32);
     }
-
-    // ---- colour-under branch: tapped before the limiter ----
-    let nb = n / OS;
-    let mut cu: Vec<f32> = (0..nb).map(|k| (x[OS * k] + x[OS * k + 1] + x[OS * k + 2]) / 3.0).collect();
     let mut clpf = butter_lp(4, p.chroma_lpf_hz, FS_BB);
     clpf.process(&mut cu);
-    // chroma is killed while the compensator is active
     let mut dropout = vec![0u8; nb];
     for k in 0..nb {
         if doc[OS * k] | doc[OS * k + 1] | doc[OS * k + 2] != 0 {
@@ -240,29 +264,28 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
         }
     }
 
-    // ---- limiter + delay-line discriminator ----
-    let mut fmx = x.clone();
-    butter_hp(4, p.fm_hpf_hz, FS_RF).process(&mut fmx);
     let mut prod = discriminate(&fmx, p.limiter_threshold as f32, p.demod_delay);
     let mut lpf = butter_lp(p.demod_lpf_order, p.demod_lpf_hz, FS_RF);
     // the discriminator idles at the sync-tip... settle on the 0 IRE level
     lpf.settle(r_of_freq(F_SYNC_TIP - SYNC_IRE as f64 * HZ_PER_IRE) as f64);
-    lpf.process(&mut prod);
 
     // product -> frequency -> IRE using the *nominal* design delay
     let tau = DEMOD_DELAY_NOMINAL / FS_RF;
-    let mut y = vec![0.0f32; n];
-    for i in 0..n {
-        let f = (1.0 - prod[i] as f64) / (4.0 * tau);
-        y[i] = ((f - F_SYNC_TIP) / HZ_PER_IRE + SYNC_IRE as f64) as f32;
-    }
-
-    // ---- de-emphasis (inverse of the record emphasis, with component drift), sub-deemphasis ----
     let t = PRE_EMPH_TAU * p.deemph_tau_scale;
     let ratio = PRE_EMPH_RATIO * p.deemph_ratio_scale;
     let mut de = Biquad::first_order_pz(ratio / t, 1.0 / t, FS_RF);
-    de.settle(y[0] as f64);
-    de.process(&mut y);
+    let mut y = vec![0.0f32; n];
+    for i in 0..n {
+        prod[i] = lpf.tick(prod[i] as f64) as f32;
+        let f = (1.0 - prod[i] as f64) / (4.0 * tau);
+        y[i] = ((f - F_SYNC_TIP) / HZ_PER_IRE + SYNC_IRE as f64) as f32;
+        if i == 0 {
+            de.settle(y[0] as f64);
+        }
+        y[i] = de.tick(y[i] as f64) as f32;
+    }
+
+    // ---- de-emphasis (inverse of the record emphasis, with component drift), sub-deemphasis ----
     // LP and EP: undo the sub-preemphasis, which was applied before the main emphasis
     if let Some(se) = &p.sub_deemphasis {
         let mut sub = SubDeemphasis::new(se, FS_RF);
@@ -300,7 +323,11 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
         }
         luma.push(v + p.dc_error_ire as f32);
     }
-    SegmentOut { luma, cunder: cu, dropout }
+    SegmentOut {
+        luma,
+        cunder: cu,
+        dropout,
+    }
 }
 
 /// Hard limiter followed by a delay-line product detector, evaluated exactly
@@ -369,7 +396,11 @@ pub fn discriminate(x: &[f32], th: f32, delay: f64) -> Vec<f32> {
             break;
         }
         sign = -sign;
-        if first { i += 1 } else { j += 1 }
+        if first {
+            i += 1
+        } else {
+            j += 1
+        }
     }
     // anti-alias with a two-sample-wide triangle (sinc^2 response, nulls at
     // multiples of fs), then decimate by SUB
@@ -401,9 +432,272 @@ mod tests {
     use crate::standard::TvStandard;
     use std::f64::consts::PI;
 
+    fn process_segment_reference(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
+        let n = rf.len();
+        let mut x: Vec<f32> = rf.to_vec();
+
+        // ---- playback equaliser and level ----
+        for &(f, q, g) in &p.eq_peaks {
+            let mut b = Biquad::peaking(f, q, g, FS_RF);
+            b.process(&mut x);
+        }
+        let gain = p.fm_gain as f32;
+        for v in x.iter_mut() {
+            *v *= gain;
+        }
+
+        // ---- slow RF level control (feed-forward AGC on the mean rectified level) ----
+        let reference = if p.agc_enabled {
+            p.agc_target as f32
+        } else {
+            1.0
+        };
+        if p.agc_enabled {
+            let alpha = (1.0 - (-1.0 / (p.agc_ms * 1e-3 * FS_RF)).exp()) as f32;
+            let k = n.min(4000);
+            let mut avg = x[..k].iter().map(|v| v.abs()).sum::<f32>() / k as f32;
+            let (gmin, gmax) = (0.25f32, p.agc_max_gain as f32);
+            for v in x.iter_mut() {
+                let a = v.abs();
+                let g =
+                    (reference / (avg * std::f32::consts::FRAC_PI_2).max(1e-6)).clamp(gmin, gmax);
+                avg += alpha * (a - avg);
+                *v *= g;
+            }
+        }
+
+        // ---- dropout compensator: envelope detect, hysteresis, 1 H recirculation ----
+        let mut doc = vec![0u8; n];
+        if p.doc_enabled {
+            let decay = (-1.0 / (0.35e-6 * FS_RF)).exp() as f32;
+            let mut env = reference;
+            let mut active = false;
+            let mut hold = 0usize;
+            let (trip, rel) = (
+                p.doc_trip as f32 * reference,
+                p.doc_release as f32 * reference,
+            );
+            let rec = p.doc_recirculation as f32;
+            for i in 0..n {
+                env = (x[i].abs()).max(env * decay);
+                if !active && env < trip {
+                    active = true;
+                } else if active && env > rel {
+                    if hold == 0 {
+                        hold = 6;
+                    }
+                    hold -= 1;
+                    if hold == 0 {
+                        active = false;
+                    }
+                } else if active {
+                    hold = 0;
+                }
+                if active && i >= RF_PER_LINE {
+                    x[i] = x[i - RF_PER_LINE] * rec;
+                    doc[i] = 1;
+                }
+            }
+        }
+
+        // ---- colour-under branch: tapped before the limiter ----
+        let nb = n / OS;
+        let mut cu: Vec<f32> = (0..nb)
+            .map(|k| (x[OS * k] + x[OS * k + 1] + x[OS * k + 2]) / 3.0)
+            .collect();
+        let mut clpf = butter_lp(4, p.chroma_lpf_hz, FS_BB);
+        clpf.process(&mut cu);
+        // chroma is killed while the compensator is active
+        let mut dropout = vec![0u8; nb];
+        for k in 0..nb {
+            if doc[OS * k] | doc[OS * k + 1] | doc[OS * k + 2] != 0 {
+                dropout[k] = 1;
+            }
+        }
+        // spread the kill a little (filter memory)
+        for k in 0..nb {
+            if dropout[k] == 1 {
+                cu[k] = 0.0;
+            }
+        }
+
+        // ---- limiter + delay-line discriminator ----
+        let mut fmx = x.clone();
+        butter_hp(4, p.fm_hpf_hz, FS_RF).process(&mut fmx);
+        let mut prod = discriminate(&fmx, p.limiter_threshold as f32, p.demod_delay);
+        let mut lpf = butter_lp(p.demod_lpf_order, p.demod_lpf_hz, FS_RF);
+        // the discriminator idles at the sync-tip... settle on the 0 IRE level
+        lpf.settle(r_of_freq(F_SYNC_TIP - SYNC_IRE as f64 * HZ_PER_IRE) as f64);
+        lpf.process(&mut prod);
+
+        // product -> frequency -> IRE using the *nominal* design delay
+        let tau = DEMOD_DELAY_NOMINAL / FS_RF;
+        let mut y = vec![0.0f32; n];
+        for i in 0..n {
+            let f = (1.0 - prod[i] as f64) / (4.0 * tau);
+            y[i] = ((f - F_SYNC_TIP) / HZ_PER_IRE + SYNC_IRE as f64) as f32;
+        }
+
+        // ---- de-emphasis (inverse of the record emphasis, with component drift), sub-deemphasis ----
+        let t = PRE_EMPH_TAU * p.deemph_tau_scale;
+        let ratio = PRE_EMPH_RATIO * p.deemph_ratio_scale;
+        let mut de = Biquad::first_order_pz(ratio / t, 1.0 / t, FS_RF);
+        de.settle(y[0] as f64);
+        de.process(&mut y);
+        // LP and EP: undo the sub-preemphasis, which was applied before the main emphasis
+        if let Some(se) = &p.sub_deemphasis {
+            let mut sub = SubDeemphasis::new(se, FS_RF);
+            sub.settle(y[0] as f64);
+            sub.process(&mut y);
+        }
+
+        // ---- coupling capacitor (high-pass), luma low-pass, aperture corrector ----
+        let mut cpl = Biquad::one_pole_hp(p.coupling_hpf_hz, FS_RF);
+        let mid =
+            y[..y.len().min(RF_PER_LINE)].iter().sum::<f32>() / y.len().min(RF_PER_LINE) as f32;
+        cpl.settle(mid as f64);
+        // DC is restored by the TV clamp, so the high-pass only needs to shape tilt:
+        for v in y.iter_mut() {
+            *v = (cpl.tick(*v as f64) as f32) + mid;
+        }
+        // decimate to baseband, then the video low-pass (zero-phase FIR) and the
+        // aperture corrector
+        let mut lb: Vec<f32> = (0..nb).map(|k| y[OS * k + 1]).collect();
+        let fir = kaiser_lowpass(p.luma_lpf_hz, p.luma_lpf_transition_hz, 55.0, FS_BB);
+        lb = fir_centred(&lb, &fir);
+        if p.sharp_db != 0.0 {
+            let mut sh = Biquad::peaking(p.sharp_freq, p.sharp_q, p.sharp_db, FS_BB);
+            sh.settle(mid as f64);
+            sh.process(&mut lb);
+        }
+
+        // ---- supply disturbances and detuning ----
+        let have_supply = p.supply.hum_ire != 0.0 || p.supply.smps_ire != 0.0;
+        let mut luma = Vec::with_capacity(nb);
+        for k in 0..nb {
+            let mut v = lb[k];
+            if have_supply {
+                let (add, gm) = supply_disturbance(&p.supply, g0 + (OS * k + 1) as i64);
+                v = v * (1.0 + gm) + add;
+            }
+            luma.push(v + p.dc_error_ire as f32);
+        }
+        SegmentOut {
+            luma,
+            cunder: cu,
+            dropout,
+        }
+    }
+
     /// These tests pin the figures of the 525-line format; the other engine runs the same
     /// file against its own constants, so they return early there.
     const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
+
+    fn synthetic_rf(n: usize) -> Vec<f32> {
+        let mut state = 0x1234_5678u32;
+        let mut phase = 0.0f64;
+        (0..n)
+            .map(|i| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = ((state >> 8) as f32 / 16_777_216.0 - 0.5) * 0.025;
+                let f = 3.9e6 + 80.0e3 * (2.0 * PI * i as f64 / (FS_RF * 0.002)).sin();
+                phase += 2.0 * PI * f / FS_RF;
+                let dip = [
+                    (200, 450),
+                    (900, 1_150),
+                    (RF_PER_LINE + 100, RF_PER_LINE + 500),
+                    (2 * RF_PER_LINE + 500, 2 * RF_PER_LINE + 3_500),
+                    (20_000, 23_000),
+                ];
+                let amplitude = if dip.iter().any(|&(a, b)| i >= a && i < b) {
+                    0.05
+                } else {
+                    1.0
+                };
+                (amplitude * phase.sin() as f32 + noise) * 0.5
+            })
+            .collect()
+    }
+
+    fn assert_segment_bits(a: &SegmentOut, b: &SegmentOut) {
+        assert_eq!(a.luma.len(), b.luma.len());
+        assert_eq!(a.cunder.len(), b.cunder.len());
+        for (x, y) in a.luma.iter().zip(&b.luma) {
+            assert_eq!(x.to_bits(), y.to_bits());
+        }
+        for (x, y) in a.cunder.iter().zip(&b.cunder) {
+            assert_eq!(x.to_bits(), y.to_bits());
+        }
+        assert_eq!(a.dropout, b.dropout);
+    }
+
+    #[test]
+    fn fused_process_matches_reference_exactly() {
+        let variants = vec![
+            DeckParams::default(),
+            DeckParams {
+                agc_enabled: false,
+                ..Default::default()
+            },
+            DeckParams {
+                doc_enabled: false,
+                ..Default::default()
+            },
+            DeckParams {
+                sub_deemphasis: Some(
+                    super::super::emphasis::SubEmphasisParams::for_speed(
+                        super::super::format::TapeSpeed::Lp,
+                    )
+                    .unwrap_or_default(),
+                ),
+                ..Default::default()
+            },
+            DeckParams {
+                supply: SupplyParams {
+                    hum_ire: 2.0,
+                    mains_hz: 60.0,
+                    ripple_peakiness: 0.7,
+                    smps_hz: 180_000.0,
+                    smps_ire: 0.8,
+                    phase: 0.3,
+                },
+                ..Default::default()
+            },
+            DeckParams {
+                eq_peaks: vec![(4.8e6, 0.8, 3.0), (6.1e6, 1.1, -2.0), (8.0e6, 1.4, 4.0)],
+                ..Default::default()
+            },
+            DeckParams {
+                eq_peaks: vec![],
+                ..Default::default()
+            },
+        ];
+        for n in [3_000, RF_PER_LINE * 3, 60_000] {
+            let rf = synthetic_rf(n);
+            for p in &variants {
+                assert_segment_bits(
+                    &process_segment(&rf, p, 1234),
+                    &process_segment_reference(&rf, p, 1234),
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn measure_fused_process_segment() {
+        use std::time::Instant;
+        let rf = synthetic_rf(727_545);
+        let p = DeckParams::default();
+        let before = Instant::now();
+        let reference = process_segment_reference(&rf, &p, 0);
+        let before_elapsed = before.elapsed();
+        let after = Instant::now();
+        let fused = process_segment(&rf, &p, 0);
+        let after_elapsed = after.elapsed();
+        assert_segment_bits(&fused, &reference);
+        eprintln!("reference: {before_elapsed:?}; fused: {after_elapsed:?}");
+    }
 
     /// A pure FM carrier at a known frequency must demodulate to the matching
     /// IRE level through limiter + delay-line discriminator.
@@ -415,8 +709,16 @@ mod tests {
         for ire in [-40.0, 0.0, 50.0, 100.0] {
             let f = F_SYNC_TIP + (ire + 40.0) * HZ_PER_IRE;
             let n = 20_000;
-            let rf: Vec<f32> = (0..n).map(|i| (0.5 * (2.0 * PI * f * i as f64 / FS_RF).sin()) as f32).collect();
-            let p = DeckParams { eq_peaks: vec![], sharp_db: 0.0, doc_enabled: false, fm_gain: 2.0, ..Default::default() };
+            let rf: Vec<f32> = (0..n)
+                .map(|i| (0.5 * (2.0 * PI * f * i as f64 / FS_RF).sin()) as f32)
+                .collect();
+            let p = DeckParams {
+                eq_peaks: vec![],
+                sharp_db: 0.0,
+                doc_enabled: false,
+                fm_gain: 2.0,
+                ..Default::default()
+            };
             let out = process_segment(&rf, &p, 0);
             let mid = &out.luma[n / OS / 2..n / OS / 2 + 200];
             let m = mid.iter().sum::<f32>() / mid.len() as f32;
@@ -430,7 +732,9 @@ mod tests {
     fn discriminator_is_exact_and_spur_free() {
         for f in [3.4e6, 3.9e6, 4.4e6] {
             let n = 40_000;
-            let x: Vec<f32> = (0..n).map(|i| (2.0 * PI * f * i as f64 / FS_RF).sin() as f32).collect();
+            let x: Vec<f32> = (0..n)
+                .map(|i| (2.0 * PI * f * i as f64 / FS_RF).sin() as f32)
+                .collect();
             let d = discriminate(&x, 0.03, 3.0);
             let mid = &d[2000..n - 2000];
             let mean = mid.iter().sum::<f32>() / mid.len() as f32;
@@ -440,7 +744,8 @@ mod tests {
             let mut y = d.clone();
             lp.process(&mut y);
             let r = &y[4000..n - 2000];
-            let rip = r.iter().cloned().fold(f32::MIN, f32::max) - r.iter().cloned().fold(f32::MAX, f32::min);
+            let rip = r.iter().cloned().fold(f32::MIN, f32::max)
+                - r.iter().cloned().fold(f32::MAX, f32::min);
             assert!((mean as f64 - want).abs() < 2e-3, "f={f}: {mean} vs {want}");
             assert!(rip < 4e-3, "f={f}: ripple {rip}"); // < 2 IRE p-p, dominated by one -61 dB alias spur
         }
@@ -455,22 +760,51 @@ mod tests {
         }
         let f = 3.9e6;
         let n = 6 * RF_PER_LINE;
-        let mut rf: Vec<f32> = (0..n).map(|i| (0.5 * (2.0 * PI * f * i as f64 / FS_RF).sin()) as f32).collect();
+        let mut rf: Vec<f32> = (0..n)
+            .map(|i| (0.5 * (2.0 * PI * f * i as f64 / FS_RF).sin()) as f32)
+            .collect();
         let (a, b) = (3 * RF_PER_LINE + 500, 3 * RF_PER_LINE + 1700);
         for v in &mut rf[a..b] {
             *v *= 0.01;
         }
-        let base = DeckParams { eq_peaks: vec![], sharp_db: 0.0, fm_gain: 2.0, ..Default::default() };
-        let with = process_segment(&rf, &DeckParams { doc_enabled: true, ..base.clone() }, 0);
-        let without = process_segment(&rf, &DeckParams { doc_enabled: false, ..base }, 0);
+        let base = DeckParams {
+            eq_peaks: vec![],
+            sharp_db: 0.0,
+            fm_gain: 2.0,
+            ..Default::default()
+        };
+        let with = process_segment(
+            &rf,
+            &DeckParams {
+                doc_enabled: true,
+                ..base.clone()
+            },
+            0,
+        );
+        let without = process_segment(
+            &rf,
+            &DeckParams {
+                doc_enabled: false,
+                ..base
+            },
+            0,
+        );
         let dev = |o: &SegmentOut| {
             let r = &o.luma[(a + 200) / OS..(b - 200) / OS];
             r.iter().map(|v| (v - 30.0).abs()).sum::<f32>() / r.len() as f32
         };
         // 3.9 MHz carrier = 30 IRE
-        assert!(dev(&with) < 3.0, "with DOC the dropout region stays near 30 IRE: {}", dev(&with));
-        assert!(dev(&without) > 3.0 * dev(&with), "doc {} vs none {}", dev(&with), dev(&without));
+        assert!(
+            dev(&with) < 3.0,
+            "with DOC the dropout region stays near 30 IRE: {}",
+            dev(&with)
+        );
+        assert!(
+            dev(&without) > 3.0 * dev(&with),
+            "doc {} vs none {}",
+            dev(&with),
+            dev(&without)
+        );
         assert!(with.dropout[(a + 50) / OS] == 1);
     }
 }
-
