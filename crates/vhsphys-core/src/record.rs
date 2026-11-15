@@ -199,38 +199,58 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
     let mut cv = vec![0.0f32; tot];
     src.fill(bb0, &mut y, &mut cu, &mut cv);
 
-    // ---- chroma: PAL line switch, burst boost, record band-limiting, then upsample ----
+    // ---- chroma: PAL line switch, burst boost ----
     // The source is the camera's unswitched (U, V); a PAL coder inverts V, burst included, on
     // alternate lines before the deck ever sees the chroma, so it is done here ahead of the
     // deck's band-pass. The switch falls in the sync pulse, clear of the burst and the picture.
     if STANDARD == TvStandard::Pal {
-        for (i, v) in cv.iter_mut().enumerate() {
-            if v_switched((bb0 + i as i64).div_euclid(BB_PER_LINE as i64)) {
-                *v = -*v;
+        let mut line = bb0.div_euclid(BB_PER_LINE as i64);
+        let mut col = bb0.rem_euclid(BB_PER_LINE as i64) as usize;
+        let mut i = 0;
+        while i < tot {
+            let take = (BB_PER_LINE - col).min(tot - i);
+            if v_switched(line) {
+                for v in &mut cv[i..i + take] {
+                    *v = -*v;
+                }
             }
+            i += take;
+            line += 1;
+            col = 0;
         }
     }
+    let mut col = bb0.rem_euclid(BB_PER_LINE as i64) as usize;
     for i in 0..tot {
-        let col = (bb0 + i as i64).rem_euclid(BB_PER_LINE as i64) as usize;
         if (BURST_START..BURST_START + BURST_LEN).contains(&col) {
             cu[i] *= p.burst_boost;
             cv[i] *= p.burst_boost;
         }
+        col += 1;
+        if col == BB_PER_LINE {
+            col = 0;
+        }
     }
-    for c in [&mut cu, &mut cv] {
-        let mut f = butter_lp(2, p.chroma_lpf_hz, FS_BB);
-        f.settle(0.0);
-        f.process(c);
+
+    // ---- baseband low-pass (chroma and luma) and upsample ----
+    // The three second-order Butterworth filters are independent, so run them in one pass
+    // over the baseband buffers before upsampling.
+    let mut fu = butter_lp(2, p.chroma_lpf_hz, FS_BB);
+    fu.settle(0.0);
+    let mut fv = butter_lp(2, p.chroma_lpf_hz, FS_BB);
+    fv.settle(0.0);
+    let mut fy = butter_lp(2, p.luma_lpf_hz, FS_BB);
+    fy.settle(0.0);
+    for i in 0..tot {
+        cu[i] = fu.tick(cu[i] as f64) as f32;
+        cv[i] = fv.tick(cv[i] as f64) as f32;
+        y[i] = fy.tick(y[i] as f64) as f32;
     }
     let (mut cu_rf, mut cv_rf, mut y_rf) = (Vec::new(), Vec::new(), Vec::new());
     upsample3(&cu, &mut cu_rf);
     upsample3(&cv, &mut cv_rf);
-
-    // ---- luma: bandwidth, sub-emphasis, emphasis, clip ----
-    let mut lpf = butter_lp(2, p.luma_lpf_hz, FS_BB);
-    lpf.settle(0.0);
-    lpf.process(&mut y);
     upsample3(&y, &mut y_rf);
+
+    // ---- luma: sub-emphasis, emphasis, clip ----
     // LP and EP: the level-dependent boost of fine detail comes first, so the main emphasis
     // sees the boosted signal and the playback can undo the two in the reverse order
     if let Some(se) = &p.sub_emphasis {
@@ -262,29 +282,36 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
     let mut out: Vec<Transition> = Vec::with_capacity(n_rf / 5);
     let mut state: i8 = if fm[off] > 0.0 { 1 } else { -1 };
     let mut prev_i = 0.0f32;
-    for n in 0..n_rf {
-        let gi = g0 + n as i64;
-        let line = gi.div_euclid(RF_PER_LINE as i64);
-        let r = gi.rem_euclid(RF_PER_LINE as i64) as usize;
+    let mut line = g0.div_euclid(RF_PER_LINE as i64);
+    let mut r0 = g0.rem_euclid(RF_PER_LINE as i64) as usize;
+    let mut n = 0usize;
+    while n < n_rf {
+        let take = (RF_PER_LINE - r0).min(n_rf - n);
+        // line rotation is constant across a line, so compute it once per line run
         let (rc, rs) = line_rotation(parity, line);
-        // carrier phasor e^{j(theta + rho)}
-        let (cr, ci) = (tc[r] * rc - ts[r] * rs, tc[r] * rs + ts[r] * rc);
-        let u = a * (cu_rf[off + n] * cr - cv_rf[off + n] * ci);
-        let i_rec = fm[off + n] + u + p.drive_offset as f32;
-        if n == 0 {
-            prev_i = i_rec;
-            continue;
+        for r in r0..r0 + take {
+            // carrier phasor e^{j(theta + rho)}
+            let (cr, ci) = (tc[r] * rc - ts[r] * rs, tc[r] * rs + ts[r] * rc);
+            let u = a * (cu_rf[off + n] * cr - cv_rf[off + n] * ci);
+            let i_rec = fm[off + n] + u + p.drive_offset as f32;
+            if n == 0 {
+                prev_i = i_rec;
+            } else {
+                if state < 0 && i_rec > thr {
+                    let t = (n - 1) as f64 + ((thr - prev_i) / (i_rec - prev_i)) as f64;
+                    out.push(Transition { t, s: 1 });
+                    state = 1;
+                } else if state > 0 && i_rec < -thr {
+                    let t = (n - 1) as f64 + ((-thr - prev_i) / (i_rec - prev_i)) as f64;
+                    out.push(Transition { t, s: -1 });
+                    state = -1;
+                }
+                prev_i = i_rec;
+            }
+            n += 1;
         }
-        if state < 0 && i_rec > thr {
-            let t = (n - 1) as f64 + ((thr - prev_i) / (i_rec - prev_i)) as f64;
-            out.push(Transition { t, s: 1 });
-            state = 1;
-        } else if state > 0 && i_rec < -thr {
-            let t = (n - 1) as f64 + ((-thr - prev_i) / (i_rec - prev_i)) as f64;
-            out.push(Transition { t, s: -1 });
-            state = -1;
-        }
-        prev_i = i_rec;
+        line += 1;
+        r0 = 0;
     }
     out
 }
