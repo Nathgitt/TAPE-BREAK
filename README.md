@@ -15,6 +15,10 @@ leave lag and comet tails (see [Camera pickup tubes](#camera-pickup-tubes)).
 
 Left to right, top to bottom: source, pristine, good, worn, bad, ruined.
 
+## Download
+
+Get the archive for your system from the [Releases page](https://github.com/allthemalware/vhs-phys/releases), unpack it, and run `vhs-phys` (or `VHS-Phys.app` on macOS). The command line tool `vhsphys` is in the same folder. Install ffmpeg, or place it in that folder. The macOS app is unsigned; right-click it and choose Open the first time. Windows may show a SmartScreen prompt.
+
 This is the standalone prototype. The Rust core (`vhsphys-core`) is written so it
 can be wrapped as a plugin later (see `docs/PLUGIN.md`).
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from collections.abc import Sequence
@@ -14,6 +15,7 @@ SCREENSHOT_SIZE = (1280, 900)  # screenshots use a stable canvas regardless of t
 
 MISSING_BINARY = "vhsphys not found. Build it with: cargo build --release"
 MISSING_FFMPEG = "ffmpeg not found. Install it with your package manager, for example: apt install ffmpeg"
+MISSING_BUNDLED_FFMPEG = MISSING_FFMPEG + ", or place it beside the app"
 MISSING_FFPROBE = "ffprobe not found. It comes with ffmpeg: install it with your package manager"
 
 
@@ -31,8 +33,10 @@ examples:
 
 
 def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
+    from vhsgui import backend
+
     parser = argparse.ArgumentParser(
-        prog="python -m vhsgui",
+        prog="vhs-phys" if backend.bundle_dirs() else "python -m vhsgui",
         description=HELP_DESCRIPTION,
         epilog=HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -59,6 +63,19 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     if args.page is None:
         args.page = "circuit"
     return args
+
+
+def add_bundle_to_path() -> None:
+    """Make bundled tools available to the window and its child processes."""
+    from vhsgui import backend
+
+    directories = backend.bundle_dirs()
+    if not directories:
+        return
+    existing = os.environ.get("PATH", "").split(os.pathsep)
+    additions = [str(directory) for directory in directories if str(directory) not in existing]
+    if additions:
+        os.environ["PATH"] = os.pathsep.join([*additions, *existing])
 
 
 def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str) -> int:
@@ -124,6 +141,7 @@ def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    add_bundle_to_path()
     args = _parse(argv)
     from vhsgui import backend
     from vhsgui.model import GuiError
@@ -138,7 +156,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_MISSING_TOOL
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
-        print(MISSING_FFMPEG, file=sys.stderr)
+        message = MISSING_BUNDLED_FFMPEG if backend.bundle_dirs() else MISSING_FFMPEG
+        print(message, file=sys.stderr)
         return EXIT_MISSING_TOOL
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:

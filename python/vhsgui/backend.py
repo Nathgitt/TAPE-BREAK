@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import tomllib
@@ -111,6 +112,11 @@ def find_binary(explicit: str | None = None) -> Path | None:
     names = [BINARY_NAME]
     if os.name == "nt":
         names.append(BINARY_NAME + ".exe")
+    for directory in bundle_dirs():
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate.resolve()
     for build in ("release", "debug"):
         for name in names:
             candidate = repo / "target" / build / name
@@ -121,6 +127,20 @@ def find_binary(explicit: str | None = None) -> Path | None:
         if found:
             return Path(found)
     return None
+
+
+def bundle_dirs() -> list[Path]:
+    """Return the executable and internal folders of a frozen application."""
+    if not getattr(sys, "frozen", False):
+        return []
+    executable_dir = Path(sys.executable).resolve().parent
+    directories = [executable_dir]
+    internal = getattr(sys, "_MEIPASS", None)
+    if internal is not None:
+        internal_dir = Path(internal).resolve()
+        if internal_dir != executable_dir:
+            directories.append(internal_dir)
+    return directories
 
 
 def _run_tool(args: Sequence[str]) -> str:
