@@ -170,6 +170,7 @@ time and picture position. With one engine and direct links a `Rack` gives the f
   crossing of the head current with the coercive threshold. Quantising reversal
   times to the 23 ns grid would add ~0.16 rad of phase noise at 3.9 MHz (CNR
   limited to ~15 dB). Readback pulses are evaluated at fractional positions.
+  The reversals are placed on the cubic through four samples of the record current.
 * **Exact limiter + discriminator.** Clipping a sampled waveform has the same
   quantisation problem and aliases the limiter harmonics (3.9 MHz x 11 ~ fs).
   `electronics::discriminate` treats the limiter as a comparator with
@@ -179,7 +180,7 @@ time and picture position. With one engine and direct links a `Rack` gives the f
 * **Lorentzian pulses.** One reversal reads back as a unit-area Lorentzian with
   half-width `h = sqrt((g/2)^2 + (d+a)(d+a+delta))`; spectrum `exp(-k h)`. Spacing
   changes add to `h`, so time-varying spacing is exact per pulse and Wallace's
-  law is a consequence, not an input.
+  law is a consequence, not an input. The pulse centre is placed exactly and its window tapers smoothly.
 * **The tube works in seconds.** The target's constants are in nA, nF and seconds and every element is read at its own
   time (`read_time_s`), so one set of constants serves both rasters and the lag is checked at the same elapsed times at 50
   and 60 Hz. One scan of an element is solved in closed form (`exp(-q'/K) = exp(-q/K) + (I_b - r1)/K`), and the held
@@ -200,7 +201,7 @@ time and picture position. With one engine and direct links a `Rack` gives the f
   inverse on playback; the head resonance as a peaking section (`head::head_front_end`);
   Butterworth low-passes for record luma and chroma, the demodulator output and the chroma after
   demodulation; the coupling capacitor as a one-pole high-pass (15 Hz), which gives line tilt and
-  sag. None is applied to a frame.
+  sag. The deck's colour-under is low-passed at the RF rate before it is taken down to the baseband grid. None is applied to a frame.
 
 ## Geometry (tape.rs, tracking.rs)
 
