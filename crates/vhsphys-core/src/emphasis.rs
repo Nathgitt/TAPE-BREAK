@@ -223,6 +223,10 @@ pub struct SubDeemphasis {
     /// `m . z + kappa * u` is the next sample's `past()`.
     m: [f64; 2],
     kappa: f64,
+    /// Limiter input from the previous sample, carried across `process` calls.
+    u: f64,
+    /// Precomputed `0.5 * (past() - direct * q)` for the next sample, carried across calls.
+    half_rest: f64,
 }
 
 impl SubDeemphasis {
@@ -239,12 +243,15 @@ impl SubDeemphasis {
         let bt = [net.bx[0] * inv_d, net.bx[1] * inv_d];
         let m = [gc[0] * at[0][0] + gc[1] * at[1][0], gc[0] * at[0][1] + gc[1] * at[1][1]];
         let kappa = gc[0] * bt[0] + gc[1] * bt[1];
-        Self { net, at, bt, m, kappa }
+        let half_rest = 0.5 * (net.past() - net.direct * net.q);
+        Self { net, at, bt, m, kappa, u: 0.0, half_rest }
     }
 
     /// Set the state as if the input had been `x` forever.
     pub fn settle(&mut self, x: f64) {
         self.net.settle(x);
+        self.u = 0.0;
+        self.half_rest = 0.5 * (self.net.past() - self.net.direct * self.net.q);
     }
 
     /// Solves `x + e0 L(u) + q = y` with `u = direct * x + past` for each sample (`e0 L + q` is
@@ -267,6 +274,7 @@ impl SubDeemphasis {
 
     /// The loop, compiled once with the low-pass and once without (where its state is zero).
     fn run<const LP: bool>(&mut self, buf: &mut [f32]) {
+        let (mut half_rest, mut u) = (self.half_rest, self.u);
         let net = &mut self.net;
         let (d, clip, e0, alpha, beta) = (net.direct, net.clip, net.e0, net.alpha, net.beta);
         let big_d = d * e0;
@@ -278,8 +286,6 @@ impl SubDeemphasis {
         let (half_m, half_kw, half_dbeta) = ([0.5 * self.m[0], 0.5 * self.m[1]], 0.5 * k_w, 0.5 * d * beta);
         let (at, bt) = (self.at, self.bt);
         let (mut z, mut q) = (net.z, net.q);
-        let mut half_rest = 0.5 * (net.past() - d * q);
-        let mut u = 0.0f64;
         for v in buf.iter_mut() {
             let y = *v as f64;
             let half_w = (half_d * y + half_rest) + half_k * u;
@@ -299,5 +305,79 @@ impl SubDeemphasis {
         }
         net.z = z;
         net.q = q;
+        self.half_rest = half_rest;
+        self.u = u;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::consts::FS_RF;
+    use super::*;
+
+    fn test_signal(n: usize) -> Vec<f32> {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        (0..n)
+            .map(|i| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let noise = (seed >> 11) as f64 / (1u64 << 53) as f64 * 4.0 - 2.0;
+                let t = i as f64 / FS_RF;
+                let step = if (t * 1.0e5).floor() as i64 % 2 == 0 { -20.0 } else { 95.0 };
+                (step + 15.0 * (2.0 * PI * 600.0e3 * t).sin() + 4.0 * (2.0 * PI * 2.0e6 * t).sin() + noise) as f32
+            })
+            .collect()
+    }
+
+    fn assert_bits_eq(a: &[f32], b: &[f32], label: &str) {
+        assert_eq!(a.len(), b.len(), "{label}: length mismatch");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "{label}: sample {i} differs ({x} vs {y})");
+        }
+    }
+
+    #[test]
+    fn sub_emphasis_stream_matches_whole_bit_for_bit() {
+        let src = test_signal(10_000);
+        for (name, p) in [("lp", LP_FIGURES), ("ep", EP_FIGURES)] {
+            for settled in [false, true] {
+                let mut whole_pre = src.clone();
+                let mut pre_whole = SubPreemphasis::new(&p, FS_RF);
+                if settled {
+                    pre_whole.settle(src[0] as f64);
+                }
+                pre_whole.process(&mut whole_pre);
+
+                let mut whole_de = src.clone();
+                let mut de_whole = SubDeemphasis::new(&p, FS_RF);
+                if settled {
+                    de_whole.settle(src[0] as f64);
+                }
+                de_whole.process(&mut whole_de);
+
+                for chunk in [1usize, 7, 4096] {
+                    let mut got_pre = src.clone();
+                    let mut pre = SubPreemphasis::new(&p, FS_RF);
+                    if settled {
+                        pre.settle(src[0] as f64);
+                    }
+                    for part in got_pre.chunks_mut(chunk) {
+                        pre.process(part);
+                    }
+                    assert_bits_eq(&got_pre, &whole_pre, &format!("pre {name} settled={settled} chunk={chunk}"));
+
+                    let mut got_de = src.clone();
+                    let mut de = SubDeemphasis::new(&p, FS_RF);
+                    if settled {
+                        de.settle(src[0] as f64);
+                    }
+                    for part in got_de.chunks_mut(chunk) {
+                        de.process(part);
+                    }
+                    assert_bits_eq(&got_de, &whole_de, &format!("de {name} settled={settled} chunk={chunk}"));
+                }
+            }
+        }
     }
 }

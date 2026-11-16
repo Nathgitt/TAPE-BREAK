@@ -16,6 +16,24 @@ use serde::{Deserialize, Serialize};
 /// Nominal discriminator delay assumed by the downstream scaling (samples).
 pub const DEMOD_DELAY_NOMINAL: f64 = 3.0;
 
+/// RF samples processed per piece by the streaming deck: a multiple of `OS` around
+/// 16 000 so that a piece's intermediate buffers stay in the second-level cache.
+const DECK_PIECE_RF: usize = 6 * RF_PER_LINE;
+
+/// Number of equalised samples used to initialise the AGC.
+const AGC_INIT_RF: usize = 4000;
+
+/// First piece size: long enough for both the AGC start-up mean and the coupling
+/// high-pass settling mean (`min(n, RF_PER_LINE)` de-emphasised samples).
+const DECK_STARTUP_RF: usize = if AGC_INIT_RF > RF_PER_LINE {
+    AGC_INIT_RF
+} else {
+    RF_PER_LINE
+};
+
+/// Baseband FIR outputs computed side by side in the unclamped interior.
+const FIR_OUTPUT_BLOCK: usize = 16;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeckParams {
@@ -164,169 +182,646 @@ pub fn supply_disturbance(s: &SupplyParams, g: i64) -> (f32, f32) {
     (add as f32, gain as f32)
 }
 
+/// Streaming playback chain: carries filter, detector and delay state across
+/// short pieces of RF so intermediate buffers stay in the second-level cache.
+struct DeckStream<'a> {
+    p: &'a DeckParams,
+    g0: i64,
+    n: usize,
+    eq: Vec<Biquad>,
+    gain: f32,
+    reference: f32,
+    agc_alpha: f32,
+    agc_gmin: f32,
+    agc_gmax: f32,
+    agc_avg: f32,
+    startup_done: bool,
+    doc_decay: f32,
+    doc_trip: f32,
+    doc_rel: f32,
+    doc_rec: f32,
+    doc_env: f32,
+    doc_active: bool,
+    doc_hold: usize,
+    doc_line: Vec<f32>,
+    doc_pos: usize,
+    rf_idx: usize,
+    cu_samples: [f32; OS],
+    cu_phase: usize,
+    doc_group: u8,
+    clpf: Cascade,
+    fm_hp: Cascade,
+    disc: DiscStream,
+    lpf: Cascade,
+    tau: f64,
+    de: Biquad,
+    sub_de: Option<SubDeemphasis>,
+    y_settled: bool,
+    cpl: Biquad,
+    cpl_settled: bool,
+    mid: f32,
+    y_phase: usize,
+    pending_lb: f32,
+    fir: FirStream,
+    sh: Option<Biquad>,
+    have_supply: bool,
+    dc_error: f32,
+    out_k: usize,
+    finished: bool,
+    x_buf: Vec<f32>,
+    prod_buf: Vec<f32>,
+    lb_buf: Vec<f32>,
+    fir_buf: Vec<f32>,
+}
+
+impl<'a> DeckStream<'a> {
+    fn new(p: &'a DeckParams, g0: i64, n: usize) -> Self {
+        let eq: Vec<Biquad> = p
+            .eq_peaks
+            .iter()
+            .map(|&(f, q, g)| Biquad::peaking(f, q, g, FS_RF))
+            .collect();
+        let gain = p.fm_gain as f32;
+        let reference = if p.agc_enabled {
+            p.agc_target as f32
+        } else {
+            1.0
+        };
+        let agc_alpha = (1.0 - (-1.0 / (p.agc_ms * 1e-3 * FS_RF)).exp()) as f32;
+        let (agc_gmin, agc_gmax) = (0.25f32, p.agc_max_gain as f32);
+        let doc_decay = (-1.0 / (0.35e-6 * FS_RF)).exp() as f32;
+        let (doc_trip, doc_rel) = (
+            p.doc_trip as f32 * reference,
+            p.doc_release as f32 * reference,
+        );
+        let doc_rec = p.doc_recirculation as f32;
+        let doc_line = if p.doc_enabled {
+            vec![0.0f32; RF_PER_LINE]
+        } else {
+            Vec::new()
+        };
+        let clpf = butter_lp(4, p.chroma_lpf_hz, FS_BB);
+        let fm_hp = butter_hp(4, p.fm_hpf_hz, FS_RF);
+        let disc = DiscStream::new(p.limiter_threshold as f32, p.demod_delay);
+        let mut lpf = butter_lp(p.demod_lpf_order, p.demod_lpf_hz, FS_RF);
+        // the discriminator idles at the sync-tip... settle on the 0 IRE level
+        lpf.settle(r_of_freq(F_SYNC_TIP - SYNC_IRE as f64 * HZ_PER_IRE) as f64);
+        let tau = DEMOD_DELAY_NOMINAL / FS_RF;
+        let t = PRE_EMPH_TAU * p.deemph_tau_scale;
+        let ratio = PRE_EMPH_RATIO * p.deemph_ratio_scale;
+        let de = Biquad::first_order_pz(ratio / t, 1.0 / t, FS_RF);
+        let sub_de = p
+            .sub_deemphasis
+            .as_ref()
+            .map(|se| SubDeemphasis::new(se, FS_RF));
+        let cpl = Biquad::one_pole_hp(p.coupling_hpf_hz, FS_RF);
+        let fir_taps = kaiser_lowpass(p.luma_lpf_hz, p.luma_lpf_transition_hz, 55.0, FS_BB);
+        let fir = FirStream::new(fir_taps);
+        let sh = if p.sharp_db != 0.0 {
+            Some(Biquad::peaking(p.sharp_freq, p.sharp_q, p.sharp_db, FS_BB))
+        } else {
+            None
+        };
+        let have_supply = p.supply.hum_ire != 0.0 || p.supply.smps_ire != 0.0;
+        let dc_error = p.dc_error_ire as f32;
+        let piece_cap = DECK_PIECE_RF.max(DECK_STARTUP_RF);
+        let bb_cap = piece_cap / OS + 4;
+        Self {
+            p,
+            g0,
+            n,
+            eq,
+            gain,
+            reference,
+            agc_alpha,
+            agc_gmin,
+            agc_gmax,
+            agc_avg: 0.0,
+            startup_done: false,
+            doc_decay,
+            doc_trip,
+            doc_rel,
+            doc_rec,
+            doc_env: reference,
+            doc_active: false,
+            doc_hold: 0,
+            doc_line,
+            doc_pos: 0,
+            rf_idx: 0,
+            cu_samples: [0.0; OS],
+            cu_phase: 0,
+            doc_group: 0,
+            clpf,
+            fm_hp,
+            disc,
+            lpf,
+            tau,
+            de,
+            sub_de,
+            y_settled: false,
+            cpl,
+            cpl_settled: false,
+            mid: 0.0,
+            y_phase: 0,
+            pending_lb: 0.0,
+            fir,
+            sh,
+            have_supply,
+            dc_error,
+            out_k: 0,
+            finished: false,
+            x_buf: Vec::with_capacity(piece_cap),
+            prod_buf: Vec::with_capacity(piece_cap + 4),
+            lb_buf: Vec::with_capacity(bb_cap),
+            fir_buf: Vec::with_capacity(bb_cap),
+        }
+    }
+
+    #[inline(always)]
+    fn step_agc_doc_cu(&mut self, mut v: f32, out: &mut SegmentOut) -> f32 {
+        if self.p.agc_enabled {
+            let a = v.abs();
+            let g = (self.reference / (self.agc_avg * std::f32::consts::FRAC_PI_2).max(1e-6))
+                .clamp(self.agc_gmin, self.agc_gmax);
+            self.agc_avg += self.agc_alpha * (a - self.agc_avg);
+            v *= g;
+        }
+        let mut doc_flag = 0u8;
+        if self.p.doc_enabled {
+            self.doc_env = v.abs().max(self.doc_env * self.doc_decay);
+            if !self.doc_active && self.doc_env < self.doc_trip {
+                self.doc_active = true;
+            } else if self.doc_active && self.doc_env > self.doc_rel {
+                if self.doc_hold == 0 {
+                    self.doc_hold = 6;
+                }
+                self.doc_hold -= 1;
+                if self.doc_hold == 0 {
+                    self.doc_active = false;
+                }
+            } else if self.doc_active {
+                self.doc_hold = 0;
+            }
+            if self.doc_active && self.rf_idx >= RF_PER_LINE {
+                v = self.doc_line[self.doc_pos] * self.doc_rec;
+                doc_flag = 1;
+            }
+            self.doc_line[self.doc_pos] = v;
+            self.doc_pos += 1;
+            if self.doc_pos == RF_PER_LINE {
+                self.doc_pos = 0;
+            }
+        }
+        self.rf_idx += 1;
+
+        self.cu_samples[self.cu_phase] = v;
+        self.doc_group |= doc_flag;
+        self.cu_phase += 1;
+        if self.cu_phase == OS {
+            self.cu_phase = 0;
+            let raw = (self.cu_samples[0] + self.cu_samples[1] + self.cu_samples[2]) / 3.0;
+            let filtered = self.clpf.tick(raw as f64) as f32;
+            let d = if self.doc_group != 0 { 1 } else { 0 };
+            out.cunder.push(if d == 1 { 0.0 } else { filtered });
+            out.dropout.push(d);
+            self.doc_group = 0;
+        }
+        v
+    }
+
+    fn push(&mut self, piece: &[f32], out: &mut SegmentOut) {
+        if piece.is_empty() {
+            return;
+        }
+        self.x_buf.clear();
+        if !self.startup_done {
+            self.startup_done = true;
+            // First piece holds at least `min(n, DECK_STARTUP_RF)` samples so both the
+            // AGC mean and `mid` (for settling `cpl` and `sh`) are known before moving on.
+            for &sample in piece {
+                let mut v = sample as f64;
+                for b in &mut self.eq {
+                    v = b.tick(v) as f32 as f64;
+                }
+                self.x_buf.push(v as f32 * self.gain);
+            }
+            if self.p.agc_enabled {
+                let k = self.n.min(AGC_INIT_RF);
+                self.agc_avg = self.x_buf[..k].iter().map(|v| v.abs()).sum::<f32>() / k as f32;
+            }
+            for i in 0..self.x_buf.len() {
+                let v = self.step_agc_doc_cu(self.x_buf[i], out);
+                self.x_buf[i] = self.fm_hp.tick(v as f64) as f32;
+            }
+        } else {
+            for &sample in piece {
+                let mut v = sample as f64;
+                for b in &mut self.eq {
+                    v = b.tick(v) as f32 as f64;
+                }
+                let v = self.step_agc_doc_cu(v as f32 * self.gain, out);
+                self.x_buf.push(self.fm_hp.tick(v as f64) as f32);
+            }
+        }
+
+        self.prod_buf.clear();
+        self.disc.push(&self.x_buf, &mut self.prod_buf);
+        if self.rf_idx == self.n {
+            // Short inputs (`n <= DECK_STARTUP_RF`) need the tail of `y` before `mid` can be settled.
+            self.disc.finish(&mut self.prod_buf);
+            self.finished = true;
+        }
+        self.process_prod(out, self.finished);
+    }
+
+    fn process_prod(&mut self, out: &mut SegmentOut, at_end: bool) {
+        if !self.prod_buf.is_empty() {
+            for (i, v) in self.prod_buf.iter_mut().enumerate() {
+                let lp = self.lpf.tick(*v as f64) as f32;
+                let f = (1.0 - lp as f64) / (4.0 * self.tau);
+                let y = ((f - F_SYNC_TIP) / HZ_PER_IRE + SYNC_IRE as f64) as f32;
+                if !self.y_settled && i == 0 {
+                    self.de.settle(y as f64);
+                }
+                *v = self.de.tick(y as f64) as f32;
+            }
+            if let Some(sub) = &mut self.sub_de {
+                if !self.y_settled {
+                    sub.settle(self.prod_buf[0] as f64);
+                }
+                sub.process(&mut self.prod_buf);
+            }
+            self.y_settled = true;
+
+            if !self.cpl_settled {
+                let m = self.n.min(RF_PER_LINE);
+                let mid = self.prod_buf[..m].iter().sum::<f32>() / m as f32;
+                self.cpl.settle(mid as f64);
+                if let Some(sh) = &mut self.sh {
+                    sh.settle(mid as f64);
+                }
+                self.mid = mid;
+                self.cpl_settled = true;
+            }
+
+            self.lb_buf.clear();
+            for &y in &self.prod_buf {
+                let v = (self.cpl.tick(y as f64) as f32) + self.mid;
+                if self.y_phase == 1 {
+                    self.pending_lb = v;
+                } else if self.y_phase == OS - 1 {
+                    self.lb_buf.push(self.pending_lb);
+                }
+                self.y_phase += 1;
+                if self.y_phase == OS {
+                    self.y_phase = 0;
+                }
+            }
+        } else {
+            self.lb_buf.clear();
+        }
+
+        self.fir_buf.clear();
+        self.fir.push(&self.lb_buf, &mut self.fir_buf);
+        if at_end {
+            self.fir.finish(&mut self.fir_buf);
+        }
+
+        for &v in &self.fir_buf {
+            let mut v = v;
+            if let Some(sh) = &mut self.sh {
+                v = sh.tick(v as f64) as f32;
+            }
+            if self.have_supply {
+                let (add, gm) =
+                    supply_disturbance(&self.p.supply, self.g0 + (OS * self.out_k + 1) as i64);
+                v = v * (1.0 + gm) + add;
+            }
+            out.luma.push(v + self.dc_error);
+            self.out_k += 1;
+        }
+    }
+
+    fn finish(mut self, out: &mut SegmentOut) {
+        if !self.finished {
+            self.finished = true;
+            self.prod_buf.clear();
+            self.disc.finish(&mut self.prod_buf);
+            self.process_prod(out, true);
+        }
+    }
+}
+
 /// Process one playback segment. `rf` is the head-switched RF (after head
 /// amplifiers); `g0` its global RF index. The output covers the same span.
 pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
     let n = rf.len();
-    let mut x: Vec<f32> = rf.to_vec();
-    let mut eq: Vec<Biquad> = p
-        .eq_peaks
-        .iter()
-        .map(|&(f, q, g)| Biquad::peaking(f, q, g, FS_RF))
-        .collect();
-    let gain = p.fm_gain as f32;
-    let reference = if p.agc_enabled {
-        p.agc_target as f32
-    } else {
-        1.0
-    };
-    let k = n.min(4000);
-    let mut avg = 0.0f32;
-    for i in 0..k {
-        let mut v = x[i] as f64;
-        for b in &mut eq {
-            v = b.tick(v) as f32 as f64;
-        }
-        x[i] = v as f32 * gain;
-    }
-    if p.agc_enabled {
-        avg = x[..k].iter().map(|v| v.abs()).sum::<f32>() / k as f32;
-    }
-    let alpha = (1.0 - (-1.0 / (p.agc_ms * 1e-3 * FS_RF)).exp()) as f32;
-    let (gmin, gmax) = (0.25f32, p.agc_max_gain as f32);
-    let mut fm_hp = butter_hp(4, p.fm_hpf_hz, FS_RF);
-    let mut env = reference;
-    let mut active = false;
-    let mut hold = 0usize;
-    let decay = (-1.0 / (0.35e-6 * FS_RF)).exp() as f32;
-    let (trip, rel) = (
-        p.doc_trip as f32 * reference,
-        p.doc_release as f32 * reference,
-    );
-    let rec = p.doc_recirculation as f32;
-    let mut doc = vec![0u8; n];
+    assert!(n > 0);
     let nb = n / OS;
-    let mut cu = Vec::with_capacity(nb);
-    let mut fmx = Vec::with_capacity(n);
-    let mut cu_samples = [0.0f32; 3];
-    for i in 0..n {
-        if i >= k {
-            let mut v = x[i] as f64;
-            for b in &mut eq {
-                v = b.tick(v) as f32 as f64;
+    let mut out = SegmentOut {
+        luma: Vec::with_capacity(nb),
+        cunder: Vec::with_capacity(nb),
+        dropout: Vec::with_capacity(nb),
+    };
+    let mut stream = DeckStream::new(p, g0, n);
+    let head = n.min(DECK_STARTUP_RF);
+    stream.push(&rf[..head], &mut out);
+    for piece in rf[head..].chunks(DECK_PIECE_RF) {
+        stream.push(piece, &mut out);
+    }
+    stream.finish(&mut out);
+    out
+}
+
+/// Resumable centred FIR filter matching [`dsp::fir_centred`] bit-for-bit.
+struct FirStream {
+    h: Vec<f32>,
+    half: usize,
+    buf: Vec<f32>,
+    base: usize,
+    out_i: usize,
+}
+
+impl FirStream {
+    fn new(h: Vec<f32>) -> Self {
+        let half = h.len() / 2;
+        let cap = h.len() + DECK_PIECE_RF / OS + 8;
+        Self {
+            h,
+            half,
+            buf: Vec::with_capacity(cap),
+            base: 0,
+            out_i: 0,
+        }
+    }
+
+    fn push(&mut self, chunk: &[f32], out: &mut Vec<f32>) {
+        if chunk.is_empty() {
+            return;
+        }
+        self.buf.extend_from_slice(chunk);
+        if self.h.is_empty() {
+            out.resize(out.len() + chunk.len(), 0.0);
+            self.out_i += chunk.len();
+            self.buf.clear();
+            self.base += chunk.len();
+            return;
+        }
+        let m = self.h.len();
+        let total_seen = self.base + self.buf.len();
+        // Output `i` reads up to `i + m - 1 - half`; once below `total_seen`, it never clamps right.
+        let ready_end = total_seen.saturating_sub(m - self.half - 1);
+        let left_end = self.half.min(ready_end);
+        while self.out_i < left_end {
+            let i = self.out_i;
+            let mut acc = 0.0f32;
+            for (k, &c) in self.h.iter().enumerate() {
+                let j = (i + k).saturating_sub(self.half);
+                acc += c * self.buf[j - self.base];
             }
-            x[i] = v as f32 * gain;
+            out.push(acc);
+            self.out_i += 1;
         }
-        if p.agc_enabled {
-            let a = x[i].abs();
-            let g = (reference / (avg * std::f32::consts::FRAC_PI_2).max(1e-6)).clamp(gmin, gmax);
-            avg += alpha * (a - avg);
-            x[i] *= g;
-        }
-        if p.doc_enabled {
-            env = (x[i].abs()).max(env * decay);
-            if !active && env < trip {
-                active = true;
-            } else if active && env > rel {
-                if hold == 0 {
-                    hold = 6;
+        while self.out_i < ready_end {
+            let count = FIR_OUTPUT_BLOCK.min(ready_end - self.out_i);
+            let mut sums = [0.0f32; FIR_OUTPUT_BLOCK];
+            let start = self.out_i - self.half - self.base;
+            for (k, &c) in self.h.iter().enumerate() {
+                let row = &self.buf[start + k..start + k + count];
+                for j in 0..count {
+                    sums[j] += c * row[j];
                 }
-                hold -= 1;
-                if hold == 0 {
-                    active = false;
+            }
+            out.extend_from_slice(&sums[..count]);
+            self.out_i += count;
+        }
+        let keep_from = self.out_i.saturating_sub(self.half);
+        let drop = keep_from.saturating_sub(self.base);
+        if drop > 0 {
+            self.buf.drain(..drop);
+            self.base += drop;
+        }
+    }
+
+    fn finish(&mut self, out: &mut Vec<f32>) {
+        if self.h.is_empty() {
+            return;
+        }
+        let nb = self.base + self.buf.len();
+        if nb == 0 {
+            return;
+        }
+        for i in self.out_i..nb {
+            let mut acc = 0.0f32;
+            for (k, &c) in self.h.iter().enumerate() {
+                let j = (i + k).saturating_sub(self.half).min(nb - 1);
+                acc += c * self.buf[j - self.base];
+            }
+            out.push(acc);
+        }
+        self.out_i = nb;
+    }
+}
+
+/// Resumable hard limiter and delay-line FM discriminator.
+///
+/// Mirrors [`discriminate`] sample-for-sample across arbitrary input pieces
+/// without materialising a full-field `4 * n` fine grid.
+struct DiscStream {
+    th: f32,
+    delay: f64,
+    total_samples: usize,
+    state: i8,
+    prev_x: f32,
+    edges: Vec<f64>,
+    edge_i: usize,
+    edge_j: usize,
+    sign: f32,
+    t_prev: f64,
+    acc: f64,
+    cur: usize,
+    fine_ring: [f32; 8],
+    out_k: usize,
+}
+
+impl DiscStream {
+    const SUB: usize = 4;
+    const W: f64 = 1.0 / Self::SUB as f64;
+    const TRI: [f32; 7] = [1.0, 2.0, 3.0, 4.0, 3.0, 2.0, 1.0];
+
+    fn new(th: f32, delay: f64) -> Self {
+        Self {
+            th,
+            delay,
+            total_samples: 0,
+            state: 1,
+            prev_x: 0.0,
+            edges: Vec::new(),
+            edge_i: 0,
+            edge_j: 0,
+            sign: 1.0, // steady-state assumption before the first edge
+            t_prev: 0.0,
+            acc: 0.0,
+            cur: 0,
+            fine_ring: [0.0; 8],
+            out_k: 0,
+        }
+    }
+
+    fn next_edge(&self) -> Option<(f64, bool)> {
+        let a = self.edges.get(self.edge_i).copied();
+        let b = self.edges.get(self.edge_j).map(|e| e + self.delay);
+        match (a, b) {
+            (Some(a), Some(b)) => Some(if a <= b { (a, true) } else { (b, false) }),
+            (Some(a), None) => Some((a, true)),
+            (None, Some(b)) => Some((b, false)),
+            (None, None) => None,
+        }
+    }
+
+    #[inline]
+    fn push_fine(&mut self, val: f32, out: &mut Vec<f32>) {
+        let c = self.cur;
+        self.fine_ring[c & 7] = val;
+        self.cur = c + 1;
+        // Output `k` uses fine cells `4k - 1 ..= 4k + 5`; emit it as soon as `4k + 5` is ready.
+        if c >= 5 && (c - 5) & 3 == 0 {
+            let k = (c - 5) >> 2;
+            let centre = k * Self::SUB + Self::SUB / 2;
+            let mut v = 0.0f32;
+            for (m, &coeff) in Self::TRI.iter().enumerate() {
+                let idx = (centre + m) as i64 - 3;
+                if idx >= 0 {
+                    v += coeff * self.fine_ring[(idx as usize) & 7];
                 }
-            } else if active {
-                hold = 0;
             }
-            if active && i >= RF_PER_LINE {
-                x[i] = x[i - RF_PER_LINE] * rec;
-                doc[i] = 1;
+            out.push(v / 16.0);
+            self.out_k = k + 1;
+        }
+    }
+
+    fn push(&mut self, chunk: &[f32], out: &mut Vec<f32>) {
+        if chunk.is_empty() {
+            return;
+        }
+        let mut idx = 0usize;
+        if self.total_samples == 0 {
+            self.state = if chunk[0] >= 0.0 { 1 } else { -1 };
+            self.prev_x = chunk[0];
+            self.total_samples = 1;
+            idx = 1;
+        }
+        let th = self.th;
+        let mut i = self.total_samples;
+        for &b in &chunk[idx..] {
+            let a = self.prev_x;
+            if self.state < 0 && b > th {
+                self.edges.push((i - 1) as f64 + ((th - a) / (b - a)) as f64);
+                self.state = 1;
+            } else if self.state > 0 && b < -th {
+                self.edges.push((i - 1) as f64 + ((-th - a) / (b - a)) as f64);
+                self.state = -1;
+            }
+            self.prev_x = b;
+            i += 1;
+        }
+        self.total_samples = i;
+
+        // Every future direct edge is >= `N - 1` (delayed >= `N - 1 + delay`). Integrate up to
+        // edges strictly below that horizon, then only over whole cells ending at or before it.
+        let horizon = (self.total_samples - 1) as f64 + self.delay.min(0.0);
+        loop {
+            let Some((te, first)) = self.next_edge() else {
+                break;
+            };
+            if te >= horizon {
+                break;
+            }
+            let mut t = self.t_prev;
+            while t < te {
+                let end = ((self.cur + 1) as f64 * Self::W).min(te);
+                self.acc += self.sign as f64 * (end - t);
+                t = end;
+                if t >= (self.cur + 1) as f64 * Self::W {
+                    let val = (self.acc / Self::W) as f32;
+                    self.acc = 0.0;
+                    self.push_fine(val, out);
+                }
+            }
+            self.t_prev = te;
+            self.sign = -self.sign;
+            if first {
+                self.edge_i += 1;
+            } else {
+                self.edge_j += 1;
             }
         }
-        cu_samples[i % OS] = x[i];
-        if i % OS == OS - 1 {
-            cu.push((cu_samples[0] + cu_samples[1] + cu_samples[2]) / 3.0);
+        while (self.cur + 1) as f64 * Self::W <= horizon {
+            let end = (self.cur + 1) as f64 * Self::W;
+            self.acc += self.sign as f64 * (end - self.t_prev);
+            self.t_prev = end;
+            let val = (self.acc / Self::W) as f32;
+            self.acc = 0.0;
+            self.push_fine(val, out);
         }
-        fmx.push(fm_hp.tick(x[i] as f64) as f32);
-    }
-    let mut clpf = butter_lp(4, p.chroma_lpf_hz, FS_BB);
-    clpf.process(&mut cu);
-    let mut dropout = vec![0u8; nb];
-    for k in 0..nb {
-        if doc[OS * k] | doc[OS * k + 1] | doc[OS * k + 2] != 0 {
-            dropout[k] = 1;
-        }
-    }
-    // spread the kill a little (filter memory)
-    for k in 0..nb {
-        if dropout[k] == 1 {
-            cu[k] = 0.0;
+
+        let consumed = self.edge_i.min(self.edge_j);
+        if consumed > 0 {
+            self.edges.drain(..consumed);
+            self.edge_i -= consumed;
+            self.edge_j -= consumed;
         }
     }
 
-    let mut prod = discriminate(&fmx, p.limiter_threshold as f32, p.demod_delay);
-    let mut lpf = butter_lp(p.demod_lpf_order, p.demod_lpf_hz, FS_RF);
-    // the discriminator idles at the sync-tip... settle on the 0 IRE level
-    lpf.settle(r_of_freq(F_SYNC_TIP - SYNC_IRE as f64 * HZ_PER_IRE) as f64);
-
-    // product -> frequency -> IRE using the *nominal* design delay
-    let tau = DEMOD_DELAY_NOMINAL / FS_RF;
-    let t = PRE_EMPH_TAU * p.deemph_tau_scale;
-    let ratio = PRE_EMPH_RATIO * p.deemph_ratio_scale;
-    let mut de = Biquad::first_order_pz(ratio / t, 1.0 / t, FS_RF);
-    let mut y = vec![0.0f32; n];
-    for i in 0..n {
-        prod[i] = lpf.tick(prod[i] as f64) as f32;
-        let f = (1.0 - prod[i] as f64) / (4.0 * tau);
-        y[i] = ((f - F_SYNC_TIP) / HZ_PER_IRE + SYNC_IRE as f64) as f32;
-        if i == 0 {
-            de.settle(y[0] as f64);
+    fn finish(&mut self, out: &mut Vec<f32>) {
+        let n = self.total_samples;
+        if n == 0 {
+            return;
         }
-        y[i] = de.tick(y[i] as f64) as f32;
-    }
-
-    // ---- de-emphasis (inverse of the record emphasis, with component drift), sub-deemphasis ----
-    // LP and EP: undo the sub-preemphasis, which was applied before the main emphasis
-    if let Some(se) = &p.sub_deemphasis {
-        let mut sub = SubDeemphasis::new(se, FS_RF);
-        sub.settle(y[0] as f64);
-        sub.process(&mut y);
-    }
-
-    // ---- coupling capacitor (high-pass), luma low-pass, aperture corrector ----
-    let mut cpl = Biquad::one_pole_hp(p.coupling_hpf_hz, FS_RF);
-    let mid = y[..y.len().min(RF_PER_LINE)].iter().sum::<f32>() / y.len().min(RF_PER_LINE) as f32;
-    cpl.settle(mid as f64);
-    // DC is restored by the TV clamp, so the high-pass only needs to shape tilt:
-    for v in y.iter_mut() {
-        *v = (cpl.tick(*v as f64) as f32) + mid;
-    }
-    // decimate to baseband, then the video low-pass (zero-phase FIR) and the
-    // aperture corrector
-    let mut lb: Vec<f32> = (0..nb).map(|k| y[OS * k + 1]).collect();
-    let fir = kaiser_lowpass(p.luma_lpf_hz, p.luma_lpf_transition_hz, 55.0, FS_BB);
-    lb = fir_centred(&lb, &fir);
-    if p.sharp_db != 0.0 {
-        let mut sh = Biquad::peaking(p.sharp_freq, p.sharp_q, p.sharp_db, FS_BB);
-        sh.settle(mid as f64);
-        sh.process(&mut lb);
-    }
-
-    // ---- supply disturbances and detuning ----
-    let have_supply = p.supply.hum_ire != 0.0 || p.supply.smps_ire != 0.0;
-    let mut luma = Vec::with_capacity(nb);
-    for k in 0..nb {
-        let mut v = lb[k];
-        if have_supply {
-            let (add, gm) = supply_disturbance(&p.supply, g0 + (OS * k + 1) as i64);
-            v = v * (1.0 + gm) + add;
+        let end_t = n as f64;
+        let nb = n * Self::SUB;
+        loop {
+            let (te, first) = self.next_edge().unwrap_or((end_t, true));
+            let te = te.min(end_t);
+            let mut t = self.t_prev;
+            while t < te {
+                let end = ((self.cur + 1) as f64 * Self::W).min(te);
+                self.acc += self.sign as f64 * (end - t);
+                t = end;
+                if t >= (self.cur + 1) as f64 * Self::W {
+                    if self.cur < nb {
+                        let val = (self.acc / Self::W) as f32;
+                        self.push_fine(val, out);
+                    } else {
+                        self.cur += 1;
+                    }
+                    self.acc = 0.0;
+                }
+            }
+            self.t_prev = te;
+            if te >= end_t {
+                break;
+            }
+            self.sign = -self.sign;
+            if first {
+                self.edge_i += 1;
+            } else {
+                self.edge_j += 1;
+            }
         }
-        luma.push(v + p.dc_error_ire as f32);
-    }
-    SegmentOut {
-        luma,
-        cunder: cu,
-        dropout,
+        while self.out_k < n {
+            let k = self.out_k;
+            let centre = k * Self::SUB + Self::SUB / 2;
+            let mut v = 0.0f32;
+            for (m, &coeff) in Self::TRI.iter().enumerate() {
+                let idx = (centre + m) as i64 - 3;
+                if idx >= 0 && (idx as usize) < nb {
+                    v += coeff * self.fine_ring[(idx as usize) & 7];
+                }
+            }
+            out.push(v / 16.0);
+            self.out_k = k + 1;
+        }
     }
 }
 
@@ -341,82 +836,11 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
 /// at 3.9 MHz) that clipping the sampled waveform would add, and has no aliased
 /// limiter harmonics. For an ideal square wave the output is `1 - 4 f tau`.
 pub fn discriminate(x: &[f32], th: f32, delay: f64) -> Vec<f32> {
-    let n = x.len();
-    let mut edges: Vec<f64> = Vec::with_capacity(n / 4);
-    let mut state: i8 = if x[0] >= 0.0 { 1 } else { -1 };
-    for i in 1..n {
-        let (a, b) = (x[i - 1], x[i]);
-        if state < 0 && b > th {
-            edges.push((i - 1) as f64 + ((th - a) / (b - a)) as f64);
-            state = 1;
-        } else if state > 0 && b < -th {
-            edges.push((i - 1) as f64 + ((-th - a) / (b - a)) as f64);
-            state = -1;
-        }
-    }
-    // merge the edges of the wave and of its delayed copy (both sorted) and
-    // integrate the piecewise-constant product on a 4x finer grid
-    const SUB: usize = 4;
-    let nb = n * SUB;
-    let mut fine = vec![0.0f32; nb];
-    let (mut i, mut j) = (0usize, 0usize);
-    let mut sign = 1.0f32; // steady-state assumption before the first edge
-    let mut t_prev = 0.0f64;
-    let mut acc = 0.0f64;
-    let mut cur = 0usize;
-    let w = 1.0 / SUB as f64;
-    let next_edge = |i: usize, j: usize| -> Option<(f64, bool)> {
-        let a = edges.get(i).copied();
-        let b = edges.get(j).map(|e| e + delay);
-        match (a, b) {
-            (Some(a), Some(b)) => Some(if a <= b { (a, true) } else { (b, false) }),
-            (Some(a), None) => Some((a, true)),
-            (None, Some(b)) => Some((b, false)),
-            (None, None) => None,
-        }
-    };
-    loop {
-        let (te, first) = next_edge(i, j).unwrap_or((n as f64, true));
-        let te = te.min(n as f64);
-        let mut t = t_prev;
-        while t < te {
-            let end = ((cur + 1) as f64 * w).min(te);
-            acc += sign as f64 * (end - t);
-            t = end;
-            if t >= (cur + 1) as f64 * w {
-                if cur < nb {
-                    fine[cur] = (acc / w) as f32;
-                }
-                acc = 0.0;
-                cur += 1;
-            }
-        }
-        t_prev = te;
-        if te >= n as f64 {
-            break;
-        }
-        sign = -sign;
-        if first {
-            i += 1
-        } else {
-            j += 1
-        }
-    }
-    // anti-alias with a two-sample-wide triangle (sinc^2 response, nulls at
-    // multiples of fs), then decimate by SUB
-    let tri = [1.0f32, 2.0, 3.0, 4.0, 3.0, 2.0, 1.0];
-    let mut out = vec![0.0f32; n];
-    for (k, o) in out.iter_mut().enumerate() {
-        let centre = k * SUB + SUB / 2; // box of the original sample is centred here
-        let mut v = 0.0;
-        for (m, &c) in tri.iter().enumerate() {
-            let idx = (centre + m) as i64 - 3;
-            if idx >= 0 && (idx as usize) < nb {
-                v += c * fine[idx as usize];
-            }
-        }
-        *o = v / 16.0;
-    }
+    assert!(!x.is_empty());
+    let mut out = Vec::with_capacity(x.len());
+    let mut disc = DiscStream::new(th, delay);
+    disc.push(x, &mut out);
+    disc.finish(&mut out);
     out
 }
 
@@ -672,7 +1096,19 @@ mod tests {
                 ..Default::default()
             },
         ];
-        for n in [3_000, RF_PER_LINE * 3, 60_000] {
+        for n in [
+            3_000,
+            4_000,
+            4_001,
+            RF_PER_LINE * 3,
+            DECK_PIECE_RF - 3,
+            DECK_PIECE_RF,
+            DECK_PIECE_RF + 1,
+            DECK_PIECE_RF + 3,
+            2 * DECK_PIECE_RF + 4000,
+            60_000,
+            727_545,
+        ] {
             let rf = synthetic_rf(n);
             for p in &variants {
                 assert_segment_bits(
@@ -683,20 +1119,147 @@ mod tests {
         }
     }
 
+    fn discriminate_reference(x: &[f32], th: f32, delay: f64) -> Vec<f32> {
+        let n = x.len();
+        let mut edges: Vec<f64> = Vec::with_capacity(n / 4);
+        let mut state: i8 = if x[0] >= 0.0 { 1 } else { -1 };
+        for i in 1..n {
+            let (a, b) = (x[i - 1], x[i]);
+            if state < 0 && b > th {
+                edges.push((i - 1) as f64 + ((th - a) / (b - a)) as f64);
+                state = 1;
+            } else if state > 0 && b < -th {
+                edges.push((i - 1) as f64 + ((-th - a) / (b - a)) as f64);
+                state = -1;
+            }
+        }
+        const SUB: usize = 4;
+        let nb = n * SUB;
+        let mut fine = vec![0.0f32; nb];
+        let (mut i, mut j) = (0usize, 0usize);
+        let mut sign = 1.0f32;
+        let mut t_prev = 0.0f64;
+        let mut acc = 0.0f64;
+        let mut cur = 0usize;
+        let w = 1.0 / SUB as f64;
+        let next_edge = |i: usize, j: usize| -> Option<(f64, bool)> {
+            let a = edges.get(i).copied();
+            let b = edges.get(j).map(|e| e + delay);
+            match (a, b) {
+                (Some(a), Some(b)) => Some(if a <= b { (a, true) } else { (b, false) }),
+                (Some(a), None) => Some((a, true)),
+                (None, Some(b)) => Some((b, false)),
+                (None, None) => None,
+            }
+        };
+        loop {
+            let (te, first) = next_edge(i, j).unwrap_or((n as f64, true));
+            let te = te.min(n as f64);
+            let mut t = t_prev;
+            while t < te {
+                let end = ((cur + 1) as f64 * w).min(te);
+                acc += sign as f64 * (end - t);
+                t = end;
+                if t >= (cur + 1) as f64 * w {
+                    if cur < nb {
+                        fine[cur] = (acc / w) as f32;
+                    }
+                    acc = 0.0;
+                    cur += 1;
+                }
+            }
+            t_prev = te;
+            if te >= n as f64 {
+                break;
+            }
+            sign = -sign;
+            if first {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+        let tri = [1.0f32, 2.0, 3.0, 4.0, 3.0, 2.0, 1.0];
+        let mut out = vec![0.0f32; n];
+        for (k, o) in out.iter_mut().enumerate() {
+            let centre = k * SUB + SUB / 2;
+            let mut v = 0.0;
+            for (m, &c) in tri.iter().enumerate() {
+                let idx = (centre + m) as i64 - 3;
+                if idx >= 0 && (idx as usize) < nb {
+                    v += c * fine[idx as usize];
+                }
+            }
+            *o = v / 16.0;
+        }
+        out
+    }
+
+    #[test]
+    fn stream_discriminator_matches_reference_exactly() {
+        let mut x = synthetic_rf(40_000);
+        butter_hp(4, 1.8e6, FS_RF).process(&mut x);
+        for &(th, delay) in &[(0.03f32, 3.0f64), (0.0, 2.5), (0.05, 4.7)] {
+            for len in [1usize, 2, 7, 100, 40_000] {
+                let slice = &x[..len];
+                let want = discriminate_reference(slice, th, delay);
+                for chunk in [1usize, 5, 4096, len] {
+                    let mut stream = DiscStream::new(th, delay);
+                    let mut got = Vec::with_capacity(len);
+                    for part in slice.chunks(chunk) {
+                        stream.push(part, &mut got);
+                    }
+                    stream.finish(&mut got);
+                    assert_eq!(got.len(), want.len(), "th={th} delay={delay} len={len} chunk={chunk}");
+                    for (idx, (a, b)) in got.iter().zip(&want).enumerate() {
+                        assert_eq!(
+                            a.to_bits(),
+                            b.to_bits(),
+                            "th={th} delay={delay} len={len} chunk={chunk} idx={idx}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore]
     fn measure_fused_process_segment() {
+        use rayon::prelude::*;
+        use std::hint::black_box;
         use std::time::Instant;
+
         let rf = synthetic_rf(727_545);
         let p = DeckParams::default();
+        let threads = rayon::current_num_threads();
+
         let before = Instant::now();
-        let reference = process_segment_reference(&rf, &p, 0);
-        let before_elapsed = before.elapsed();
+        let reference = black_box(process_segment_reference(&rf, &p, 0));
+        let before_alone = before.elapsed();
+
         let after = Instant::now();
-        let fused = process_segment(&rf, &p, 0);
-        let after_elapsed = after.elapsed();
+        let fused = black_box(process_segment(&rf, &p, 0));
+        let after_alone = after.elapsed();
+
         assert_segment_bits(&fused, &reference);
-        eprintln!("reference: {before_elapsed:?}; fused: {after_elapsed:?}");
+
+        let before_par = Instant::now();
+        (0..threads).into_par_iter().for_each(|_| {
+            black_box(process_segment_reference(&rf, &p, 0));
+        });
+        let before_all_cores = before_par.elapsed();
+
+        let after_par = Instant::now();
+        (0..threads).into_par_iter().for_each(|_| {
+            black_box(process_segment(&rf, &p, 0));
+        });
+        let after_all_cores = after_par.elapsed();
+
+        eprintln!(
+            "alone: reference {before_alone:?}, stream {after_alone:?}; \
+             {threads} threads: reference {before_all_cores:?}, stream {after_all_cores:?}"
+        );
     }
 
     /// A pure FM carrier at a known frequency must demodulate to the matching
