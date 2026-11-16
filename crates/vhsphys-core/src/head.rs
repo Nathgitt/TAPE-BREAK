@@ -20,6 +20,11 @@ use std::f32::consts::PI as PI32;
 /// `STRIDE` RF samples and linearly interpolated.
 pub const STRIDE: usize = 16;
 
+/// Outer fraction of the pulse window half-width `r` tapered smoothly to zero at each edge
+/// (the outer quarter of the window), so a pulse's area and centre do not depend on where it
+/// lands between two samples.
+const TAPER: f32 = 0.25;
+
 #[derive(Clone)]
 pub struct Controls {
     /// Timebase displacement of the tape signal, RF samples (positive = later).
@@ -77,20 +82,25 @@ pub fn render_pulses(
         let tc = tt + Controls::at(&ctl.warp, tt) as f64;
         let h = (h0 + Controls::at(&ctl.dd, tt) as f64 / UM_PER_SAMPLE) as f32;
         let r = ((8.0 * h) as i64).clamp(r_min, r_max);
-        let i0 = tc.floor() as i64 - r;
+        // The pulse centre as a whole sample and a fraction, so the distance of each sample from it is
+        // exact however far along the track the pulse lies.
+        let tc_whole = tc.floor();
+        let tc_frac = (tc - tc_whole) as f32;
+        let tc_i = tc_whole as i64;
+        let i0 = tc_i - r;
         let c = amp * h / PI32;
         let h2 = h * h;
         let lo = i0.max(0);
         let hi = (i0 + 2 * r).min(n - 1);
         if lo <= hi {
-            let start = lo as usize;
-            let end = hi as usize + 1;
-            let tc_f32 = tc as f32;
-            // Track windows are below 2^24 samples, so i32 indices convert to f32 exactly.
-            for (j, sample) in out[start..end].iter_mut().enumerate() {
-                let index = (lo as i32 + j as i32) as f32;
-                let x = index - tc_f32;
-                *sample += c / (h2 + x * x);
+            let r_f = r as f32;
+            let inv_taper = 1.0 / (TAPER * r_f);
+            let first = (lo - tc_i) as i32;
+            for (j, sample) in out[lo as usize..=hi as usize].iter_mut().enumerate() {
+                let x = (first + j as i32) as f32 - tc_frac;
+                // weight 1 inside (1 - TAPER) r, falling smoothly to 0 at r: u clamps to 1 inside
+                let u = ((r_f - x.abs()) * inv_taper).clamp(0.0, 1.0);
+                *sample += c / (h2 + x * x) * (u * u * (3.0 - 2.0 * u));
             }
         }
     }
@@ -284,15 +294,21 @@ mod tests {
             let tc = tt + Controls::at(&ctl.warp, tt) as f64;
             let h = (h0 + Controls::at(&ctl.dd, tt) as f64 / UM_PER_SAMPLE) as f32;
             let r = ((8.0 * h) as i64).clamp(r_min, r_max);
-            let i0 = tc.floor() as i64 - r;
+            let tc_whole = tc.floor();
+            let tc_frac = (tc - tc_whole) as f32;
+            let tc_i = tc_whole as i64;
+            let i0 = tc_i - r;
             let c = amp * h / PI32;
             let h2 = h * h;
+            let r_f = r as f32;
+            let inv_taper = 1.0 / (TAPER * r_f);
             let lo = i0.max(0);
             let hi = (i0 + 2 * r).min(n - 1);
             let mut i = lo;
             while i <= hi {
-                let x = i as f32 - tc as f32;
-                out[i as usize] += c / (h2 + x * x);
+                let x = (i - tc_i) as i32 as f32 - tc_frac;
+                let u = ((r_f - x.abs()) * inv_taper).clamp(0.0, 1.0);
+                out[i as usize] += c / (h2 + x * x) * (u * u * (3.0 - 2.0 * u));
                 i += 1;
             }
         }

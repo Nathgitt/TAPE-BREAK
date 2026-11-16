@@ -206,6 +206,7 @@ struct DeckStream<'a> {
     doc_line: Vec<f32>,
     doc_pos: usize,
     rf_idx: usize,
+    cu_rf_lpf: Cascade,
     cu_samples: [f32; OS],
     cu_phase: usize,
     doc_group: u8,
@@ -260,6 +261,7 @@ impl<'a> DeckStream<'a> {
         } else {
             Vec::new()
         };
+        let cu_rf_lpf = butter_lp(4, p.chroma_lpf_hz, FS_RF);
         let clpf = butter_lp(4, p.chroma_lpf_hz, FS_BB);
         let fm_hp = butter_hp(4, p.fm_hpf_hz, FS_RF);
         let disc = DiscStream::new(p.limiter_threshold as f32, p.demod_delay);
@@ -308,6 +310,7 @@ impl<'a> DeckStream<'a> {
             doc_line,
             doc_pos: 0,
             rf_idx: 0,
+            cu_rf_lpf,
             cu_samples: [0.0; OS],
             cu_phase: 0,
             doc_group: 0,
@@ -374,7 +377,9 @@ impl<'a> DeckStream<'a> {
         }
         self.rf_idx += 1;
 
-        self.cu_samples[self.cu_phase] = v;
+        // Low-pass the colour-under tap at the RF rate before averaging onto the baseband grid,
+        // so FM carrier harmonics above the baseband Nyquist do not fold into the colour band.
+        self.cu_samples[self.cu_phase] = self.cu_rf_lpf.tick(v as f64) as f32;
         self.doc_group |= doc_flag;
         self.cu_phase += 1;
         if self.cu_phase == OS {
@@ -932,9 +937,11 @@ mod tests {
 
         // ---- colour-under branch: tapped before the limiter ----
         let nb = n / OS;
+        let mut cu_rf = x.clone();
+        butter_lp(4, p.chroma_lpf_hz, FS_RF).process(&mut cu_rf);
         let mut cu: Vec<f32> = (0..nb)
             .map(|k| {
-                let g = &x[OS * k..OS * (k + 1)];
+                let g = &cu_rf[OS * k..OS * (k + 1)];
                 let mut sum = g[0];
                 for v in &g[1..] {
                     sum += *v;

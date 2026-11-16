@@ -23,6 +23,9 @@ use std::sync::OnceLock;
 /// multiple of `OS`, so that the piece's buffers stay in the cache.
 const RECORD_PIECE_RF: usize = 3 * RF_PER_LINE;
 
+/// Newton iterations used to refine the Catmull-Rom crossing time of a magnetisation reversal.
+const NEWTON_STEPS: usize = 2;
+
 /// One magnetisation reversal on tape.
 #[derive(Clone, Copy, Debug)]
 pub struct Transition {
@@ -204,6 +207,31 @@ fn upsample_range(x: &[f32], k0: usize, k1: usize, out: &mut Vec<f32>) {
     }
 }
 
+/// Refine where the record current crosses `level` between `p1` and `p2` from the linear
+/// estimate, using the Catmull-Rom cubic through `p0..p3` = `i[n-2], i[n-1], i[n], i[n+1]`.
+#[inline]
+fn cubic_crossing(p0: f64, p1: f64, p2: f64, p3: f64, level: f64) -> f64 {
+    // Catmull-Rom cubic through p0..p3 = i[n-2], i[n-1], i[n], i[n+1] on [0, 1] from i[n-1] to i[n];
+    // solve cubic(x) = level for x by Newton's method from the straight-line estimate, in f64.
+    let a3 = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b3 = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c3 = -0.5 * p0 + 0.5 * p2;
+    let mut x = ((level - p1) / (p2 - p1)).clamp(0.0, 1.0);
+    for _ in 0..NEWTON_STEPS {
+        let f = ((a3 * x + b3) * x + c3) * x + p1 - level;
+        let d = (3.0 * a3 * x + 2.0 * b3) * x + c3;
+        if d.abs() < 1e-12 {
+            break;
+        }
+        let step = f / d;
+        x = (x - step).clamp(0.0, 1.0);
+        if step.abs() < 1e-9 {
+            break;
+        }
+    }
+    x
+}
+
 /// Run the record chain for one track and return the magnetisation reversals.
 ///
 /// `g0` is the global RF index of the first window sample (multiple of `OS`);
@@ -290,6 +318,9 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
     let mut out: Vec<Transition> = Vec::with_capacity(n_rf / 5);
     let mut state: i8 = 0;
     let mut prev_i = 0.0f32;
+    let mut prev2_i = 0.0f32;
+    // A crossing found between n-1 and n waits one sample for i[n+1] so the cubic has four points.
+    let mut pending: Option<(usize, f64, f64, f64, f64, i8)> = None;
     let mut line = g0.div_euclid(RF_PER_LINE as i64);
     let mut r = g0.rem_euclid(RF_PER_LINE as i64) as usize;
     let (mut rc, mut rs) = line_rotation(parity, line);
@@ -340,19 +371,23 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
             let (cr, ci) = (tc[r] * rc - ts[r] * rs, tc[r] * rs + ts[r] * rc);
             let u = a * (cu_p[j] * cr - cv_p[j] * ci);
             let i_rec = fm_p[j] + u + p.drive_offset as f32;
+            if let Some((cn, p0, p1, p2, level, s)) = pending.take() {
+                let t = (cn - 1) as f64 + cubic_crossing(p0, p1, p2, i_rec as f64, level);
+                out.push(Transition { t, s });
+            }
             if n == 0 {
                 state = if fm_p[j] > 0.0 { 1 } else { -1 };
                 prev_i = i_rec;
+                prev2_i = i_rec;
             } else {
                 if state < 0 && i_rec > thr {
-                    let t = (n - 1) as f64 + ((thr - prev_i) / (i_rec - prev_i)) as f64;
-                    out.push(Transition { t, s: 1 });
+                    pending = Some((n, prev2_i as f64, prev_i as f64, i_rec as f64, thr as f64, 1));
                     state = 1;
                 } else if state > 0 && i_rec < -thr {
-                    let t = (n - 1) as f64 + ((-thr - prev_i) / (i_rec - prev_i)) as f64;
-                    out.push(Transition { t, s: -1 });
+                    pending = Some((n, prev2_i as f64, prev_i as f64, i_rec as f64, -(thr as f64), -1));
                     state = -1;
                 }
+                prev2_i = prev_i;
                 prev_i = i_rec;
             }
             r += 1;
@@ -364,6 +399,10 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
         }
 
         r0 = r1;
+    }
+    if let Some((cn, p0, p1, p2, level, s)) = pending.take() {
+        let t = (cn - 1) as f64 + cubic_crossing(p0, p1, p2, p2, level);
+        out.push(Transition { t, s });
     }
     out
 }
