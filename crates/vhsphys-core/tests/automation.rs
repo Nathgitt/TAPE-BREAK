@@ -76,3 +76,37 @@ fn automated_crt_magnet_moves_deflection_around_screen() {
     let diff = mean_pixel_difference(&out[1], &out[5]);
     assert!(diff > 5.0, "moving magnet should distort different screen regions: diff = {diff}");
 }
+
+/// Mean absolute difference of two frames over rows `y0..y1`, in levels.
+fn mean_row_difference(a: &Frame, b: &Frame, y0: usize, y1: usize) -> f64 {
+    let (lo, hi) = (y0 * a.w * 3, y1 * a.w * 3);
+    let sum: f64 = a.rgb[lo..hi].iter().zip(b.rgb[lo..hi].iter()).map(|(&x, &y)| (x as f64 - y as f64).abs()).sum();
+    sum / (hi - lo) as f64
+}
+
+#[test]
+fn slack_tape_skews_the_lines_after_the_head_switch() {
+    // A slack tape is late onto the drum: the lines just after the head takes over are displaced by
+    // up to 0.8 microseconds for a tension of -1 (about eleven pixels) and settle within a few lines.
+    // The head takes over 6.5 lines before the vertical sync, so the displaced lines are the last
+    // rows of the picture, with the end of the settling in the first rows of the next field.
+    let p = config::build(Some("pristine"), "", 3).unwrap();
+    let input: Vec<Frame> = (0..6).map(|_| test_pattern()).collect();
+    let plain = Session::run(p.clone(), &input);
+    let with_tension = |tension: f64| {
+        let mut schedule = AutomationSchedule::new();
+        schedule.set_track("tension", AutomationTrack::constant(tension));
+        Session::run_with_automation(p.clone(), &input, schedule)
+    };
+    let h = plain[3].h;
+    for tension in [-1.0, -0.5] {
+        let slack = with_tension(tension);
+        let after_switch = mean_row_difference(&plain[3], &slack[3], h - 8, h);
+        let middle = mean_row_difference(&plain[3], &slack[3], 120, 400);
+        assert!(after_switch > 5.0, "tension {tension}: the rows after the head switch moved by {after_switch:.2} levels");
+        assert!(middle < 0.5, "tension {tension}: the middle of the picture moved by {middle:.2} levels");
+    }
+    // a tape that is too tight is on the drum in time
+    let tight = with_tension(0.5);
+    assert!(plain[3].rgb == tight[3].rgb, "a tight tape changed the picture");
+}

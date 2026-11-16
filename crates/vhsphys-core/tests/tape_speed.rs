@@ -102,3 +102,23 @@ fn neighbouring_tracks_are_offset_by_the_tape_advance() {
         assert!((s.adjacent_track_offset_rf() - expect).abs() < 2.0, "{s:?}: {} vs {expect}", s.adjacent_track_offset_rf());
     }
 }
+
+#[test]
+fn the_deck_is_aligned_to_the_same_level_at_every_speed() {
+    // The playback level is set on the bench with the deck's own heads. A head for a narrow track gives
+    // less signal than an SP head, and the alignment takes that up, so the carrier reaches the limiter
+    // at the same level whatever the speed.
+    let level = |speed: &str| {
+        let mut s = Session::new(params("pristine", speed, "", 1));
+        for _ in 0..5 {
+            s.push(&test_pattern());
+        }
+        s.finish();
+        s.debug_field(4).carrier_level as f64
+    };
+    let sp = level("sp");
+    for speed in ["lp", "ep"] {
+        let l = level(speed);
+        assert!((l / sp - 1.0).abs() < 0.05, "{speed}: the carrier level at the limiter is {l:.3}, at SP it is {sp:.3}");
+    }
+}
