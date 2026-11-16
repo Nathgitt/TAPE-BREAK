@@ -22,9 +22,10 @@ use vhsphys_core::consts::MAINS_HZ_DEFAULT;
 use vhsphys_core::frame::Frame;
 use vhsphys_core::interference_params::{MagnetKind, PhoneMode, RadioMod};
 use vhsphys_core::rack::{Rack, RackPlan, StageParams};
+use vhsphys_core::rf_rate::RfRate;
 use vhsphys_core::signal::Raster;
 use vhsphys_core::standard::TvStandard;
-use vhsphys_core::{ntsc, pal};
+use vhsphys_core::{ntsc, ntsc_rf16, ntsc_rf8, pal, pal_rf16, pal_rf8};
 
 /// Mains frequency the preset listing takes for granted; another one is worth a word.
 const NOMINAL_MAINS_HZ: f64 = MAINS_HZ_DEFAULT;
@@ -157,6 +158,9 @@ enum Cmd {
         /// Television standard whose parameters to print (ntsc, pal or pal60).
         #[arg(long, value_enum, default_value_t = StandardArg::Ntsc)]
         standard: StandardArg,
+        /// RF sample rate whose parameters to print (8x, 12x or 16x).
+        #[arg(long, value_enum, value_name = "RATE", default_value_t = RfRateArg::X12)]
+        rf_rate: RfRateArg,
     },
 }
 
@@ -180,6 +184,30 @@ impl StandardArg {
             StandardArg::Ntsc => TvStandard::Ntsc,
             StandardArg::Pal => TvStandard::Pal,
             StandardArg::Pal60 => TvStandard::Pal60,
+        }
+    }
+}
+
+/// How finely the tape signal is sampled, as a multiple of the colour subcarrier.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum RfRateArg {
+    /// 8 x fsc: faster, a little less accurate.
+    #[value(name = "8x")]
+    X8,
+    /// 12 x fsc: the reference, the default.
+    #[value(name = "12x")]
+    X12,
+    /// 16 x fsc: slower, closer to the continuous signal.
+    #[value(name = "16x")]
+    X16,
+}
+
+impl RfRateArg {
+    fn rf_rate(self) -> RfRate {
+        match self {
+            RfRateArg::X8 => RfRate::X8,
+            RfRateArg::X12 => RfRate::X12,
+            RfRateArg::X16 => RfRate::X16,
         }
     }
 }
@@ -252,6 +280,9 @@ struct RunArgs {
     /// Television standard: ntsc (the default), pal or pal60. Wins over `standard` in the config file.
     #[arg(long, value_enum)]
     standard: Option<StandardArg>,
+    /// How finely the tape signal is sampled, as a multiple of the colour subcarrier: 12x (the reference, the default), 8x (faster, a little less accurate) or 16x (slower, closer to the continuous signal). Wins over rf_rate in the config file.
+    #[arg(long, value_enum, value_name = "RATE")]
+    rf_rate: Option<RfRateArg>,
     /// Random seed: the same seed gives the same tape and deck.
     #[arg(long, default_value_t = 1)]
     seed: u64,
@@ -498,6 +529,33 @@ macro_rules! engine {
 
 engine!(Ntsc525, ntsc, 30000 / 1001);
 engine!(Pal625, pal, 25 / 1);
+engine!(Ntsc525Rf8, ntsc_rf8, 30000 / 1001);
+engine!(Pal625Rf8, pal_rf8, 25 / 1);
+engine!(Ntsc525Rf16, ntsc_rf16, 30000 / 1001);
+engine!(Pal625Rf16, pal_rf16, 25 / 1);
+
+/// Implements `audio_io::AudioStage` for the RF-rate engines not covered in `audio_io`.
+macro_rules! audio_stage {
+    ($core:ident) => {
+        impl audio_io::AudioStage for $core::audio::AudioProcessor {
+            type Params = $core::pipeline::Params;
+            fn new(params: &Self::Params, rate: f64, channels: usize) -> Self {
+                Self::new(params, rate, channels)
+            }
+            fn latency(&self) -> usize {
+                self.latency()
+            }
+            fn process(&mut self, interleaved: &[f32], start: i64) -> Vec<f32> {
+                self.process(interleaved, start)
+            }
+        }
+    };
+}
+
+audio_stage!(ntsc_rf8);
+audio_stage!(pal_rf8);
+audio_stage!(ntsc_rf16);
+audio_stage!(pal_rf16);
 
 impl Playback for Rack {
     fn push_frame(&mut self, f: &Frame) {
@@ -597,29 +655,57 @@ fn pick_standard(flag: Option<StandardArg>, sets: &[String], config_file: &toml:
     }
 }
 
+fn parse_rf_rate(value: &toml::Value) -> Result<RfRate> {
+    let list = RfRate::ALL.map(RfRate::name).join(", ");
+    let name = value.as_str().ok_or_else(|| anyhow!("rf_rate must be a name ({list})"))?;
+    RfRate::from_name(name).ok_or_else(|| anyhow!("unknown RF rate '{name}' (use {list})"))
+}
+
+/// The RF sample rate of a run: the `--rf-rate` flag; else `--set rf_rate=...`; else the
+/// top-level `rf_rate` of the config file; else 12x. A `--set` wins over the file as it does
+/// for every other parameter.
+fn pick_rf_rate(flag: Option<RfRateArg>, sets: &[String], config_file: &toml::Table) -> Result<RfRate> {
+    if let Some(f) = flag {
+        return Ok(f.rf_rate());
+    }
+    let from_sets: toml::Table = toml::from_str(&config::sets_to_toml(sets).map_err(anyhow::Error::msg)?)?;
+    match from_sets.get("rf_rate").or_else(|| config_file.get("rf_rate")) {
+        Some(v) => parse_rf_rate(v),
+        None => Ok(RfRate::REFERENCE),
+    }
+}
+
 /// Whether a `--set` item sets a key inside `table`: `condition.tape_speed=lp` does for `condition`.
 fn is_set_in_table(item: &str, table: &str) -> bool {
     item.split_once('=').is_some_and(|(k, _)| k.trim().strip_prefix(table).is_some_and(|rest| rest.starts_with('.')))
 }
 
 /// The config text of a run (the file's, with what the `--set` items put into it), the text of
-/// the `--set` items that apply to every generation as they are, and the television standard.
-fn assemble_config(file_text: &str, sets: &[String], standard_flag: Option<StandardArg>) -> Result<(String, String, TvStandard)> {
+/// the `--set` items that apply to every generation as they are, the television standard, and
+/// the RF sample rate.
+fn assemble_config(
+    file_text: &str,
+    sets: &[String],
+    standard_flag: Option<StandardArg>,
+    rf_rate_flag: Option<RfRateArg>,
+) -> Result<(String, String, TvStandard, RfRate)> {
     // `--set seed=N` is the seed of the whole chain, like a `seed` in the config file: it goes
     // into the config text, where every later generation derives its own seed from it. The
-    // other `--set` items apply to every generation as they are. So does `--set standard=...`
-    // and for the same reason: the standard decides which engine reads the config, and the
-    // engine refuses what it cannot play (EP at 625 lines), which only happens for a standard
-    // that is in the text. `--set condition.KEY=...` goes into the text too, into its
+    // other `--set` items apply to every generation as they are. So do `--set standard=...`
+    // and `--set rf_rate=...` and for the same reason: they decide which engine reads the config,
+    // and the engine refuses what it cannot play (EP at 625 lines, or another rate), which only
+    // happens when they are in the text. `--set condition.KEY=...` goes into the text too, into its
     // `[condition]` table: the condition is mapped to parameters before the other overrides
     // apply, and an override cannot reach back into that mapping (the tape speed gives the head
     // width, the sub-emphasis, the carrier interleave and the burst boost, and an override of
     // the top-level `speed` changes none of them).
     let (seed_sets, other_sets) = take_key(sets.to_vec(), "seed");
     let (standard_sets, other_sets) = take_key(other_sets, "standard");
+    let (rf_rate_sets, other_sets) = take_key(other_sets, "rf_rate");
     let (condition_sets, other_sets): (Vec<String>, Vec<String>) = other_sets.into_iter().partition(|s| is_set_in_table(s, CONDITION_TABLE));
     let mut table: toml::Table = toml::from_str(file_text).map_err(|e| anyhow!("config: {e}"))?;
     let standard = pick_standard(standard_flag, &standard_sets, &table)?;
+    let rf_rate = pick_rf_rate(rf_rate_flag, &rf_rate_sets, &table)?;
     let mut edited = false;
     if !seed_sets.is_empty() {
         let seed_set: toml::Table = toml::from_str(&config::sets_to_toml(&seed_sets).map_err(anyhow::Error::msg)?)?;
@@ -628,6 +714,10 @@ fn assemble_config(file_text: &str, sets: &[String], standard_flag: Option<Stand
     }
     if standard_flag.is_some() || !standard_sets.is_empty() {
         table.insert("standard".into(), toml::Value::String(standard.name().into()));
+        edited = true;
+    }
+    if rf_rate_flag.is_some() || !rf_rate_sets.is_empty() {
+        table.insert("rf_rate".into(), toml::Value::String(rf_rate.name().into()));
         edited = true;
     }
     if !condition_sets.is_empty() {
@@ -643,7 +733,7 @@ fn assemble_config(file_text: &str, sets: &[String], standard_flag: Option<Stand
     }
     let text = if edited { toml::to_string(&table)? } else { file_text.to_string() };
     let overrides = config::sets_to_toml(&other_sets).map_err(anyhow::Error::msg)?;
-    Ok((text, overrides, standard))
+    Ok((text, overrides, standard, rf_rate))
 }
 
 fn run(a: RunArgs) -> Result<()> {
@@ -712,19 +802,25 @@ fn run(a: RunArgs) -> Result<()> {
         sets.push(format!("camera.beam_off_s={v:?}"));
     }
     sets.extend(a.sets.iter().cloned());
-    let (text, sets, standard) = assemble_config(&file_text, &sets, a.standard)?;
+    let (text, sets, standard, rf_rate) = assemble_config(&file_text, &sets, a.standard, a.rf_rate)?;
     // A config with `[[generation]]` tables describes a rack: each generation names its own
     // standard, and the links between them are checked before anything is decoded.
+    if rf_rate != RfRate::REFERENCE && toml::from_str::<toml::Table>(&text).ok().is_some_and(|t| t.contains_key("generation")) {
+        bail!("a rack of [[generation]] tables runs at 12x; remove --rf-rate or rf_rate");
+    }
     if let Some(plan) = RackPlan::from_config(&a.preset, &text, a.seed, &sets).map_err(anyhow::Error::msg)? {
         return run_rack(a, plan);
     }
     if a.record.is_some() {
         bail!("--record writes the record of a rack; this config has no [[generation]] tables");
     }
-    if standard.is_625() {
-        run_engine::<Pal625>(a, standard, &text, &sets)
-    } else {
-        run_engine::<Ntsc525>(a, standard, &text, &sets)
+    match (standard.is_625(), rf_rate) {
+        (false, RfRate::X8) => run_engine::<Ntsc525Rf8>(a, standard, rf_rate, &text, &sets),
+        (false, RfRate::X12) => run_engine::<Ntsc525>(a, standard, rf_rate, &text, &sets),
+        (false, RfRate::X16) => run_engine::<Ntsc525Rf16>(a, standard, rf_rate, &text, &sets),
+        (true, RfRate::X8) => run_engine::<Pal625Rf8>(a, standard, rf_rate, &text, &sets),
+        (true, RfRate::X12) => run_engine::<Pal625>(a, standard, rf_rate, &text, &sets),
+        (true, RfRate::X16) => run_engine::<Pal625Rf16>(a, standard, rf_rate, &text, &sets),
     }
 }
 
@@ -759,7 +855,7 @@ fn sound_duration(a: &RunArgs, fps: (u32, u32)) -> Option<f64> {
     }
 }
 
-fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &str) -> Result<()> {
+fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, rf_rate: RfRate, text: &str, sets: &str) -> Result<()> {
     debug_assert!((E::FPS.0 as f64 / E::FPS.1 as f64 - E::FRAME_RATE).abs() < 1e-9, "the frame rate fraction does not match the engine");
     // Read before the sound is processed and before the encoder starts: it overwrites the
     // output, which a missing or malformed file must not cost.
@@ -797,7 +893,8 @@ fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &st
     };
 
     let standard_note = if standard == TvStandard::Ntsc { String::new() } else { format!(" standard {}", standard.name()) };
-    let banner = format!("preset '{}' seed {}{}", a.preset, a.seed, standard_note);
+    let rate_note = if rf_rate == RfRate::REFERENCE { String::new() } else { format!(" rf {}", rf_rate.name()) };
+    let banner = format!("preset '{}' seed {}{}{}", a.preset, a.seed, standard_note, rate_note);
     let format = PictureFormat::of::<E>();
     let pipe = Pipe { a: &a, source: format, output: format, sizes, picture_frames, sound, audio, banner, sound_seek: None };
     if a.bypass {
@@ -1058,8 +1155,8 @@ impl RunningPipe<'_> {
 }
 
 /// Print the parameters, or with `condition` the `[condition]` table, of a preset on the
-/// engine that plays `standard`.
-fn show<E: Engine>(standard: TvStandard, preset: &str, seed: u64, condition: bool) -> Result<()> {
+/// engine that plays `standard` at `rf_rate`.
+fn show<E: Engine>(standard: TvStandard, rf_rate: RfRate, preset: &str, seed: u64, condition: bool) -> Result<()> {
     if condition {
         let c = E::condition(preset)?;
         // A standard other than NTSC goes above the table, so that the output is a config file
@@ -1068,10 +1165,13 @@ fn show<E: Engine>(standard: TvStandard, preset: &str, seed: u64, condition: boo
         if standard != TvStandard::Ntsc {
             println!("standard = \"{}\"", standard.name());
         }
+        if rf_rate != RfRate::REFERENCE {
+            println!("rf_rate = \"{}\"", rf_rate.name());
+        }
         // under its table header, so the output is a config file as it stands
         print!("[condition]\n{c}");
     } else {
-        print!("{}", E::parameters(preset, &format!("standard = \"{}\"\n", standard.name()), seed)?);
+        print!("{}", E::parameters(preset, &format!("standard = \"{}\"\nrf_rate = \"{}\"\n", standard.name(), rf_rate.name()), seed)?);
     }
     Ok(())
 }
@@ -1430,6 +1530,7 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             config: None,
             sets,
             standard: Some(standard_arg),
+            rf_rate: None,
             seed: 1,
             generations,
             audio: audio_arg,
@@ -1483,12 +1584,16 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Show { preset, seed, condition, standard } => {
+        Cmd::Show { preset, seed, condition, standard, rf_rate } => {
             let standard = standard.standard();
-            if standard.is_625() {
-                show::<Pal625>(standard, &preset, seed, condition)
-            } else {
-                show::<Ntsc525>(standard, &preset, seed, condition)
+            let rf_rate = rf_rate.rf_rate();
+            match (standard.is_625(), rf_rate) {
+                (false, RfRate::X8) => show::<Ntsc525Rf8>(standard, rf_rate, &preset, seed, condition),
+                (false, RfRate::X12) => show::<Ntsc525>(standard, rf_rate, &preset, seed, condition),
+                (false, RfRate::X16) => show::<Ntsc525Rf16>(standard, rf_rate, &preset, seed, condition),
+                (true, RfRate::X8) => show::<Pal625Rf8>(standard, rf_rate, &preset, seed, condition),
+                (true, RfRate::X12) => show::<Pal625>(standard, rf_rate, &preset, seed, condition),
+                (true, RfRate::X16) => show::<Pal625Rf16>(standard, rf_rate, &preset, seed, condition),
             }
         }
     }
@@ -1501,10 +1606,21 @@ mod tests {
     #[test]
     fn each_engine_runs_at_its_own_frame_rate() {
         assert_eq!(Ntsc525::FPS, (30000, 1001));
+        assert_eq!(Ntsc525Rf8::FPS, (30000, 1001));
+        assert_eq!(Ntsc525Rf16::FPS, (30000, 1001));
         assert_eq!(Pal625::FPS, (25, 1));
+        assert_eq!(Pal625Rf8::FPS, (25, 1));
+        assert_eq!(Pal625Rf16::FPS, (25, 1));
         assert_eq!((Ntsc525::ACTIVE_W, Ntsc525::ACTIVE_H), (754, 480));
         assert_eq!((Pal625::ACTIVE_W, Pal625::ACTIVE_H), (740, 576));
-        for (num, den, rate) in [(Ntsc525::FPS.0, Ntsc525::FPS.1, Ntsc525::FRAME_RATE), (Pal625::FPS.0, Pal625::FPS.1, Pal625::FRAME_RATE)] {
+        for (num, den, rate) in [
+            (Ntsc525::FPS.0, Ntsc525::FPS.1, Ntsc525::FRAME_RATE),
+            (Ntsc525Rf8::FPS.0, Ntsc525Rf8::FPS.1, Ntsc525Rf8::FRAME_RATE),
+            (Ntsc525Rf16::FPS.0, Ntsc525Rf16::FPS.1, Ntsc525Rf16::FRAME_RATE),
+            (Pal625::FPS.0, Pal625::FPS.1, Pal625::FRAME_RATE),
+            (Pal625Rf8::FPS.0, Pal625Rf8::FPS.1, Pal625Rf8::FRAME_RATE),
+            (Pal625Rf16::FPS.0, Pal625Rf16::FPS.1, Pal625Rf16::FRAME_RATE),
+        ] {
             assert!((num as f64 / den as f64 - rate).abs() < 1e-9, "{num}/{den} against {rate}");
         }
     }
@@ -1608,7 +1724,7 @@ mod tests {
     /// The parameters of generation 0 of a 525-line run with this config file and these `--set` items.
     fn run_params(file: &str, sets: &[&str]) -> <Ntsc525 as Engine>::Params {
         let sets: Vec<String> = sets.iter().map(|s| s.to_string()).collect();
-        let (text, overrides, _) = assemble_config(file, &sets, None).unwrap();
+        let (text, overrides, _, _) = assemble_config(file, &sets, None, None).unwrap();
         Ntsc525::generations("worn", &text, 1, 1, &overrides).unwrap().remove(0)
     }
 
@@ -1642,7 +1758,7 @@ mod tests {
     fn a_condition_set_is_merged_into_the_condition_table_of_the_file() {
         let file = "[condition]\ntape_speed = \"ep\"\nhead_wear = 0.9\n[tape]\npasses = 2.0\n";
         let sets = vec!["condition.tape_speed=lp".to_string(), "condition.deck_age_years=30".to_string(), "tape.defects_per_mm2=0.1".to_string()];
-        let (text, overrides, _) = assemble_config(file, &sets, None).unwrap();
+        let (text, overrides, _, _) = assemble_config(file, &sets, None, None).unwrap();
         let condition = condition_of(&text);
         assert_eq!(condition["tape_speed"].as_str(), Some("lp"), "a --set wins over the file");
         assert_eq!(condition["head_wear"].as_float(), Some(0.9), "the file's other keys stay");
@@ -1652,18 +1768,18 @@ mod tests {
         // only the items that are not for the condition are left as overrides
         assert_eq!(overrides, "tape.defects_per_mm2 = 0.1\n");
         // without a `[condition]` in the file the table is created
-        let (text, overrides, _) = assemble_config("[tape]\npasses = 2.0\n", &["condition.tape_speed=ep".to_string()], None).unwrap();
+        let (text, overrides, _, _) = assemble_config("[tape]\npasses = 2.0\n", &["condition.tape_speed=ep".to_string()], None, None).unwrap();
         assert_eq!(condition_of(&text)["tape_speed"].as_str(), Some("ep"));
         assert_eq!(overrides, "");
         // a `condition` that is not a table cannot take the items
-        assert!(assemble_config("condition = 5\n", &["condition.tape_speed=lp".to_string()], None).is_err());
+        assert!(assemble_config("condition = 5\n", &["condition.tape_speed=lp".to_string()], None, None).is_err());
     }
 
     #[test]
     fn seed_and_standard_sets_go_into_the_text_and_the_rest_stay_overrides() {
         let file = "[tape]\ndefects_per_mm2 = 0.1\n";
         let sets = vec!["seed=7".to_string(), "standard=pal60".to_string(), "tape.passes=3".to_string()];
-        let (text, overrides, standard) = assemble_config(file, &sets, None).unwrap();
+        let (text, overrides, standard, _) = assemble_config(file, &sets, None, None).unwrap();
         assert!(standard == TvStandard::Pal60);
         let table: toml::Table = toml::from_str(&text).unwrap();
         assert_eq!(table["seed"].as_integer(), Some(7));
@@ -1672,15 +1788,44 @@ mod tests {
         assert!(!table.contains_key(CONDITION_TABLE));
         assert_eq!(overrides, "tape.passes = 3\n");
         // the flag wins over a `--set standard`, and the text says so
-        let (text, _, standard) = assemble_config("", &["standard=pal60".to_string()], Some(StandardArg::Ntsc)).unwrap();
+        let (text, _, standard, _) = assemble_config("", &["standard=pal60".to_string()], Some(StandardArg::Ntsc), None).unwrap();
         assert!(standard == TvStandard::Ntsc);
         assert_eq!(toml::from_str::<toml::Table>(&text).unwrap()["standard"].as_str(), Some("ntsc"));
         // nothing for the text: the file is passed on as it is, comments and all
         let file = "# my tape\n[tape]\npasses = 2.0\n";
-        let (text, overrides, standard) = assemble_config(file, &["tape.defects_per_mm2=0.2".to_string()], None).unwrap();
+        let (text, overrides, standard, _) = assemble_config(file, &["tape.defects_per_mm2=0.2".to_string()], None, None).unwrap();
         assert_eq!((text.as_str(), overrides.as_str()), (file, "tape.defects_per_mm2 = 0.2\n"));
         assert!(standard == TvStandard::Ntsc);
-        assert!(assemble_config("", &["standard=secam".to_string()], None).is_err());
+        assert!(assemble_config("", &["standard=secam".to_string()], None, None).is_err());
+    }
+
+    #[test]
+    fn the_rf_rate_comes_from_the_flag_then_set_then_the_file() {
+        let (text, overrides, _, rate) = assemble_config("", &[], None, None).unwrap();
+        assert_eq!(rate, RfRate::X12);
+        assert_eq!(text, "");
+        assert_eq!(overrides, "");
+
+        let (text, _, _, rate) = assemble_config("rf_rate = \"16x\"\n", &[], None, None).unwrap();
+        assert_eq!(rate, RfRate::X16);
+        assert_eq!(toml::from_str::<toml::Table>(&text).unwrap()["rf_rate"].as_str(), Some("16x"));
+
+        let (text, overrides, _, rate) = assemble_config("rf_rate = \"16x\"\n", &["rf_rate=8x".to_string(), "tape.passes=2".to_string()], None, None).unwrap();
+        assert_eq!(rate, RfRate::X8);
+        assert_eq!(toml::from_str::<toml::Table>(&text).unwrap()["rf_rate"].as_str(), Some("8x"));
+        assert_eq!(overrides, "tape.passes = 2\n");
+
+        let (text, _, _, rate) = assemble_config("rf_rate = \"16x\"\n", &["rf_rate=8x".to_string()], None, Some(RfRateArg::X12)).unwrap();
+        assert_eq!(rate, RfRate::X12);
+        assert_eq!(toml::from_str::<toml::Table>(&text).unwrap()["rf_rate"].as_str(), Some("12x"));
+
+        for err in [
+            assemble_config("rf_rate = \"9x\"\n", &[], None, None).unwrap_err().to_string(),
+            assemble_config("", &["rf_rate=9x".to_string()], None, None).unwrap_err().to_string(),
+            assemble_config("rf_rate = 12\n", &[], None, None).unwrap_err().to_string(),
+        ] {
+            assert!(err.contains("8x") && err.contains("12x") && err.contains("16x"), "{err}");
+        }
     }
 
     #[test]
@@ -1700,7 +1845,7 @@ mod tests {
         ])
         .unwrap();
         let Cmd::Run(a) = cli.cmd else { panic!("expected Run command") };
-        let err = run_engine::<Ntsc525>(a, TvStandard::Ntsc, "", "").unwrap_err().to_string();
+        let err = run_engine::<Ntsc525>(a, TvStandard::Ntsc, RfRate::REFERENCE, "", "").unwrap_err().to_string();
         assert!(err.starts_with("loading automation file '/nonexistent/automation.json'"), "{err}");
     }
 
@@ -1742,6 +1887,9 @@ mod tests {
         // a `--set` applies to every generation, and what an engine cannot play is refused
         let err = rack_run_error(&rack, &["--set", "condition.tape_speed=ep"]);
         assert!(err.contains("EP"), "{err}");
+        // racks run at 12x only
+        assert!(rack_run_error(&rack, &["--rf-rate", "8x"]).contains("12x"));
+        assert!(rack_run_error(&format!("rf_rate = \"16x\"\n{rack}"), &[]).contains("12x"));
     }
 
     #[test]
