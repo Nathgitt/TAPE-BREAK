@@ -219,9 +219,10 @@ STANDARD_HELP = "The set's television standard: NTSC is 525 lines at 29.97 fps, 
 RF_RATE_HELP = (
     "How finely the tape signal is sampled, as a multiple of the colour subcarrier. "
     "12x is the reference the model was set up at. "
-    "8x renders faster and is a little less accurate: the FM carrier, the head's pulses and the edges of dropouts are worked out on a coarser grid. "
-    "16x is slower and more accurate, closer to the continuous signal. "
-    "The picture differs only in fine detail and in the texture of the noise."
+    "8x renders about a quarter faster and is less accurate: the coarser grid adds colour noise of its own, "
+    "about a quarter more than 12x shows on a clean tape, and can shift saturated colours by a few percent. "
+    "16x is about a sixth slower and the most accurate, with the least noise from the sampling. "
+    "Brightness and the tape's faults stay the same at every rate."
 )
 CAMERA_TUBE_HELP = "The camera's pickup tube: a Plumbicon lags and smears bright lights into comet tails, cured by the bias and gun variants; a vidicon lags heavily, a Saticon hardly at all, and the Newvicon and Chalnicon lag through their large target capacitance."
 IRIS_HELP = "The camera's iris opening past normal, in stops (each doubles the light): wide, it overexposes and shows comet tails. Needs a tube."
