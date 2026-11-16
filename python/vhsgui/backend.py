@@ -42,8 +42,10 @@ from vhsgui.model import (
     DEFAULT_CAMERA_LAYOUT,
     DEFAULT_CAMERA_PROCESSING,
     DEFAULT_CAMERA_TEMPERATURE_C,
+    DEFAULT_RF_RATE,
     IRIS_STOPS_RANGE,
     MAX_GENERATIONS,
+    RF_RATES,
     SIGNALS,
     STANDARDS,
     GuiError,
@@ -437,6 +439,8 @@ def merge_config(look: Look) -> str:
         raise GuiError(f"Unknown output signal '{look.signal}'")
     if look.standard not in STANDARDS:
         raise GuiError(f"Unknown television standard '{look.standard}'")
+    if look.rf_rate not in RF_RATES:
+        raise GuiError(f"Unknown RF sample rate '{look.rf_rate}'")
     if look.camera_tube not in CAMERA_TUBES:
         raise GuiError(f"Unknown camera tube '{look.camera_tube}'")
     if not _iris_in_range(look.iris_stops):
@@ -492,6 +496,7 @@ def save_look(look: Look) -> str:
         "signal": look.signal,
         "audio": look.audio,
         "standard": look.standard,
+        "rf_rate": look.rf_rate,
         "camera_tube": look.camera_tube,
         "iris_stops": float(look.iris_stops),  # always written with a '.', so it reads back as a float
         "camera_layout": look.camera_layout,
@@ -546,6 +551,9 @@ def load_look(text: str) -> Look:
     standard = section.get("standard", defaults.standard)
     if standard not in STANDARDS:
         raise GuiError(f"Look file: standard must be one of {', '.join(STANDARDS)}")
+    rf_rate = section.get("rf_rate", defaults.rf_rate)
+    if rf_rate not in RF_RATES:
+        raise GuiError(f"Look file: rf_rate must be one of {', '.join(RF_RATES)}")
     camera_tube = section.get("camera_tube", defaults.camera_tube)
     if camera_tube not in CAMERA_TUBES:
         raise GuiError(f"Look file: camera_tube must be one of {', '.join(CAMERA_TUBES)}")
@@ -617,6 +625,7 @@ def load_look(text: str) -> Look:
         signal=output_signal,
         audio=audio,
         standard=standard,
+        rf_rate=rf_rate,
         camera_tube=camera_tube,
         iris_stops=float(iris_stops),
         camera_layout=camera_layout,
@@ -661,6 +670,8 @@ def run_args(binary: Path | str, req: RunRequest, config_path: Path | str | None
         args += ["--audio", req.look.audio]
     if req.look.standard != DEFAULT_STANDARD:
         args += ["--standard", req.look.standard]
+    if req.look.rf_rate != DEFAULT_RF_RATE:
+        args += ["--rf-rate", req.look.rf_rate]
     if req.look.camera_tube != DEFAULT_CAMERA_TUBE:
         args += ["--camera-tube", req.look.camera_tube, "--iris-stops", repr(float(req.look.iris_stops))]
         if req.look.camera_layout != DEFAULT_CAMERA_LAYOUT:

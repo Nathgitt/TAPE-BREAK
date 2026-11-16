@@ -79,11 +79,13 @@ from vhsgui.model import (
     DEFAULT_CAMERA_LAYOUT,
     DEFAULT_CAMERA_PROCESSING,
     DEFAULT_CAMERA_TEMPERATURE_C,
+    DEFAULT_RF_RATE,
     DEFAULT_STANDARD,
     GROUPS,
     IRIS_STOPS_RANGE,
     MAX_GENERATIONS,
     PREVIEW_DEFAULT_SECONDS,
+    RF_RATES,
     SIGNALS,
     STANDARDS,
     FieldSpec,
@@ -151,6 +153,7 @@ CONFIG_FILE = "look.toml"
 SIGNAL_LABELS = ("S-Video", "Composite, notch", "Composite, 1-line comb", "Composite, 2-line comb")
 AUDIO_LABELS = ("Simulate", "Keep original", "Remove")
 STANDARD_LABELS = ("NTSC", "PAL", "PAL-60")  # in the order of STANDARDS
+RF_RATE_LABELS = ("8x (faster)", "12x (reference)", "16x (finer)")  # in the order of RF_RATES
 CAMERA_TUBE_LABELS = (
     "None",
     "Plumbicon",
@@ -213,6 +216,13 @@ TASK_RENDER = "render"
 # The schematic mirrors these editor lines and prints the same help text as their tooltips. A text has to
 # fit the schematic's one-line hint band (about 140 characters), or the band cuts it short.
 STANDARD_HELP = "The set's television standard: NTSC is 525 lines at 29.97 fps, PAL 625 at 25 fps, PAL-60 plays an NTSC tape on a PAL set."
+RF_RATE_HELP = (
+    "How finely the tape signal is sampled, as a multiple of the colour subcarrier. "
+    "12x is the reference the model was set up at. "
+    "8x renders faster and is a little less accurate: the FM carrier, the head's pulses and the edges of dropouts are worked out on a coarser grid. "
+    "16x is slower and more accurate, closer to the continuous signal. "
+    "The picture differs only in fine detail and in the texture of the noise."
+)
 CAMERA_TUBE_HELP = "The camera's pickup tube: a Plumbicon lags and smears bright lights into comet tails, cured by the bias and gun variants; a vidicon lags heavily, a Saticon hardly at all, and the Newvicon and Chalnicon lag through their large target capacitance."
 IRIS_HELP = "The camera's iris opening past normal, in stops (each doubles the light): wide, it overexposes and shows comet tails. Needs a tube."
 CAMERA_LAYOUT_HELP = "How the camera sees colour: a prism and a tube per colour, or a home camera's one tube behind a stripe filter. Needs a tube."
@@ -233,6 +243,7 @@ LOOK_HELP = {
     "signal": "How the picture is separated again: S-Video keeps luma and chroma apart, notch and comb filters mix them the way a TV does.",
     "audio": "The sound track: simulated with the same wear, copied unchanged, or removed.",
     "standard": STANDARD_HELP,
+    "rf_rate": RF_RATE_HELP,
     "camera_tube": CAMERA_TUBE_HELP,
     "iris_stops": IRIS_HELP,
     "camera_layout": CAMERA_LAYOUT_HELP,
@@ -1252,6 +1263,7 @@ class MainWindow(QMainWindow):
             signal=self.signal_combo.currentData(),
             audio=self.audio_combo.currentData(),
             standard=self.standard_combo.currentData(),
+            rf_rate=self.rf_rate_combo.currentData(),
             camera_tube=self.camera_tube_combo.currentData(),
             iris_stops=self.iris_spin.value(),
             camera_layout=self.camera_layout_combo.currentData(),
@@ -1538,6 +1550,15 @@ class MainWindow(QMainWindow):
         for widget in (standard_label, self.standard_combo):
             widget.setToolTip(STANDARD_HELP)
         self.standard_combo.currentIndexChanged.connect(self._on_look_changed)
+        self.rf_rate_combo = QComboBox()
+        self.rf_rate_combo.setObjectName("field_rf_rate")
+        for text, value in zip(RF_RATE_LABELS, RF_RATES, strict=True):
+            self.rf_rate_combo.addItem(text, value)
+        self.rf_rate_combo.setCurrentIndex(self.rf_rate_combo.findData(DEFAULT_RF_RATE))
+        rf_rate_label = QLabel("RF rate")
+        for widget in (rf_rate_label, self.rf_rate_combo):
+            widget.setToolTip(LOOK_HELP["rf_rate"])
+        self.rf_rate_combo.currentIndexChanged.connect(self._on_look_changed)
         self.camera_tube_combo = QComboBox()
         self.camera_tube_combo.setObjectName("field_camera_tube")
         for text, value in zip(CAMERA_TUBE_LABELS, CAMERA_TUBES, strict=True):
@@ -1700,31 +1721,33 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.audio_combo, 4, 1, 1, 2)
         grid.addWidget(standard_label, 5, 0)
         grid.addWidget(self.standard_combo, 5, 1, 1, 2)
-        grid.addWidget(camera_tube_label, 6, 0)
-        grid.addWidget(self.camera_tube_combo, 6, 1, 1, 2)
-        grid.addWidget(iris_label, 7, 0)
-        grid.addWidget(self.iris_spin, 7, 1)
-        grid.addWidget(camera_layout_label, 8, 0)
-        grid.addWidget(self.camera_layout_combo, 8, 1, 1, 2)
-        grid.addWidget(camera_processing_label, 9, 0)
-        grid.addWidget(self.camera_processing_combo, 9, 1, 1, 2)
-        grid.addWidget(camera_temperature_label, 10, 0)
-        grid.addWidget(self.camera_temperature_spin, 10, 1)
-        grid.addWidget(self.camera_spectral_check, 11, 1, 1, 2)
-        grid.addWidget(self.camera_geometry_check, 12, 1, 1, 2)
-        grid.addWidget(camera_beam_ratio_label, 13, 0)
-        grid.addWidget(self.camera_beam_ratio_spin, 13, 1)
-        grid.addWidget(camera_blooming_label, 14, 0)
-        grid.addWidget(self.camera_blooming_spin, 14, 1)
-        grid.addWidget(self.camera_cold_start_check, 15, 1, 1, 2)
-        grid.addWidget(camera_cold_start_label, 16, 0)
-        grid.addWidget(self.camera_cold_start_spin, 16, 1)
-        grid.addWidget(camera_idle_label, 17, 0)
-        grid.addWidget(self.camera_idle_spin, 17, 1)
-        grid.addWidget(camera_beam_off_label, 18, 0)
-        grid.addWidget(self.camera_beam_off_spin, 18, 1)
-        grid.addWidget(self.reset_button, 19, 0, 1, 3)
-        grid.addLayout(look_files, 20, 0, 1, 3)
+        grid.addWidget(rf_rate_label, 6, 0)
+        grid.addWidget(self.rf_rate_combo, 6, 1, 1, 2)
+        grid.addWidget(camera_tube_label, 7, 0)
+        grid.addWidget(self.camera_tube_combo, 7, 1, 1, 2)
+        grid.addWidget(iris_label, 8, 0)
+        grid.addWidget(self.iris_spin, 8, 1)
+        grid.addWidget(camera_layout_label, 9, 0)
+        grid.addWidget(self.camera_layout_combo, 9, 1, 1, 2)
+        grid.addWidget(camera_processing_label, 10, 0)
+        grid.addWidget(self.camera_processing_combo, 10, 1, 1, 2)
+        grid.addWidget(camera_temperature_label, 11, 0)
+        grid.addWidget(self.camera_temperature_spin, 11, 1)
+        grid.addWidget(self.camera_spectral_check, 12, 1, 1, 2)
+        grid.addWidget(self.camera_geometry_check, 13, 1, 1, 2)
+        grid.addWidget(camera_beam_ratio_label, 14, 0)
+        grid.addWidget(self.camera_beam_ratio_spin, 14, 1)
+        grid.addWidget(camera_blooming_label, 15, 0)
+        grid.addWidget(self.camera_blooming_spin, 15, 1)
+        grid.addWidget(self.camera_cold_start_check, 16, 1, 1, 2)
+        grid.addWidget(camera_cold_start_label, 17, 0)
+        grid.addWidget(self.camera_cold_start_spin, 17, 1)
+        grid.addWidget(camera_idle_label, 18, 0)
+        grid.addWidget(self.camera_idle_spin, 18, 1)
+        grid.addWidget(camera_beam_off_label, 19, 0)
+        grid.addWidget(self.camera_beam_off_spin, 19, 1)
+        grid.addWidget(self.reset_button, 20, 0, 1, 3)
+        grid.addLayout(look_files, 21, 0, 1, 3)
         grid.setColumnStretch(1, 1)
         return box
 
@@ -2053,6 +2076,7 @@ class MainWindow(QMainWindow):
             "signal": look.signal,
             "audio": look.audio,
             "standard": look.standard,
+            "rf_rate": look.rf_rate,
             "camera_tube": look.camera_tube,
             "iris_stops": look.iris_stops,
             "camera_layout": look.camera_layout,
@@ -2092,6 +2116,7 @@ class MainWindow(QMainWindow):
             "signal": "svideo",
             "audio": "process",
             "standard": DEFAULT_STANDARD,
+            "rf_rate": DEFAULT_RF_RATE,
             "camera_tube": backend.DEFAULT_CAMERA_TUBE,
             "iris_stops": DEFAULT_IRIS_STOPS,
             "camera_layout": DEFAULT_CAMERA_LAYOUT,
@@ -2156,6 +2181,8 @@ class MainWindow(QMainWindow):
                 self.audio_combo.setCurrentIndex(self.audio_combo.findData(value))
             elif control_id == "standard":
                 self.standard_combo.setCurrentIndex(self.standard_combo.findData(value))
+            elif control_id == "rf_rate":
+                self.rf_rate_combo.setCurrentIndex(self.rf_rate_combo.findData(value))
             elif control_id == "camera_tube":
                 self.camera_tube_combo.setCurrentIndex(self.camera_tube_combo.findData(value))
             elif control_id == "iris_stops":
@@ -2298,6 +2325,7 @@ class MainWindow(QMainWindow):
         self.signal_combo.setCurrentIndex(self.signal_combo.findData(look.signal))
         self.audio_combo.setCurrentIndex(self.audio_combo.findData(look.audio))
         self.standard_combo.setCurrentIndex(self.standard_combo.findData(look.standard))
+        self.rf_rate_combo.setCurrentIndex(self.rf_rate_combo.findData(look.rf_rate))
         self.camera_tube_combo.setCurrentIndex(self.camera_tube_combo.findData(look.camera_tube))
         self.iris_spin.setValue(look.iris_stops)
         self.camera_layout_combo.setCurrentIndex(self.camera_layout_combo.findData(look.camera_layout))
