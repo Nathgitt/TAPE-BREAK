@@ -8,7 +8,7 @@ use vhsphys_core::tube::TubeKind;
 use vhsphys_core::video::{decode_ideal, Frame};
 use vhsphys_core::consts::{ACTIVE_W, ACTIVE_H};
 
-const GOLDEN: u64 = 0x64948fb7a6413cac;
+const GOLDEN: u64 = 0xb23a1d88b345c27e;
 /// Exposure that drives the test pattern well past what the beam takes off, in stops.
 const BLOOMING_IRIS_STOPS: f64 = 3.0;
 /// Blooming share of the tubes that are compared.

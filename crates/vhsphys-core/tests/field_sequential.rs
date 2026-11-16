@@ -11,7 +11,7 @@ use vhsphys_core::{
     video::{encode_fields, encode_frame, test_pattern, Frame},
 };
 
-const GOLDEN: u64 = 0x64948fb7a6413cac;
+const GOLDEN: u64 = 0xb23a1d88b345c27e;
 /// Grey level of the lit frames of the clips that test the camera.
 const LIT_GREY: u8 = 160;
 /// Frames of light, then of darkness: long enough for the tube's charge to build up and for its tail to show.

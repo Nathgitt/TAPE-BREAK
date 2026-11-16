@@ -4,7 +4,7 @@ mod common;
 use common::*;
 use vhsphys_core::{config, pipeline::{Chain, Session}, video::{test_pattern, Frame}};
 
-const GOLDEN: u64 = 0x64948fb7a6413cac;
+const GOLDEN: u64 = 0xb23a1d88b345c27e;
 
 /// How far, in levels, a bar of the last frame may move when the PLL replaces the first-order
 /// loop (one generation, five frames). Measured: 0.8. The other frames of the run differ by up

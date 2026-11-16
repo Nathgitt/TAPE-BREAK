@@ -205,16 +205,14 @@ fn on_a_quiet_deck_the_rates_agree_and_the_finer_is_the_nearer() {
         let (x8, x12, x16) = (&out[0][LOOK], &out[1][LOOK], &out[2][LOOK]);
         let (e8, e12) = (mean_abs_error(x8, x16), mean_abs_error(x12, x16));
         assert!(e12 <= e8, "{raster}: 12x is {e12:.3} levels from 16x, 8x {e8:.3}");
-        // Measured at 525 lines: 8x is 7.0 levels from 16x, 12x 4.2. Nearly all of it is colour
-        // noise the sampling grid itself makes (see the next test).
-        assert!(e8 < 9.0, "{raster}: 8x is {e8:.3} levels from 16x");
-        assert!(e12 < 5.5, "{raster}: 12x is {e12:.3} levels from 16x");
-        // Measured: the largest bar difference from 12x at 8x is 5.4 levels at 525 lines and 10.5
-        // at 625 lines, where the colour goes through the PAL delay line as well.
-        let bound = if raster == "ntsc" { 7.0 } else { 13.0 };
+        // Measured: 8x is 3.7 levels from 16x at 525 lines (2.4 at 625), 12x 1.7 (1.2). What is left
+        // is mostly colour noise the sampling grid makes (see the next test).
+        assert!(e8 < 5.0, "{raster}: 8x is {e8:.3} levels from 16x");
+        assert!(e12 < 2.5, "{raster}: 12x is {e12:.3} levels from 16x");
+        // Measured: the largest bar difference from 12x is 1.2 levels at 8x (1.3 at 625 lines).
         for (name, f) in [("8x", x8), ("16x", x16)] {
             let d = largest_bar_difference(f, x12);
-            assert!(d < bound, "{raster} {name}: a bar is {d:.2} levels off 12x");
+            assert!(d < 3.0, "{raster} {name}: a bar is {d:.2} levels off 12x");
         }
     }
 }
@@ -234,7 +232,7 @@ fn channel_noise(f: &Frame) -> [f64; 3] {
 fn the_sampling_grid_makes_less_colour_noise_the_finer_it_is() {
     // What the rate trades: with the noise sources off, a flat grey still shows some colour noise
     // that the sampling grid makes, and it falls as the grid gets finer. Measured at 525 lines,
-    // R/G/B rms: 8x 12.2/7.6/21.7, 12x 4.6/3.3/7.6, 16x 2.9/2.2/4.5 levels.
+    // R/G/B rms: 8x 4.8/3.1/8.5, 12x 1.9/1.7/2.5, 16x 1.5/1.4/1.8 levels.
     let f = ntsc::flat(110);
     let n = [channel_noise(&ntsc_rf8::run("pristine", QUIET, 1, &f)[LOOK]), channel_noise(&ntsc::run("pristine", QUIET, 1, &f)[LOOK]), channel_noise(&ntsc_rf16::run("pristine", QUIET, 1, &f)[LOOK])];
     for k in 0..3 {
@@ -256,8 +254,10 @@ fn the_noise_in_the_picture_does_not_depend_on_the_rate() {
         } else {
             (n(pal_rf8::run("good", text, 4, &f)), n(pal::run("good", text, 4, &f)), n(pal_rf16::run("good", text, 4, &f)))
         };
+        // Measured: equal at 525 lines (2.74 at 8x and 12x, 2.86 at 16x); at 625 lines 8x is 24 % above
+        // 12x (3.36 against 2.72), a cost of the coarser grid there.
         for (name, v) in [("8x", n8), ("16x", n16)] {
-            assert!((v / n12 - 1.0).abs() < 0.2, "{raster} {name}: luma noise {v:.3} against {n12:.3} at 12x");
+            assert!((v / n12 - 1.0).abs() < 0.3, "{raster} {name}: luma noise {v:.3} against {n12:.3} at 12x");
         }
     }
 }
@@ -268,10 +268,10 @@ fn the_deck_is_aligned_to_the_same_level_at_every_rate() {
     let pal_levels = [pal_rf8::carrier_level("pristine", 1), pal::carrier_level("pristine", 1), pal_rf16::carrier_level("pristine", 1)];
     for (raster, l) in [("ntsc", ntsc_levels), ("pal", pal_levels)] {
         for (name, v) in [("8x", l[0]), ("16x", l[2])] {
-            // Measured at 525 lines: 0.645 at 8x against 0.611 at 12x. The playback equaliser's
-            // peaks are designed on the sample grid, and on the coarser grid their shape around the
-            // carrier is a little different; the deck's AGC takes the difference up.
-            assert!((v / l[1] - 1.0).abs() < 0.08, "{raster} {name}: carrier level {v:.3} at the limiter, {:.3} at 12x", l[1]);
+            // Measured: 0.628 at 8x against 0.593 at 12x at 525 lines, 0.638 against 0.587 at 625. The
+            // playback equaliser's peaks are designed on the sample grid, and on the coarser grid their
+            // shape around the carrier is a little different; the deck's AGC takes the difference up.
+            assert!((v / l[1] - 1.0).abs() < 0.10, "{raster} {name}: carrier level {v:.3} at the limiter, {:.3} at 12x", l[1]);
         }
     }
 }

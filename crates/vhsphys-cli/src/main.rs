@@ -191,7 +191,7 @@ impl StandardArg {
 /// How finely the tape signal is sampled, as a multiple of the colour subcarrier.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum RfRateArg {
-    /// 8 x fsc: about a quarter faster, with more colour noise from the coarser grid.
+    /// 8 x fsc: about a quarter faster, with more noise from the coarser grid.
     #[value(name = "8x")]
     X8,
     /// 12 x fsc: the reference, the default.
@@ -280,7 +280,7 @@ struct RunArgs {
     /// Television standard: ntsc (the default), pal or pal60. Wins over `standard` in the config file.
     #[arg(long, value_enum)]
     standard: Option<StandardArg>,
-    /// How finely the tape signal is sampled, as a multiple of the colour subcarrier: 12x (the reference, the default), 8x (about a quarter faster, with more colour noise) or 16x (about a sixth slower, the most accurate). Wins over rf_rate in the config file.
+    /// How finely the tape signal is sampled, as a multiple of the colour subcarrier: 12x (the reference, the default), 8x (about a quarter faster, with more noise from the coarser grid) or 16x (about a sixth slower, the most accurate). Wins over rf_rate in the config file.
     #[arg(long, value_enum, value_name = "RATE")]
     rf_rate: Option<RfRateArg>,
     /// Random seed: the same seed gives the same tape and deck.

@@ -6,7 +6,7 @@ use vhsphys_core::{config, pipeline::Session, video::test_pattern};
 use vhsphys_core::head::{head_front_end, HeadParams};
 use vhsphys_core::rng::Rng;
 
-const GOLDEN: u64 = 0x64948fb7a6413cac;
+const GOLDEN: u64 = 0xb23a1d88b345c27e;
 
 #[test]
 fn head_bumps_zero_amplitude_is_bit_identical_to_golden() {
