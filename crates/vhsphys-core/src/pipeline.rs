@@ -84,6 +84,19 @@ pub const CAMERA_TRACKS: &[&str] = &["iris_stops"];
 /// because a pulse of zero width divides by zero and a negative one is turned upside down.
 const MIN_AUTOMATED_H0_UM: f64 = 0.05;
 
+/// Displacement of the lines just after the head takes over, per unit of slack on the tension
+/// track, seconds `[est]` (`docs/MEASUREMENTS_WANTED.md`).
+const TENSION_SKEW_S: f64 = 0.8e-6;
+
+/// Extra head-to-tape spacing per unit of head wear, micrometres `[est]` (`docs/MEASUREMENTS_WANTED.md`).
+const HEAD_WEAR_SPACING_UM: f64 = 0.06;
+
+/// Pulse half-width growth per unit of head wear, micrometres `[est]` (`docs/MEASUREMENTS_WANTED.md`).
+const HEAD_WEAR_H0_UM: f64 = 0.25;
+
+/// Share of head gain lost per unit of head wear, dimensionless `[est]` (`docs/MEASUREMENTS_WANTED.md`).
+const HEAD_WEAR_GAIN_LOSS: f64 = 0.35;
+
 /// Everything that defines a deck, a tape and how worn they are.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -230,9 +243,9 @@ where
             hp.extra_spacing_um += sp;
         }
         if let Some(wear) = schedule.head_wear(frame_pos) {
-            hp.extra_spacing_um += 0.06 * wear;
-            hp.h0_um += 0.25 * wear;
-            hp.gain *= (1.0 - 0.35 * wear).max(0.0);
+            hp.extra_spacing_um += HEAD_WEAR_SPACING_UM * wear;
+            hp.h0_um += HEAD_WEAR_H0_UM * wear;
+            hp.gain *= (1.0 - HEAD_WEAR_GAIN_LOSS * wear).max(0.0);
         }
         if let Some(gain_mod) = schedule.eval("head_gain", frame_pos) {
             hp.gain *= gain_mod;
@@ -263,12 +276,12 @@ where
         if let Some(tension) = schedule.tension(frame_pos) {
             if tension != 0.0 {
                 let tf = p.mech.flag_lines * RF_PER_LINE as f64;
-                let extra_flag = 0.8e-6 * (-tension).max(0.0);
+                let extra_flag = TENSION_SKEW_S * (-tension).max(0.0);
                 let g_in = switch_time(n);
                 for (i, w) in ctl.warp.iter_mut().enumerate() {
                     let g = g0 + (i * STRIDE) as i64;
                     if g >= g_in {
-                        *w += (extra_flag * (-((g - g_in) as f64) / tf).exp()) as f32;
+                        *w += (extra_flag * FS_RF * (-((g - g_in) as f64) / tf).exp()) as f32;
                     }
                 }
             }
@@ -431,7 +444,9 @@ pub fn calibrate(p: &Params) -> Calibration {
     // clean heads, nominal deck, black picture with sync + burst on every line
     let mut clean = p.clone();
     for h in clean.heads.iter_mut() {
-        *h = HeadParams { cnr_db: 400.0, media_am_noise: 0.0, ..HeadParams::default() };
+        // The bench alignment is made with the deck's own heads; a narrower head gives less signal
+        // and the alignment takes that up.
+        *h = HeadParams { width_um: h.width_um, cnr_db: 400.0, media_am_noise: 0.0, ..HeadParams::default() };
     }
     clean.deck = DeckParams::default();
     clean.tape = TapeParams::default();
@@ -453,8 +468,6 @@ pub fn calibrate(p: &Params) -> Calibration {
     for &(f, q, g) in &clean.deck.eq_peaks {
         crate::dsp::Biquad::peaking(f, q, g, FS_RF).process(&mut x);
     }
-    let l0 = (g0 - (g0 - 0)) as usize; // window-relative origin
-    let _ = l0;
     // choose lines well inside the active picture of the field
     let line0 = (60 * RF_PER_LINE) as i64 + (switch_time(n) - g0) + SWITCH_LEAD_RF as i64;
     let seg = &x[line0 as usize..line0 as usize + 40 * RF_PER_LINE];
