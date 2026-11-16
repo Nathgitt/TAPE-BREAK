@@ -31,6 +31,12 @@ The crate root re-exports the `ntsc` engine, so `vhsphys_core::pipeline::Session
 `Session` and every existing path is unchanged. The 625-line engine costs nothing at run time: the
 525-line path does not know it exists.
 
+Each RF sample rate (`8x`, `12x`, `16x`) is compiled as its own engine in the same way: `ntsc` and
+`pal` at the default `12x`, plus `ntsc_rf8`, `pal_rf8`, `ntsc_rf16` and `pal_rf16`. Counts of RF
+samples that stand for a time span were set at `12x` and scale with the rate (`consts::rf_samples`,
+`consts::RF_SCALE`). A config names the rate it was written for and an engine refuses another; racks
+of `[[generation]]` tables run at `12x` only for now.
+
 Inside an engine file, another engine module is `super::x` (so each engine sees its own
 constants); a shared module is `crate::x`.
 

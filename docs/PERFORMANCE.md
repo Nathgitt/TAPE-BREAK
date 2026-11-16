@@ -74,14 +74,17 @@ nothing more.
 - A faster sine that gives the library's result bit for bit (a polynomial with a test that falls back on the library when rounding could differ): exact, and twice as slow as the system library's sine on the baseline target.
 - Rendering the playback head a few lines at a time as well: identical output, no measurable gain; the head is limited by arithmetic.
 
+## The RF sample rate
+
+`--rf-rate 8x|12x|16x` (default `12x`) sets how finely the tape signal is sampled between the record head and the demodulator (2, 3 or 4 RF samples per baseband sample at 525 lines; the 625-line engine uses the same samples per line, so its rates are 0.7 % lower). Measured on the 754x480 240-frame `worn` clip on the 8-core Ryzen 7 5800X: 36.8 fps at `8x`, 30.2 at `12x`, 25.6 at `16x` on 8 threads; 42.1 fps at `8x`, 34.0 at `12x`, 28.7 at `16x` on 16 threads. So `8x` is about a quarter faster and `16x` about a sixth slower. With the noise sources off, a flat grey still shows colour noise from the sampling grid (R/G/B rms 12.2/7.6/21.7 levels at `8x`, 4.6/3.3/7.6 at `12x`, 2.9/2.2/4.5 at `16x`); on `pristine`, `8x` has about a quarter more colour noise than `12x` and `16x` about a tenth less, while luma noise is the same at every rate. Saturated colours shift by up to 5 levels at `8x` at 525 lines and up to 10 at 625 lines; the 6 % alignment level difference at `8x` is taken up by the deck's AGC.
+
 ## Candidates, not done
 
 Each candidate below would change the output and needs a check that the result stays as close to the physics, along with a new frozen table; the percentages are the share of one-thread time each could save at most:
 
-1. RF rate 12 x fsc to 8 x fsc: about a third of everything. Every stage that scales with the sample count gets a third cheaper, after a fidelity check (discriminator exactness, 9 MHz FM sidebands).
-2. A faster Gaussian generator for the head noise: the noise and resonance step is 8 %.
-3. The transport warp on a coarser grid: 5.5 %.
-4. Opposite-azimuth neighbour tracks at reduced bandwidth: about 9 %.
-5. The supply hum by rotating phasors: a few percent with the `worn` preset.
+1. A faster Gaussian generator for the head noise: the noise and resonance step is 8 %.
+2. The transport warp on a coarser grid: 5.5 %.
+3. Opposite-azimuth neighbour tracks at reduced bandwidth: about 9 %.
+4. The supply hum by rotating phasors: a few percent with the `worn` preset.
 
 Real time at 60 fps on an 8-core desktop needs about 1.6x to 2x more; on a 4-core machine it needs the GPU backend.

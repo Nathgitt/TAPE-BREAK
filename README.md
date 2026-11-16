@@ -356,6 +356,14 @@ Set in a config file (`[condition]` / `tape_speed = "lp"`), on the command line 
 
 ![source, SP, LP, EP with a 5 um tracking error](docs/img/features_speed_fractal.jpg)
 
+### RF sample rate
+
+Set with `--rf-rate 8x|12x|16x`, top-level `rf_rate = "8x"` in a config file, `--set rf_rate=8x` (the flag wins), or the window's "RF rate" control. `12x` (12 x fsc, three RF samples per baseband sample) is the default and the reference. `8x` runs about a quarter faster (36.8 vs 30.2 fps on 8 threads, 754x480 `worn`) and `16x` about a sixth slower (25.6 fps). The baseband grid, picture size, camera and sound stay the same; `8x` adds about a quarter more colour noise on a clean tape (`pristine`), shifts saturated colours by up to 5 levels (10 at 625 lines), and leaves luma noise unchanged. Racks of `[[generation]]` tables run at `12x` only for now.
+
+```sh
+vhsphys run in.mp4 out.mp4 --preset worn --rf-rate 8x
+```
+
 ### Generations
 
 Set with `--generations N` (1 to 8, default 1) or in the window with "Generations". Each generation re-records the previous one's playback on a different tape and deck (its own seed), so defects, wear and timebase differ; the cost is N times. A seed given by `--set seed=N` or in the config file is the seed of the whole chain.
