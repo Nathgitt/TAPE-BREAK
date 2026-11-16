@@ -30,8 +30,12 @@ use super::tracking::{lateral_weights, TrackingParams, NEIGHBOURS};
 use super::video::{encode_frame, weave_fields, Baseband, Frame};
 use crate::standard::TvStandard;
 use rayon::prelude::*;
+use rayon::Scope;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, OnceLock,
+};
 
 const STREAM_HEAD: u64 = 1;
 
@@ -41,6 +45,36 @@ const LOOKAHEAD: i64 = 3;
 
 /// Batch size used to drain the earlier generations of a chain when the clip ends.
 const DRAIN_BATCH: usize = 8;
+
+/// A stage of the batch graph and the stages released when it finishes.
+struct GraphTask<'a> {
+    remaining: AtomicUsize,
+    dependants: Vec<usize>,
+    work: Box<dyn Fn() + Send + Sync + 'a>,
+}
+
+/// Schedule a ready stage immediately so workers never wait at a stage boundary.
+fn spawn_ready<'scope>(scope: &Scope<'scope>, tasks: &'scope [GraphTask<'scope>], id: usize) {
+    scope.spawn(move |scope| {
+        (tasks[id].work)();
+        for &dependent in &tasks[id].dependants {
+            if tasks[dependent].remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                spawn_ready(scope, tasks, dependent);
+            }
+        }
+    });
+}
+
+fn take_slot<T>(slot: Arc<OnceLock<T>>) -> T {
+    Arc::try_unwrap(slot)
+        .unwrap_or_else(|_| unreachable!())
+        .into_inner()
+        .unwrap_or_else(|| unreachable!())
+}
+
+fn take_value<T>(value: Arc<T>) -> T {
+    Arc::try_unwrap(value).unwrap_or_else(|_| unreachable!())
+}
 
 /// The schedule tracks that belong to the camera that shot the picture. In a dub only the first generation is fed
 /// with camera frames, so it is the only one that takes these from the schedule.
@@ -134,6 +168,12 @@ struct WindowSource {
     blank: Baseband,
 }
 
+/// Input kept until a parallel batch can encode it without blocking the caller.
+enum PendingInput {
+    Picture(Frame),
+    Signal(Baseband),
+}
+
 impl VideoSource for WindowSource {
     fn fill(&self, bb_start: i64, y: &mut [f32], cu: &mut [f32], cv: &mut [f32]) {
         let n = y.len();
@@ -162,7 +202,10 @@ fn track_window(n: i64) -> (i64, usize) {
 /// neighbouring tracks the head partly overlaps (azimuth crosstalk), with
 /// timebase warp, head-to-tape spacing and oxide defects applied, then the
 /// head amplifier noise and resonance.
-fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto: Option<&AutomationSchedule>) -> Vec<f32> {
+fn render_rf<F>(cx: &Ctx, trans: F, n: i64, auto: Option<&AutomationSchedule>) -> Vec<f32>
+where
+    F: Fn(i64) -> Option<Arc<Vec<Transition>>>,
+{
     let p = &cx.p;
     let (g0, len) = track_window(n);
     let mut hp = p.heads[n.rem_euclid(2) as usize].clone();
@@ -240,7 +283,14 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
     let w = lateral_weights(&tracking, p.speed, hp.width_um, p.seed, n, len, g0);
     let h0 = hp.h0_samples();
     let mut buf = vec![0.0f32; len];
-    render_pulses(&trans[&n], 0.0, &ctl, Some(&w[2]), h0, &mut buf);
+    render_pulses(
+        &trans(n).expect("record task dependency"),
+        0.0,
+        &ctl,
+        Some(&w[2]),
+        h0,
+        &mut buf,
+    );
     if hp.azimuth_error_deg > 0.0 {
         let mean_w = w[2].iter().sum::<f32>() as f64 / w[2].len() as f64;
         azimuth_smooth(&mut buf, hp.width_um * mean_w, hp.azimuth_error_deg);
@@ -253,7 +303,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
             continue;
         }
         let wmax = w[k].iter().cloned().fold(0.0f32, f32::max);
-        let Some(tr) = trans.get(&(n + j)) else { continue };
+        let Some(tr) = trans(n + j) else { continue };
         if wmax < 0.003 {
             continue;
         }
@@ -263,7 +313,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
             c
         });
         let mut nb = vec![0.0f32; len];
-        render_pulses(tr, -(j as f64) * p.speed.adjacent_track_offset_rf(), nctl, Some(&w[k]), h0, &mut nb);
+        render_pulses(&tr, -(j as f64) * p.speed.adjacent_track_offset_rf(), nctl, Some(&w[k]), h0, &mut nb);
         if j.abs() % 2 == 1 {
             azimuth_smooth(&mut nb, hp.width_um * wmax as f64, 2.0 * AZIMUTH_DEG);
         }
@@ -313,7 +363,41 @@ struct SegMid {
     carrier_level: f32,
 }
 
-fn segment(p: &Params, rf: &HashMap<i64, Arc<Vec<f32>>>, n: i64) -> SegMid {
+/// Scan decoded continuous video through the picture tube as the final signal step.
+fn scan_frame(
+    bb: &Baseband,
+    k: i64,
+    base: &InterferenceParams,
+    auto: Option<&AutomationSchedule>,
+) -> Frame {
+    if let Some(schedule) = auto {
+        let mut itf = base.clone();
+        let mut changed = false;
+        if let Some(angle) = schedule.eval("crt_magnet_angle_deg", k as f64) {
+            itf.crt.magnet.angle_deg = angle;
+            changed = true;
+        }
+        if let Some(dist_cm) = schedule.eval("crt_magnet_cm", k as f64) {
+            itf.crt.magnet.rho_m = dist_cm / 100.0;
+            changed = true;
+        }
+        if let Some(z_cm) = schedule.eval("crt_magnet_z_cm", k as f64) {
+            itf.crt.magnet.z_m = z_cm / 100.0;
+            changed = true;
+        }
+        if changed && itf.crt.magnet.kind == MagnetKind::Absent {
+            itf.crt.magnet.kind = MagnetKind::Neodymium;
+        }
+        crt::scan_to_frame(bb, k, if changed { &itf } else { base })
+    } else {
+        crt::scan_to_frame(bb, k, base)
+    }
+}
+
+fn segment<F>(p: &Params, rf: F, n: i64) -> SegMid
+where
+    F: Fn(i64) -> Option<Arc<Vec<f32>>>,
+{
     let w = SEGMENT_WARM_RF as i64;
     let (g_a, g_b) = (switch_time(n), switch_time(n + 1));
     let (s0, s1) = (g_a - w, g_b + w);
@@ -321,7 +405,9 @@ fn segment(p: &Params, rf: &HashMap<i64, Arc<Vec<f32>>>, n: i64) -> SegMid {
     // The head-switched RF is three contiguous runs, one per track, so look each track up once.
     let mut push_run = |m: i64, lo: i64, hi: i64| {
         let (gr, _) = track_window(m);
-        buf.extend_from_slice(&rf[&m][(lo - gr) as usize..(hi - gr) as usize]);
+        buf.extend_from_slice(
+            &rf(m).expect("RF task dependency")[(lo - gr) as usize..(hi - gr) as usize],
+        );
     };
     push_run(n - 1, s0, g_a);
     push_run(n, g_a, g_b);
@@ -361,7 +447,7 @@ pub fn calibrate(p: &Params) -> Calibration {
     let tr = record_track(&src, &clean.record, (n % 2) as usize, g0, len);
     let mut trans = HashMap::new();
     trans.insert(n, Arc::new(tr));
-    let mut rf = render_rf(&cx, &trans, n, None);
+    let mut rf = render_rf(&cx, |m| trans.get(&m).cloned(), n, None);
     // equaliser, then measure the carrier amplitude on the black active area
     let mut x = rf.clone();
     for &(f, q, g) in &clean.deck.eq_peaks {
@@ -427,6 +513,7 @@ pub struct Session {
     /// `crt_magnet_*` tracks. A session in a `Chain` holds only the part of the schedule that belongs to it.
     pub automation: Option<Arc<AutomationSchedule>>,
     frames: VecDeque<Arc<Baseband>>,
+    pending_inputs: Vec<PendingInput>,
     first_idx: i64,
     pushed: i64,
     finished: bool,
@@ -461,6 +548,7 @@ impl Session {
             camera,
             automation: None,
             frames: VecDeque::new(),
+            pending_inputs: Vec::new(),
             first_idx: start,
             pushed: start,
             finished: false,
@@ -497,7 +585,11 @@ impl Session {
         self.update_camera_iris();
         let bb = match self.camera.as_mut() {
             Some(camera) => camera.encode_baseband(f),
-            None => encode_frame(f),
+            None => {
+                self.pending_inputs.push(PendingInput::Picture(f.clone()));
+                self.pushed += 1;
+                return;
+            }
         };
         self.push_baseband(bb);
     }
@@ -511,7 +603,12 @@ impl Session {
         self.update_camera_iris();
         let bb = match self.camera.as_mut() {
             Some(camera) => camera.encode_fields(f0, f1),
-            None => encode_frame(&weave_fields(f0, f1)),
+            None => {
+                self.pending_inputs
+                    .push(PendingInput::Picture(weave_fields(f0, f1)));
+                self.pushed += 1;
+                return;
+            }
         };
         self.push_baseband(bb);
     }
@@ -519,7 +616,7 @@ impl Session {
     /// Queue a continuous `Baseband` frame directly (used when dubbing from an upstream VCR deck
     /// in `Chain` without converting to an intermediate `u8` RGB `Frame` or running through a camera).
     pub fn push_baseband(&mut self, bb: Baseband) {
-        self.frames.push_back(Arc::new(bb));
+        self.pending_inputs.push(PendingInput::Signal(bb));
         self.pushed += 1;
     }
 
@@ -551,10 +648,26 @@ impl Session {
 
     /// Produce up to `max_frames` continuous `Baseband` outputs ahead of the CRT picture tube.
     /// Used by intermediate stages in `Chain` (multi-generation dubbing) and by `process`.
-    pub fn process_baseband(&mut self, max_frames: usize) -> (i64, Vec<Baseband>) {
+    fn encode_pending(&mut self) {
+        let pending = std::mem::take(&mut self.pending_inputs);
+        self.frames.extend(
+            pending
+                .into_par_iter()
+                .map(|input| match input {
+                    PendingInput::Picture(frame) => encode_frame(&frame),
+                    PendingInput::Signal(signal) => signal,
+                })
+                .map(Arc::new)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// Run every needed stage in one graph so a worker can move directly to the next ready stage.
+    fn process_inner(&mut self, max_frames: usize, scan: bool) -> (i64, Vec<Baseband>, Vec<Frame>) {
+        self.encode_pending();
         let count = (self.ready() as usize).min(max_frames) as i64;
         if count == 0 {
-            return (self.next_out, vec![]);
+            return (self.next_out, vec![], vec![]);
         }
         let (k0, k1) = (self.next_out, self.next_out + count);
         let src = WindowSource {
@@ -565,49 +678,205 @@ impl Session {
         let p = &self.params;
         let cx = &self.cx;
 
-        // 1. record tracks n in [2k0-3, 2k1+3]
-        let need: Vec<i64> = (2 * k0 - 3..=2 * k1 + 3).filter(|n| !self.trans.contains_key(n)).collect();
-        let made: Vec<(i64, Arc<Vec<Transition>>)> = need
-            .par_iter()
-            .map(|&n| {
-                let (g0, len) = track_window(n);
-                (n, Arc::new(record_track(&src, &p.record, n.rem_euclid(2) as usize, g0, len)))
-            })
+        let t_need: Vec<i64> = (2 * k0 - 3..=2 * k1 + 3)
+            .filter(|n| !self.trans.contains_key(n))
             .collect();
-        self.trans.extend(made);
+        let r_need: Vec<i64> = (2 * k0 - 1..=2 * k1 + 1)
+            .filter(|n| !self.rf.contains_key(n))
+            .collect();
+        let s_need: Vec<i64> = (2 * k0..=2 * k1)
+            .filter(|n| !self.seg.contains_key(n))
+            .collect();
+        let mut work: Vec<Box<dyn Fn() + Send + Sync>> = Vec::new();
+        let mut deps: Vec<Vec<usize>> = Vec::new();
+        let mut tids = HashMap::new();
+        let mut rids = HashMap::new();
+        let mut sids = HashMap::new();
+        let mut tslots = HashMap::new();
+        let mut rslots = HashMap::new();
+        let mut sslots = HashMap::new();
+        let mut dslots = HashMap::new();
+        let mut fslots = HashMap::new();
+        let base_itf = &p.interference;
+        let scan_auto = self.automation.clone();
 
-        // 2. playback head RF for n in [2k0-1, 2k1+1]
-        let need: Vec<i64> = (2 * k0 - 1..=2 * k1 + 1).filter(|n| !self.rf.contains_key(n)).collect();
-        let trans = &self.trans;
-        let auto = self.automation.clone();
-        let made: Vec<(i64, Arc<Vec<f32>>)> = need.par_iter().map(|&n| (n, Arc::new(render_rf(cx, trans, n, auto.as_deref())))).collect();
-        self.rf.extend(made);
-
-        // 3. deck segments for n in [2k0, 2k1]
-        let need: Vec<i64> = (2 * k0..=2 * k1).filter(|n| !self.seg.contains_key(n)).collect();
-        let rfm = &self.rf;
-        let made: Vec<(i64, Arc<SegMid>)> = need.par_iter().map(|&n| (n, Arc::new(segment(p, rfm, n)))).collect();
-        self.seg.extend(made);
-
-        // 4. decode continuous baseband planes
-        let ks: Vec<i64> = (k0..k1).collect();
-        let segm = &self.seg;
-        let bbs: Vec<Baseband> = ks
-            .par_iter()
-            .map(|&k| {
-                let parts = [&segm[&(2 * k)], &segm[&(2 * k + 1)], &segm[&(2 * k + 2)]];
+        for &n in &t_need {
+            let id = work.len();
+            let slot = Arc::new(OnceLock::new());
+            let out = slot.clone();
+            let (g0, len) = track_window(n);
+            let src = &src;
+            let rec = &p.record;
+            work.push(Box::new(move || {
+                out.set(Arc::new(record_track(
+                    src,
+                    rec,
+                    n.rem_euclid(2) as usize,
+                    g0,
+                    len,
+                )))
+                .ok()
+                .unwrap();
+            }));
+            deps.push(Vec::new());
+            tids.insert(n, id);
+            tslots.insert(n, slot);
+        }
+        for &n in &r_need {
+            let id = work.len();
+            let slot = Arc::new(OnceLock::new());
+            let out = slot.clone();
+            let cx = cx;
+            let cache = &self.trans;
+            let pending = tslots.clone();
+            let auto = self.automation.clone();
+            work.push(Box::new(move || {
+                let signal = |m| {
+                    cache
+                        .get(&m)
+                        .cloned()
+                        .or_else(|| pending.get(&m).and_then(|s| s.get().cloned()))
+                };
+                out.set(Arc::new(render_rf(cx, signal, n, auto.as_deref())))
+                    .ok()
+                    .unwrap();
+            }));
+            deps.push(Vec::new());
+            rids.insert(n, id);
+            rslots.insert(n, slot);
+        }
+        for &n in &s_need {
+            let id = work.len();
+            let slot = Arc::new(OnceLock::new());
+            let out = slot.clone();
+            let p = p;
+            let cache = &self.rf;
+            let pending = rslots.clone();
+            work.push(Box::new(move || {
+                let signal = |m| {
+                    cache
+                        .get(&m)
+                        .cloned()
+                        .or_else(|| pending.get(&m).and_then(|s| s.get().cloned()))
+                };
+                out.set(Arc::new(segment(p, signal, n))).ok().unwrap();
+            }));
+            deps.push(Vec::new());
+            sids.insert(n, id);
+            sslots.insert(n, slot);
+        }
+        for &k in &(k0..k1).collect::<Vec<_>>() {
+            let id = work.len();
+            let slot = Arc::new(OnceLock::new());
+            let out = slot.clone();
+            let frame_slot = Arc::new(OnceLock::new());
+            let frame_out = frame_slot.clone();
+            let pending = sslots.clone();
+            let cache = &self.seg;
+            let p = p;
+            let scan_auto = scan_auto.clone();
+            work.push(Box::new(move || {
+                let get = |n| {
+                    cache
+                        .get(&n)
+                        .cloned()
+                        .or_else(|| pending.get(&n).and_then(|s| s.get().cloned()))
+                        .expect("segment task dependency")
+                };
+                let parts = [get(2 * k), get(2 * k + 1), get(2 * k + 2)];
                 let mut luma = Vec::with_capacity(parts.iter().map(|s| s.luma.len()).sum());
-                for s in &parts {
-                    luma.extend_from_slice(&s.luma);
-                }
                 let mut cu = Vec::with_capacity(parts.iter().map(|s| s.cunder.len()).sum());
                 for s in &parts {
+                    luma.extend_from_slice(&s.luma);
                     cu.extend_from_slice(&s.cunder);
                 }
-                let view = StreamView { bb0: parts[0].bb_start, luma: &luma, cunder: &cu };
-                decode_baseband(k, &view, &p.decode, &p.composite, &p.interference)
+                let view = StreamView {
+                    bb0: parts[0].bb_start,
+                    luma: &luma,
+                    cunder: &cu,
+                };
+                let bb = Arc::new(decode_baseband(
+                    k,
+                    &view,
+                    &p.decode,
+                    &p.composite,
+                    &p.interference,
+                ));
+                if scan {
+                    frame_out
+                        .set(Arc::new(scan_frame(&bb, k, base_itf, scan_auto.as_deref())))
+                        .ok()
+                        .unwrap();
+                }
+                out.set(bb).ok().unwrap();
+            }));
+            deps.push(Vec::new());
+            for n in 2 * k..=2 * k + 2 {
+                if let Some(&dep) = sids.get(&n) {
+                    deps[id].push(dep);
+                }
+            }
+            dslots.insert(k, slot);
+            fslots.insert(k, frame_slot);
+        }
+        for &n in &r_need {
+            for j in NEIGHBOURS {
+                if let Some(&dep) = tids.get(&(n + j)) {
+                    deps[rids[&n]].push(dep);
+                }
+            }
+        }
+        for &n in &s_need {
+            for m in n - 1..=n + 1 {
+                if let Some(&dep) = rids.get(&m) {
+                    deps[sids[&n]].push(dep);
+                }
+            }
+        }
+        let mut dependants = vec![Vec::new(); work.len()];
+        for (id, inputs) in deps.iter().enumerate() {
+            for &input in inputs {
+                dependants[input].push(id);
+            }
+        }
+        let tasks: Vec<GraphTask<'_>> = work
+            .into_iter()
+            .enumerate()
+            .map(|(id, f)| GraphTask {
+                remaining: AtomicUsize::new(deps[id].len()),
+                dependants: std::mem::take(&mut dependants[id]),
+                work: f,
             })
             .collect();
+        // RF waits for every recorded neighbour so it sees the same tracks as the former full pass.
+        rayon::scope(|scope| {
+            for (id, task) in tasks.iter().enumerate() {
+                if task.remaining.load(Ordering::Acquire) == 0 {
+                    spawn_ready(scope, &tasks, id);
+                }
+            }
+        });
+        drop(tasks);
+        self.trans
+            .extend(tslots.into_iter().map(|(n, slot)| (n, take_slot(slot))));
+        self.rf
+            .extend(rslots.into_iter().map(|(n, slot)| (n, take_slot(slot))));
+        self.seg.extend(
+            sslots
+                .into_iter()
+                .filter(|(n, _)| *n >= 2 * k0 && *n <= 2 * k1)
+                .map(|(n, slot)| (n, take_slot(slot))),
+        );
+        let bbs: Vec<Baseband> = (k0..k1)
+            .map(|k| take_value(take_slot(dslots.remove(&k).unwrap())))
+            .collect();
+        let frames = if scan {
+            (k0..k1)
+                .map(|k| take_value(take_slot(fslots.remove(&k).unwrap())))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         self.next_out = k1;
         // evict
@@ -619,51 +888,24 @@ impl Session {
             self.frames.pop_front();
             self.first_idx += 1;
         }
+        (k0, bbs, frames)
+    }
+
+    pub fn process_baseband(&mut self, max_frames: usize) -> (i64, Vec<Baseband>) {
+        let (k0, bbs, _) = self.process_inner(max_frames, false);
         (k0, bbs)
     }
 
     /// Produce up to `max_frames` output frames. Scanning the continuous baseband through the CRT
     /// beam and writing the `Frame` to video is strictly the final step.
     pub fn process(&mut self, max_frames: usize) -> Vec<Frame> {
-        let (k0, bbs) = self.process_baseband(max_frames);
-        if bbs.is_empty() {
-            return vec![];
-        }
-        let base_itf = &self.params.interference;
-        let auto = self.automation.clone();
-        bbs.par_iter()
-            .enumerate()
-            .map(|(idx, bb)| {
-                let k = k0 + idx as i64;
-                if let Some(schedule) = auto.as_deref() {
-                    let mut itf = base_itf.clone();
-                    let mut changed = false;
-                    if let Some(angle) = schedule.eval("crt_magnet_angle_deg", k as f64) {
-                        itf.crt.magnet.angle_deg = angle;
-                        changed = true;
-                    }
-                    if let Some(dist_cm) = schedule.eval("crt_magnet_cm", k as f64) {
-                        itf.crt.magnet.rho_m = dist_cm / 100.0;
-                        changed = true;
-                    }
-                    if let Some(z_cm) = schedule.eval("crt_magnet_z_cm", k as f64) {
-                        itf.crt.magnet.z_m = z_cm / 100.0;
-                        changed = true;
-                    }
-                    if changed && itf.crt.magnet.kind == MagnetKind::Absent {
-                        itf.crt.magnet.kind = MagnetKind::Neodymium;
-                    }
-                    crt::scan_to_frame(bb, k, if changed { &itf } else { base_itf })
-                } else {
-                    crt::scan_to_frame(bb, k, base_itf)
-                }
-            })
-            .collect()
+        self.process_inner(max_frames, true).2
     }
 
     /// Intermediate signals of one field, for analysis (requires the clip to be
     /// finished or at least 3 frames beyond the field).
     pub fn debug_field(&mut self, n: i64) -> DebugField {
+        self.encode_pending();
         let src = WindowSource {
             first: self.first_idx,
             frames: self.frames.iter().cloned().collect(),
@@ -675,14 +917,40 @@ impl Session {
         let mut rf = HashMap::new();
         for m in n - 2..=n + 2 {
             let (g0, len) = track_window(m);
-            trans.insert(m, Arc::new(record_track(&src, &p.record, m.rem_euclid(2) as usize, g0, len)));
+            trans.insert(
+                m,
+                Arc::new(record_track(
+                    &src,
+                    &p.record,
+                    m.rem_euclid(2) as usize,
+                    g0,
+                    len,
+                )),
+            );
         }
         for m in n - 1..=n + 1 {
-            rf.insert(m, Arc::new(render_rf(cx, &trans, m, self.automation.as_deref())));
+            rf.insert(
+                m,
+                Arc::new(render_rf(
+                    cx,
+                    |track| trans.get(&track).cloned(),
+                    m,
+                    self.automation.as_deref(),
+                )),
+            );
         }
-        let seg = segment(p, &rf, n);
+        let seg = segment(p, |track| rf.get(&track).cloned(), n);
         let (g0, _) = track_window(n);
-        DebugField { doc_fraction: seg.doc_fraction, carrier_level: seg.carrier_level, g0, n_transitions: trans[&n].len(), rf: rf[&n].to_vec(), luma: seg.luma, cunder: seg.cunder, bb_start: seg.bb_start }
+        DebugField {
+            doc_fraction: seg.doc_fraction,
+            carrier_level: seg.carrier_level,
+            g0,
+            n_transitions: trans[&n].len(),
+            rf: rf[&n].to_vec(),
+            luma: seg.luma,
+            cunder: seg.cunder,
+            bb_start: seg.bb_start,
+        }
     }
 
     /// Convenience: run a whole clip.

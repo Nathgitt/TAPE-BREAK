@@ -44,6 +44,9 @@ const CONDITION_TABLE: &str = "condition";
 /// The most generations a chain of dubs may have.
 const MAX_GENERATIONS: u8 = 8;
 
+/// Queue several default batches so encoding can overlap with simulation.
+const WRITER_QUEUE_FRAMES: usize = 24;
+
 /// What the wizard offers for the camera exposure (stops) and for the generations; Enter takes them.
 const WIZARD_IRIS_STOPS: &str = "2.0";
 const WIZARD_GENERATIONS: &str = "1";
@@ -966,46 +969,87 @@ impl<'a> Pipe<'a> {
 impl RunningPipe<'_> {
     /// Feed the decoder's frames to `session` (or, without one, through `bypass`) and its
     /// frames to the encoder, until the input ends or `--frames` is reached.
-    fn render(self, mut session: Option<&mut dyn Playback>, bypass: &dyn Fn(&Frame) -> Frame) -> Result<()> {
-        let RunningPipe { a, mut dec, mut dec_out, mut enc, mut enc_in, source, _sound } = self;
+    fn render(
+        self,
+        mut session: Option<&mut dyn Playback>,
+        bypass: &dyn Fn(&Frame) -> Frame,
+    ) -> Result<()> {
+        let RunningPipe {
+            a,
+            mut dec,
+            mut dec_out,
+            mut enc,
+            enc_in,
+            source,
+            _sound,
+        } = self;
         let t0 = Instant::now();
-        let (mut n_in, mut n_out) = (0usize, 0usize);
+        let mut n_in = 0usize;
         let limit = a.frames.unwrap_or(usize::MAX);
         let mut frame = Frame::new(source.w, source.h);
-        let mut write = |f: &Frame, n_out: &mut usize| -> Result<()> {
-            enc_in.write_all(&f.rgb)?;
-            *n_out += 1;
-            if *n_out % 15 == 0 {
-                eprint!("\r  {} frames  {:.2} fps   ", n_out, *n_out as f64 / t0.elapsed().as_secs_f64());
-            }
-            Ok(())
-        };
-        while n_in < limit && read_frame(&mut dec_out, &mut frame)? {
-            n_in += 1;
-            match session.as_mut() {
-                Some(s) => {
-                    s.push_frame(&frame);
-                    while s.frames_ready() >= a.batch as i64 {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITER_QUEUE_FRAMES);
+        let n_out = std::thread::scope(|scope| -> Result<usize> {
+            let writer = scope.spawn(move || -> std::io::Result<usize> {
+                let mut count = 0usize;
+                let mut enc_in = enc_in;
+                for rgb in rx {
+                    enc_in.write_all(&rgb)?;
+                    count += 1;
+                    if count % 15 == 0 {
+                        eprint!(
+                            "\r  {} frames  {:.2} fps   ",
+                            count,
+                            count as f64 / t0.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+                Ok(count)
+            });
+            let produce = (|| -> Result<()> {
+                while n_in < limit && read_frame(&mut dec_out, &mut frame)? {
+                    n_in += 1;
+                    match session.as_mut() {
+                        Some(s) => {
+                            s.push_frame(&frame);
+                            while s.frames_ready() >= a.batch as i64 {
+                                for f in s.play(a.batch) {
+                                    tx.send(f.rgb)
+                                        .map_err(|_| anyhow!("encoder writer stopped"))?;
+                                }
+                            }
+                        }
+                        None => tx
+                            .send(bypass(&frame).rgb)
+                            .map_err(|_| anyhow!("encoder writer stopped"))?,
+                    }
+                }
+                if let Some(s) = session.as_mut() {
+                    s.finish_input();
+                    while s.frames_ready() > 0 {
                         for f in s.play(a.batch) {
-                            write(&f, &mut n_out)?;
+                            tx.send(f.rgb)
+                                .map_err(|_| anyhow!("encoder writer stopped"))?;
                         }
                     }
                 }
-                None => write(&bypass(&frame), &mut n_out)?,
-            }
-        }
-        if let Some(s) = session.as_mut() {
-            s.finish_input();
-            while s.frames_ready() > 0 {
-                for f in s.play(a.batch) {
-                    write(&f, &mut n_out)?;
-                }
-            }
-        }
-        drop(enc_in);
+                Ok(())
+            })();
+            drop(tx);
+            let count = writer
+                .join()
+                .map_err(|_| anyhow!("encoder writer panicked"))?
+                .map_err(anyhow::Error::from)?;
+            produce?;
+            Ok(count)
+        })?;
         let _ = dec.kill();
         let st = enc.wait()?;
-        eprintln!("\r  {} frames in {:.1}s ({:.2} fps)          ", n_out, t0.elapsed().as_secs_f64(), n_out as f64 / t0.elapsed().as_secs_f64());
+        eprintln!(
+            "\r  {} frames in {:.1}s ({:.2} fps)          ",
+            n_out,
+            t0.elapsed().as_secs_f64(),
+            n_out as f64 / t0.elapsed().as_secs_f64()
+        );
         if !st.success() {
             bail!("ffmpeg encoder failed");
         }
