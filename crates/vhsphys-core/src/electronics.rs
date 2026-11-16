@@ -14,14 +14,14 @@ use crate::dsp::*;
 use serde::{Deserialize, Serialize};
 
 /// Nominal discriminator delay assumed by the downstream scaling (samples).
-pub const DEMOD_DELAY_NOMINAL: f64 = 3.0;
+pub const DEMOD_DELAY_NOMINAL: f64 = 3.0 * RF_SCALE;
 
 /// RF samples processed per piece by the streaming deck: a multiple of `OS` around
 /// 16 000 so that a piece's intermediate buffers stay in the second-level cache.
 const DECK_PIECE_RF: usize = 6 * RF_PER_LINE;
 
 /// Number of equalised samples used to initialise the AGC.
-const AGC_INIT_RF: usize = 4000;
+const AGC_INIT_RF: usize = rf_samples(4000);
 
 /// First piece size: long enough for both the AGC start-up mean and the coupling
 /// high-pass settling mean (`min(n, RF_PER_LINE)` de-emphasised samples).
@@ -353,7 +353,7 @@ impl<'a> DeckStream<'a> {
                 self.doc_active = true;
             } else if self.doc_active && self.doc_env > self.doc_rel {
                 if self.doc_hold == 0 {
-                    self.doc_hold = 6;
+                    self.doc_hold = rf_samples(6);
                 }
                 self.doc_hold -= 1;
                 if self.doc_hold == 0 {
@@ -472,9 +472,10 @@ impl<'a> DeckStream<'a> {
             self.lb_buf.clear();
             for &y in &self.prod_buf {
                 let v = (self.cpl.tick(y as f64) as f32) + self.mid;
-                if self.y_phase == 1 {
+                if self.y_phase == OS / 2 {
                     self.pending_lb = v;
-                } else if self.y_phase == OS - 1 {
+                }
+                if self.y_phase == OS - 1 {
                     self.lb_buf.push(self.pending_lb);
                 }
                 self.y_phase += 1;
@@ -499,7 +500,7 @@ impl<'a> DeckStream<'a> {
             }
             if self.have_supply {
                 let (add, gm) =
-                    supply_disturbance(&self.p.supply, self.g0 + (OS * self.out_k + 1) as i64);
+                    supply_disturbance(&self.p.supply, self.g0 + (OS * self.out_k + OS / 2) as i64);
                 v = v * (1.0 + gm) + add;
             }
             out.luma.push(v + self.dc_error);
@@ -883,7 +884,7 @@ mod tests {
         };
         if p.agc_enabled {
             let alpha = (1.0 - (-1.0 / (p.agc_ms * 1e-3 * FS_RF)).exp()) as f32;
-            let k = n.min(4000);
+            let k = n.min(AGC_INIT_RF);
             let mut avg = x[..k].iter().map(|v| v.abs()).sum::<f32>() / k as f32;
             let (gmin, gmax) = (0.25f32, p.agc_max_gain as f32);
             for v in x.iter_mut() {
@@ -913,7 +914,7 @@ mod tests {
                     active = true;
                 } else if active && env > rel {
                     if hold == 0 {
-                        hold = 6;
+                        hold = rf_samples(6);
                     }
                     hold -= 1;
                     if hold == 0 {
@@ -932,14 +933,21 @@ mod tests {
         // ---- colour-under branch: tapped before the limiter ----
         let nb = n / OS;
         let mut cu: Vec<f32> = (0..nb)
-            .map(|k| (x[OS * k] + x[OS * k + 1] + x[OS * k + 2]) / 3.0)
+            .map(|k| {
+                let g = &x[OS * k..OS * (k + 1)];
+                let mut sum = g[0];
+                for v in &g[1..] {
+                    sum += *v;
+                }
+                sum / OS as f32
+            })
             .collect();
         let mut clpf = butter_lp(4, p.chroma_lpf_hz, FS_BB);
         clpf.process(&mut cu);
         // chroma is killed while the compensator is active
         let mut dropout = vec![0u8; nb];
         for k in 0..nb {
-            if doc[OS * k] | doc[OS * k + 1] | doc[OS * k + 2] != 0 {
+            if doc[OS * k..OS * (k + 1)].iter().any(|&d| d != 0) {
                 dropout[k] = 1;
             }
         }
@@ -991,7 +999,7 @@ mod tests {
         }
         // decimate to baseband, then the video low-pass (zero-phase FIR) and the
         // aperture corrector
-        let mut lb: Vec<f32> = (0..nb).map(|k| y[OS * k + 1]).collect();
+        let mut lb: Vec<f32> = (0..nb).map(|k| y[OS * k + OS / 2]).collect();
         let fir = kaiser_lowpass(p.luma_lpf_hz, p.luma_lpf_transition_hz, 55.0, FS_BB);
         lb = fir_centred(&lb, &fir);
         if p.sharp_db != 0.0 {
@@ -1006,7 +1014,7 @@ mod tests {
         for k in 0..nb {
             let mut v = lb[k];
             if have_supply {
-                let (add, gm) = supply_disturbance(&p.supply, g0 + (OS * k + 1) as i64);
+                let (add, gm) = supply_disturbance(&p.supply, g0 + (OS * k + OS / 2) as i64);
                 v = v * (1.0 + gm) + add;
             }
             luma.push(v + p.dc_error_ire as f32);

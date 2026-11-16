@@ -9,6 +9,7 @@
 //! are meant to be tuned against real tapes and decks.
 
 use super::consts::MAINS_HZ_DEFAULT;
+use super::electronics::DEMOD_DELAY_NOMINAL;
 use super::emphasis::SubEmphasisParams;
 use super::format::TapeSpeed;
 use super::interference::hash_unit;
@@ -385,7 +386,7 @@ impl Condition {
         d.coupling_hpf_hz = 15.0 / ecap.c_ratio;
         d.deemph_tau_scale = 1.0 + r_drift + 0.01 * deck_af * g();
         d.deemph_ratio_scale = 1.0 + 0.5 * r_drift * g();
-        d.demod_delay = 3.0 * (1.0 + (0.004 + 0.012 * deck_af) * g());
+        d.demod_delay = DEMOD_DELAY_NOMINAL * (1.0 + (0.004 + 0.012 * deck_af) * g());
         d.dc_error_ire = (1.0 + 4.0 * deck_af) * g() * 0.5;
         d.sharp_db = (3.0 + 1.0 * deck_af * g()).max(0.0);
         d.luma_lpf_hz *= 1.0 + 0.03 * deck_af * g();

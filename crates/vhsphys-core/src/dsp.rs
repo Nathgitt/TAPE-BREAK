@@ -226,6 +226,22 @@ pub fn upsample3(x: &[f32], out: &mut Vec<f32>) {
     }
 }
 
+/// Upsample by `os` with cubic interpolation. `out[os * k + r]` is `x` at `k + r / os` (edges clamp).
+pub fn upsample(x: &[f32], os: usize, out: &mut Vec<f32>) {
+    assert!(os >= 1, "upsample factor must be at least 1");
+    out.clear();
+    out.reserve(x.len() * os);
+    let n = x.len();
+    for k in 0..n {
+        let g = |j: i64| x[j.clamp(0, n as i64 - 1) as usize];
+        let (p0, p1, p2, p3) = (g(k as i64 - 1), x[k], g(k as i64 + 1), g(k as i64 + 2));
+        out.push(p1);
+        for j in 1..os {
+            out.push(cubic(p0, p1, p2, p3, j as f32 / os as f32));
+        }
+    }
+}
+
 /// Fractional-delay taps (4-point Lagrange) for delay `frac` in [0, 1) applied
 /// as `y[n] = sum taps[j] * x[n - 1 + ... ]`; see `lagrange_delay`.
 #[inline]
@@ -411,6 +427,31 @@ mod tests {
             assert_eq!(y[3 * k], x[k]);
             let truth = ((k as f32 + 1.0 / 3.0) * 0.2).sin();
             assert!((y[3 * k + 1] - truth).abs() < 2e-3);
+        }
+    }
+
+    #[test]
+    fn upsample_matches_upsample3_and_reproduces_smooth_signals() {
+        let x: Vec<f32> = (0..64).map(|k| (k as f32 * 0.2).sin()).collect();
+        let mut y3 = Vec::new();
+        let mut y_gen = Vec::new();
+        upsample3(&x, &mut y3);
+        upsample(&x, 3, &mut y_gen);
+        assert_eq!(
+            y_gen.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            y3.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        for os in [2usize, 4] {
+            let mut y = Vec::new();
+            upsample(&x, os, &mut y);
+            assert_eq!(y.len(), x.len() * os);
+            for k in 3..60 {
+                assert_eq!(y[os * k], x[k]);
+                for j in 1..os {
+                    let truth = ((k as f32 + j as f32 / os as f32) * 0.2).sin();
+                    assert!((y[os * k + j] - truth).abs() < 2e-3, "os={os} k={k} j={j}");
+                }
+            }
         }
     }
 

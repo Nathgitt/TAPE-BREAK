@@ -188,25 +188,26 @@ pub fn fm_modulate(y_rf: &[f32], p: &RecordParams, offset_hz: f64, out: &mut Vec
     }
 }
 
-/// Upsample `x[k0..k1]` by 3 with cubic interpolation into `out`, clamping indices against
-/// the full `x` slice so piece boundaries match whole-array `upsample3`.
-fn upsample3_range(x: &[f32], k0: usize, k1: usize, out: &mut Vec<f32>) {
+/// Upsample `x[k0..k1]` by `OS` with cubic interpolation into `out`, clamping indices against
+/// the full `x` slice so piece boundaries match whole-array `upsample`.
+fn upsample_range(x: &[f32], k0: usize, k1: usize, out: &mut Vec<f32>) {
     out.clear();
-    out.reserve(k1.saturating_sub(k0) * 3);
+    out.reserve(k1.saturating_sub(k0) * OS);
     let n = x.len();
     for k in k0..k1 {
         let g = |j: i64| x[j.clamp(0, n as i64 - 1) as usize];
         let (p0, p1, p2, p3) = (g(k as i64 - 1), x[k], g(k as i64 + 1), g(k as i64 + 2));
         out.push(p1);
-        out.push(cubic(p0, p1, p2, p3, 1.0 / 3.0));
-        out.push(cubic(p0, p1, p2, p3, 2.0 / 3.0));
+        for j in 1..OS {
+            out.push(cubic(p0, p1, p2, p3, j as f32 / OS as f32));
+        }
     }
 }
 
 /// Run the record chain for one track and return the magnetisation reversals.
 ///
-/// `g0` is the global RF index of the first window sample (multiple of 3);
-/// `n_rf` the window length (multiple of 3); `parity` selects head/track 1 or 2.
+/// `g0` is the global RF index of the first window sample (multiple of `OS`);
+/// `n_rf` the window length (multiple of `OS`); `parity` selects head/track 1 or 2.
 pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: i64, n_rf: usize) -> Vec<Transition> {
     assert!(g0 % OS as i64 == 0 && n_rf % OS == 0);
     const PAD: usize = 2 * BB_PER_LINE; // filter warm-up lines each side
@@ -293,7 +294,7 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
     let mut r = g0.rem_euclid(RF_PER_LINE as i64) as usize;
     let (mut rc, mut rs) = line_rotation(parity, line);
 
-    let total_rf = 3 * tot;
+    let total_rf = OS * tot;
     let piece_cap = RECORD_PIECE_RF.min(total_rf);
     let mut cu_p = Vec::with_capacity(piece_cap);
     let mut cv_p = Vec::with_capacity(piece_cap);
@@ -303,11 +304,11 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
     let mut r0 = 0usize;
     while r0 < total_rf {
         let r1 = (r0 + RECORD_PIECE_RF).min(total_rf);
-        let (k0, k1) = (r0 / 3, r1 / 3);
+        let (k0, k1) = (r0 / OS, r1 / OS);
 
-        upsample3_range(&cu, k0, k1, &mut cu_p);
-        upsample3_range(&cv, k0, k1, &mut cv_p);
-        upsample3_range(&y, k0, k1, &mut y_p);
+        upsample_range(&cu, k0, k1, &mut cu_p);
+        upsample_range(&cv, k0, k1, &mut cv_p);
+        upsample_range(&y, k0, k1, &mut y_p);
 
         // luma: sub-emphasis, emphasis, clip
         if let Some(sub) = sub.as_mut() {
@@ -496,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn upsample3_range_matches_whole_array() {
+    fn upsample_range_matches_whole_array() {
         let mut rng = 0x1234_5678u32;
         let x: Vec<f32> = (0..2000)
             .map(|_| {
@@ -505,15 +506,20 @@ mod tests {
             })
             .collect();
         let mut want = Vec::new();
-        upsample3(&x, &mut want);
+        upsample(&x, OS, &mut want);
         let want_bits: Vec<u32> = want.iter().map(|v| v.to_bits()).collect();
+        if OS == REFERENCE_OS {
+            let mut want3 = Vec::new();
+            upsample3(&x, &mut want3);
+            assert_eq!(want_bits, want3.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        }
         for step in [1usize, 7, 910] {
             let mut got = Vec::new();
             let mut piece = Vec::new();
             let mut k0 = 0;
             while k0 < x.len() {
                 let k1 = (k0 + step).min(x.len());
-                upsample3_range(&x, k0, k1, &mut piece);
+                upsample_range(&x, k0, k1, &mut piece);
                 got.extend_from_slice(&piece);
                 k0 = k1;
             }

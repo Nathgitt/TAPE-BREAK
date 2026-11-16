@@ -60,10 +60,12 @@ pub fn render_pulses(
     out: &mut [f32],
 ) {
     let n = out.len() as i64;
+    let skip = rf_samples(60) as f64;
+    let (r_min, r_max) = (rf_samples(16) as i64, rf_samples(56) as i64);
     debug_assert!(out.len() <= i32::MAX as usize);
     for t in tr {
         let tt = t.t + shift;
-        if tt < -60.0 || tt > (n + 60) as f64 {
+        if tt < -skip || tt > n as f64 + skip {
             continue;
         }
         let mag = Controls::at(&ctl.mag, tt);
@@ -74,7 +76,7 @@ pub fn render_pulses(
         }
         let tc = tt + Controls::at(&ctl.warp, tt) as f64;
         let h = (h0 + Controls::at(&ctl.dd, tt) as f64 / UM_PER_SAMPLE) as f32;
-        let r = ((8.0 * h) as i64).clamp(16, 56);
+        let r = ((8.0 * h) as i64).clamp(r_min, r_max);
         let i0 = tc.floor() as i64 - r;
         let c = amp * h / PI32;
         let h2 = h * h;
@@ -270,16 +272,18 @@ mod tests {
         tr: &[Transition], shift: f64, ctl: &Controls, lateral: Option<&[f32]>, h0: f64, out: &mut [f32],
     ) {
         let n = out.len() as i64;
+        let skip = rf_samples(60) as f64;
+        let (r_min, r_max) = (rf_samples(16) as i64, rf_samples(56) as i64);
         for t in tr {
             let tt = t.t + shift;
-            if tt < -60.0 || tt > (n + 60) as f64 { continue; }
+            if tt < -skip || tt > n as f64 + skip { continue; }
             let mag = Controls::at(&ctl.mag, tt);
             let w = lateral.map_or(1.0, |l| Controls::at(l, tt));
             let amp = 2.0 * t.s as f32 * mag * w;
             if amp == 0.0 { continue; }
             let tc = tt + Controls::at(&ctl.warp, tt) as f64;
             let h = (h0 + Controls::at(&ctl.dd, tt) as f64 / UM_PER_SAMPLE) as f32;
-            let r = ((8.0 * h) as i64).clamp(16, 56);
+            let r = ((8.0 * h) as i64).clamp(r_min, r_max);
             let i0 = tc.floor() as i64 - r;
             let c = amp * h / PI32;
             let h2 = h * h;

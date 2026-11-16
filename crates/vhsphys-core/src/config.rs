@@ -9,7 +9,7 @@
 //! engine's standard, composite video into a PAL television, and EP in the 625-line engine.
 
 use super::condition::Condition;
-use super::consts::{HAS_EP, STANDARD};
+use super::consts::{HAS_EP, RF_RATE, STANDARD};
 use super::emphasis::HQ_FIGURES;
 use super::format::TapeSpeed;
 use super::pipeline::Params;
@@ -113,6 +113,15 @@ fn check_standard(mut p: Params) -> Result<Params, String> {
         }
     }
     p.decode.tv = p.standard.colour_tv();
+    if p.rf_rate != RF_RATE {
+        return Err(format!(
+            "this engine samples the tape at {} (rf_rate = \"{}\"); the config asks for \"{}\"",
+            RF_RATE.name(),
+            RF_RATE.name(),
+            p.rf_rate.name(),
+        ));
+    }
+    p.rf_rate = RF_RATE;
     if p.speed == TapeSpeed::Ep && !HAS_EP {
         return Err("EP is not a 625-line VHS speed (SP and LP only)".into());
     }
