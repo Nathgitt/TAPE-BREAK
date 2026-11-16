@@ -28,6 +28,7 @@ use crate::rng::Rng;
 use super::tape::{Tape, TapeParams};
 use super::tracking::{lateral_weights, TrackingParams, NEIGHBOURS};
 use super::video::{encode_frame, weave_fields, Baseband, Frame};
+use crate::rf_rate::RfRate;
 use crate::standard::TvStandard;
 use rayon::prelude::*;
 use rayon::Scope;
@@ -117,6 +118,8 @@ pub struct Params {
     pub hq: bool,
     /// The television standard this engine was built for (`consts::STANDARD`); `config::build` refuses another.
     pub standard: TvStandard,
+    /// The RF sample rate this engine was built for (`consts::RF_RATE`); `config::build` refuses another.
+    pub rf_rate: RfRate,
     /// The camera's pickup tubes: lag and comet tails ahead of the recorder (off by default).
     pub camera: CameraParams,
     /// Composite video stage after the deck's decode (off by default).
@@ -141,6 +144,7 @@ impl Default for Params {
             speed: TapeSpeed::default(),
             hq: false,
             standard: STANDARD,
+            rf_rate: RF_RATE,
             camera: CameraParams::default(),
             composite: CompositeParams::default(),
             audio: AudioParams::default(),

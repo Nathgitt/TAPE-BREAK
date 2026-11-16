@@ -7,6 +7,7 @@
 //! noted per item. `[est]` marks a figure carried over from the 525-line format without a
 //! 625-line source.
 
+use crate::rf_rate::RfRate;
 use crate::standard::TvStandard;
 use std::f64::consts::PI;
 
@@ -23,12 +24,19 @@ pub const LINES: usize = 625;
 /// 25 frames (50 fields) per second.
 pub const FRAME_RATE: f64 = FH / LINES as f64;
 
-/// RF-domain samples per line: the same 2730 as the 525-line grid, so the grid stays line
-/// locked (42.656 MS/s) and the oversampling to baseband stays 3.
-pub const RF_PER_LINE: usize = 2730;
 /// Baseband samples per line (14.22 MS/s, 70.3 ns each).
 pub const BB_PER_LINE: usize = 910;
-pub const OS: usize = RF_PER_LINE / BB_PER_LINE;
+/// The RF sample rate of this engine (`rf_rate`); 12 x fsc is the reference.
+pub const RF_RATE: RfRate = super::ENGINE_RF_RATE;
+/// RF samples per baseband sample.
+pub const OS: usize = RF_RATE.os();
+/// RF samples per baseband sample at the reference rate, where the model's figures that are
+/// counted in RF samples were set.
+pub const REFERENCE_OS: usize = RfRate::REFERENCE.os();
+/// This engine's RF rate over the reference rate: exactly 1 at 12 x fsc.
+pub const RF_SCALE: f64 = OS as f64 / REFERENCE_OS as f64;
+/// RF-domain samples per video line: 2730 at 12 x fsc, so the RF grid is exactly line locked.
+pub const RF_PER_LINE: usize = BB_PER_LINE * OS;
 pub const FS_RF: f64 = RF_PER_LINE as f64 * FH;
 pub const FS_BB: f64 = BB_PER_LINE as f64 * FH;
 
@@ -133,6 +141,11 @@ pub fn track_length_um() -> f64 {
 /// Global RF sample index at which head `n` takes over (start of its playback).
 pub fn switch_time(field: i64) -> i64 {
     field * FIELD_RF as i64 - SWITCH_LEAD_RF as i64
+}
+
+/// `n` RF samples at the reference rate, counted at this engine's rate (rounded down).
+pub const fn rf_samples(n: usize) -> usize {
+    n * OS / REFERENCE_OS
 }
 
 #[cfg(test)]

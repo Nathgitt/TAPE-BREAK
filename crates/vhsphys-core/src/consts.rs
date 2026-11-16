@@ -3,6 +3,7 @@
 //! Sources (details in `docs/RESEARCH.md`): SMPTE ST 32-1998 (VHS type H),
 //! Sencore TT189, vhs-decode format tables.
 
+use crate::rf_rate::RfRate;
 use crate::standard::TvStandard;
 use std::f64::consts::PI;
 
@@ -17,13 +18,19 @@ pub const FH: f64 = FSC * 2.0 / 455.0;
 pub const LINES: usize = 525;
 pub const FRAME_RATE: f64 = FH / LINES as f64;
 
-/// RF-domain samples per video line. 12 x fsc / (fsc*2/455) = 2730, so the RF
-/// grid is exactly line locked (42.95 MS/s).
-pub const RF_PER_LINE: usize = 2730;
 /// Baseband (4 x fsc) samples per line.
 pub const BB_PER_LINE: usize = 910;
+/// The RF sample rate of this engine (`rf_rate`); 12 x fsc is the reference.
+pub const RF_RATE: RfRate = super::ENGINE_RF_RATE;
 /// RF samples per baseband sample.
-pub const OS: usize = RF_PER_LINE / BB_PER_LINE;
+pub const OS: usize = RF_RATE.os();
+/// RF samples per baseband sample at the reference rate, where the model's figures that are
+/// counted in RF samples were set.
+pub const REFERENCE_OS: usize = RfRate::REFERENCE.os();
+/// This engine's RF rate over the reference rate: exactly 1 at 12 x fsc.
+pub const RF_SCALE: f64 = OS as f64 / REFERENCE_OS as f64;
+/// RF-domain samples per video line: 2730 at 12 x fsc, so the RF grid is exactly line locked.
+pub const RF_PER_LINE: usize = BB_PER_LINE * OS;
 pub const FS_RF: f64 = RF_PER_LINE as f64 * FH;
 pub const FS_BB: f64 = BB_PER_LINE as f64 * FH;
 
@@ -118,6 +125,11 @@ pub fn track_length_um() -> f64 {
 /// Global RF sample index at which head `n` takes over (start of its playback).
 pub fn switch_time(field: i64) -> i64 {
     field * FIELD_RF as i64 - SWITCH_LEAD_RF as i64
+}
+
+/// `n` RF samples at the reference rate, counted at this engine's rate (rounded down).
+pub const fn rf_samples(n: usize) -> usize {
+    n * OS / REFERENCE_OS
 }
 
 #[cfg(test)]

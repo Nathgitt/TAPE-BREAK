@@ -19,6 +19,11 @@ FPS = FPS_NUM / FPS_DEN
 STANDARDS = ("ntsc", "pal", "pal60")
 DEFAULT_STANDARD = "ntsc"
 FRAME_RATES: dict[str, tuple[int, int]] = {"ntsc": (FPS_NUM, FPS_DEN), "pal": (25, 1), "pal60": (FPS_NUM, FPS_DEN)}
+# How finely the core samples the tape signal (`--rf-rate`), as a multiple of the colour
+# subcarrier: 12x is the reference, 8x quicker and coarser, 16x slower and closer to the
+# continuous signal.
+RF_RATES = ("8x", "12x", "16x")
+DEFAULT_RF_RATE = "12x"
 
 # The camera's pickup tube ahead of the recorder (`--camera-tube`), and how far its iris is
 # opened beyond normal exposure (`--iris-stops`): overexposed highlights leave comet tails.
@@ -215,6 +220,7 @@ class Look:
     signal: str = "svideo"  # one of SIGNALS
     audio: str = "process"  # one of AUDIO_MODES
     standard: str = DEFAULT_STANDARD  # one of STANDARDS
+    rf_rate: str = DEFAULT_RF_RATE  # one of RF_RATES
     camera_tube: str = "off"  # one of CAMERA_TUBES
     iris_stops: float = 0.0  # within IRIS_STOPS_RANGE; only matters with a tube
     camera_layout: str = DEFAULT_CAMERA_LAYOUT  # one of CAMERA_LAYOUTS; only matters with a tube

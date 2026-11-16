@@ -379,7 +379,12 @@ impl<'a> DeckStream<'a> {
         self.cu_phase += 1;
         if self.cu_phase == OS {
             self.cu_phase = 0;
-            let raw = (self.cu_samples[0] + self.cu_samples[1] + self.cu_samples[2]) / 3.0;
+            // the mean of the RF samples of one baseband sample, summed in order
+            let mut sum = self.cu_samples[0];
+            for v in &self.cu_samples[1..] {
+                sum += *v;
+            }
+            let raw = sum / OS as f32;
             let filtered = self.clpf.tick(raw as f64) as f32;
             let d = if self.doc_group != 0 { 1 } else { 0 };
             out.cunder.push(if d == 1 { 0.0 } else { filtered });

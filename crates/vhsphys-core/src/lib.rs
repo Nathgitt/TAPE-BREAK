@@ -11,7 +11,7 @@
 //! once and compiled twice: `ntsc` against `consts.rs`, `pal` against `consts_pal.rs`. The
 //! crate root re-exports the 525-line engine, so `vhsphys_core::pipeline::Session` is
 //! `vhsphys_core::ntsc::pipeline::Session`. What needs no raster constant is compiled once
-//! and shared by both engines: `dsp`, `frame`, `geometry`, `interference_params`, `rng`,
+//! and shared by both engines: `dsp`, `frame`, `geometry`, `interference_params`, `rf_rate`, `rng`,
 //! `spectral`, `standard` and `tube`.
 //!
 //! Decks of the two engines are joined by `rack`: tagged signals (`signal`), explicit links and
@@ -23,6 +23,7 @@ pub mod dsp;
 pub mod frame;
 pub mod geometry;
 pub mod interference_params;
+pub mod rf_rate;
 pub mod rng;
 pub mod spectral;
 pub mod standard;
@@ -36,11 +37,13 @@ pub mod rack;
 pub mod signal;
 
 /// Declares every engine module, each from the one source file, inside the module that calls
-/// it. The argument is the constants file the engine is built against. Engine files reach each
+/// it. The arguments are the constants file the engine is built against and its RF sample rate. Engine files reach each
 /// other as `super::x`, so each copy of the engine sees its own constants; the shared modules
 /// above are reached as `crate::x`.
 macro_rules! engine {
-    ($consts:literal) => {
+    ($consts:literal, $rate:expr) => {
+        /// The RF sample rate this engine was built for (`consts::RF_RATE` reads it).
+        pub const ENGINE_RF_RATE: crate::rf_rate::RfRate = $rate;
         #[path = $consts]
         pub mod consts;
         #[path = "audio.rs"]
@@ -90,6 +93,23 @@ macro_rules! engine {
 pub mod ntsc;
 /// The 625-line engine (PAL raster, `consts_pal.rs`).
 pub mod pal;
+
+// The same two engines with the tape signal sampled more coarsely or more finely than the
+// reference 12 x fsc (`rf_rate`). The unit tests inside the engine files pin figures of the
+// reference rate, so these copies are left out of the unit-test build; `tests/rf_rate.rs`
+// checks them.
+/// The 525-line engine at 8 x fsc.
+#[cfg(not(test))]
+pub mod ntsc_rf8;
+/// The 625-line engine at 8 x fsc.
+#[cfg(not(test))]
+pub mod pal_rf8;
+/// The 525-line engine at 16 x fsc.
+#[cfg(not(test))]
+pub mod ntsc_rf16;
+/// The 625-line engine at 16 x fsc.
+#[cfg(not(test))]
+pub mod pal_rf16;
 
 // The root is the 525-line engine, so every existing path keeps working.
 pub use ntsc::*;
