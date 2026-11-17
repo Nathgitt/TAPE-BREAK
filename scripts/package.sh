@@ -76,11 +76,21 @@ else
     cp "$binary" "$package/$cli_name"
 fi
 cp LICENSE "$package/LICENSE"
+# Bundle FFmpeg and FFprobe so the desktop app works on a clean Windows machine.
+for tool in ffmpeg ffprobe; do
+    source="$(command -v "$tool" || true)"
+    [[ -n "$source" && -f "$source" ]] || { echo "$tool not found on PATH" >&2; exit 1; }
+    suffix=""
+    [[ "$system" == MINGW* || "$system" == MSYS* || "$system" == CYGWIN* ]] && suffix=".exe"
+    cp -L "$source" "$package/$tool$suffix"
+done
 cat > "$package/README.txt" <<'EOF'
-vhs-phys desktop window: vhs-phys (VHS-Phys.app on macOS).
-Command line tool: vhsphys.
-ffmpeg and ffprobe must be on PATH or placed beside the app.
-Project: https://github.com/allthemalware/vhs-phys
+TAPE//BREAK desktop application: vhs-phys.exe (Windows) or vhs-phys (Linux).
+Command line tool: vhsphys.exe (Windows) or vhsphys.
+FFmpeg and FFprobe are bundled beside the application.
+FFmpeg is distributed under its applicable licence; see ffmpeg -L and the FFmpeg project for licence and source information.
+Project: https://github.com/Nathgitt/TAPE-BREAK
+Engine: https://github.com/allthemalware/vhs-phys
 EOF
 
 archive="dist/vhs-phys-$version-$platform.$archive_ext"
