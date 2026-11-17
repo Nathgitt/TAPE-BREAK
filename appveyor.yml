@@ -1,0 +1,64 @@
+version: 1.0.{build}
+image: Visual Studio 2022
+clone_depth: 1
+
+environment:
+  PYTHON: "C:\\Python311\\python.exe"
+
+install:
+  - ps: |
+      $ErrorActionPreference = "Stop"
+      if (-not (Get-Command rustc -ErrorAction SilentlyContinue)) {
+        Invoke-WebRequest "https://win.rustup.rs/x86_64" -OutFile "$env:TEMP\\rustup-init.exe"
+        & "$env:TEMP\\rustup-init.exe" -y --default-toolchain stable
+        $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
+      }
+      rustc --version
+      cargo --version
+      if (-not (Test-Path $env:PYTHON)) {
+        $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $pythonCmd) { throw "Python 3.11 was not found on this AppVeyor image." }
+        $env:PYTHON = $pythonCmd.Source
+      }
+      & $env:PYTHON --version
+
+build_script:
+  - ps: |
+      $ErrorActionPreference = "Stop"
+      $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
+      cargo build --release --locked
+      cargo test --release --locked
+
+      & $env:PYTHON -m pip install --upgrade pip
+      & $env:PYTHON -m pip install PySide6-Essentials PyInstaller pytest numpy
+
+      $ffmpegZip = "$env:TEMP\\ffmpeg.zip"
+      Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffmpegZip
+      $hashFile = "$env:TEMP\\ffmpeg.sha256"
+      Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256" -OutFile $hashFile
+      $expectedHash = ((Get-Content $hashFile -Raw).Trim() -split '\\s+')[0].ToLowerInvariant()
+      $actualHash = (Get-FileHash $ffmpegZip -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($expectedHash -ne $actualHash) { throw "FFmpeg archive SHA-256 verification failed" }
+      Expand-Archive $ffmpegZip "$env:TEMP\\ffmpeg" -Force
+      $ffmpeg = Get-ChildItem "$env:TEMP\\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+      $ffprobe = Get-ChildItem "$env:TEMP\\ffmpeg" -Recurse -Filter ffprobe.exe | Select-Object -First 1
+      if (-not $ffmpeg -or -not $ffprobe) { throw "FFmpeg binaries missing from archive" }
+      New-Item -ItemType Directory -Force packaging\\windows\\bin | Out-Null
+      Copy-Item $ffmpeg.FullName packaging\\windows\\bin\\ffmpeg.exe
+      Copy-Item $ffprobe.FullName packaging\\windows\\bin\\ffprobe.exe
+
+      $env:PATH = "$PWD\\packaging\\windows\\bin;$env:PATH"
+      $env:VHSPHYS_BIN = "$PWD\\target\\release\\vhsphys.exe"
+      $env:QT_QPA_PLATFORM = "offscreen"
+      & $env:PYTHON -m compileall -q python\\vhsgui
+      & $env:PYTHON -m pytest python\\tests\\test_gui_backend.py python\\tests\\test_gui_standard.py python\\tests\\test_cli_standard.py python\\tests\\test_gui_app.py -q
+      if ($LASTEXITCODE -ne 0) { throw "Python GUI/backend tests failed" }
+
+      & $env:PYTHON -m PyInstaller --noconfirm --clean --windowed --onedir --name "TAPE-BREAK" --paths "python" --collect-all PySide6 --collect-all vhsgui --add-binary "target\\release\\vhsphys.exe;." --add-binary "packaging\\windows\\bin\\ffmpeg.exe;." --add-binary "packaging\\windows\\bin\\ffprobe.exe;." packaging\\windows\\launcher.py
+      if (-not (Test-Path "dist\\TAPE-BREAK\\TAPE-BREAK.exe")) { throw "PyInstaller did not produce TAPE-BREAK.exe" }
+      Copy-Item LICENSE dist\\TAPE-BREAK\\LICENSE-vhs-phys.txt
+      Compress-Archive -Path dist\\TAPE-BREAK\\* -DestinationPath dist\\TAPE-BREAK-Windows.zip -Force
+
+artifacts:
+  - path: dist/TAPE-BREAK-Windows.zip
+    name: TAPE-BREAK-Windows
