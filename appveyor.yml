@@ -28,10 +28,15 @@ install:
 build_script:
   - ps: |
       $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-      cargo build --release --locked 2>&1
-      if ($LASTEXITCODE -ne 0) { throw "Rust release build failed with exit code $LASTEXITCODE" }
-      cargo test --release --locked 2>&1
-      if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE" }
+      cmd.exe /d /c "cargo build --release --locked > cargo-build.log 2>&1"
+      $cargoBuildExit = $LASTEXITCODE
+      Get-Content cargo-build.log
+      if ($cargoBuildExit -ne 0) { throw "Rust release build failed with exit code $cargoBuildExit" }
+
+      cmd.exe /d /c "cargo test --release --locked > cargo-test.log 2>&1"
+      $cargoTestExit = $LASTEXITCODE
+      Get-Content cargo-test.log
+      if ($cargoTestExit -ne 0) { throw "Rust tests failed with exit code $cargoTestExit" }
 
       & $env:PYTHON -m pip install --upgrade pip
       & $env:PYTHON -m pip install PySide6-Essentials PyInstaller pytest numpy
