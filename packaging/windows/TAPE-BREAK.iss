@@ -8,6 +8,7 @@ AppId={{C56B7E7D-0A1D-4D75-A1A8-8B2F0B37A6F4}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+LicenseFile=..\..\LICENSE
 DefaultDirName={autopf}\TAPE-BREAK
 DefaultGroupName=TAPE BREAK
 UninstallDisplayIcon={app}\{#MyAppExeName}
