@@ -29,6 +29,10 @@ leave lag and comet tails (see [Camera pickup tubes](#camera-pickup-tubes)).
 
 Left to right, top to bottom: source, pristine, good, worn, bad, ruined.
 
+## Windows installer
+
+The Windows workflow builds a self-contained installer. After a successful run, open the repository's **Actions** tab, select the latest **TAPE//BREAK Windows build**, and download the `TAPE-BREAK-Windows` artifact. Extract the ZIP and run `TAPE-BREAK-Setup.exe`. The installer adds an uninstall entry in Windows Settings.
+
 ## Download
 
 Get the archive for your system from the [Releases page](https://github.com/allthemalware/vhs-phys/releases), unpack it, and run `vhs-phys` (or `VHS-Phys.app` on macOS). The command line tool `vhsphys` is in the same folder. Install ffmpeg, or place it in that folder. The macOS app is unsigned; right-click it and choose Open the first time. Windows may show a SmartScreen prompt.
