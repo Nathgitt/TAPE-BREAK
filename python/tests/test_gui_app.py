@@ -321,3 +321,25 @@ def test_module_can_save_a_screenshot_of_the_window(binary, clip, tmp_path):
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
     width, height = struct.unpack(">II", data[16:24])
     assert width >= 900 and height >= 600
+
+
+def test_tracking_master_controls_the_physical_head_offset(window):
+    from PySide6.QtWidgets import QSlider
+
+    slider = child(window, QSlider, "trackingMasterSlider")
+    physical_setting = window._spins["tracking_error_um"]
+    slider.setValue(40)
+    assert physical_setting.value() == pytest.approx(20.0)
+    slider.setValue(-80)
+    assert physical_setting.value() == pytest.approx(-40.0)
+    slider.setValue(80)
+    assert physical_setting.value() == pytest.approx(40.0)
+
+
+def test_standard_selects_the_matching_capture_raster(window):
+    window.standard_combo.setCurrentIndex(window.standard_combo.findData("pal"))
+    assert window.size_combo.currentData() == (720, 576)
+    window.standard_combo.setCurrentIndex(window.standard_combo.findData("ntsc"))
+    assert window.size_combo.currentData() == (720, 480)
+    window.standard_combo.setCurrentIndex(window.standard_combo.findData("pal60"))
+    assert window.size_combo.currentData() == (720, 480)
