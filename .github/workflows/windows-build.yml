@@ -81,7 +81,7 @@ jobs:
           Invoke-WebRequest -Uri "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "dist\TAPE-BREAK\GPL-3.0-FFmpeg.txt"
           @"
           FFmpeg Windows static essentials build from Gyan Doshi.
-          This FFmpeg executable is distributed as a separate program and is licensed under GPL-3.0-or-later.
+          This FFmpeg executable is distributed as a separate program and is licensed under GPL-3.0.
           GPL licence text: GPL-3.0-FFmpeg.txt
           Build downloads and source information: https://www.gyan.dev/ffmpeg/builds/
           FFmpeg source code: https://github.com/FFmpeg/FFmpeg
