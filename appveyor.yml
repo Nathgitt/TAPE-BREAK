@@ -1,3 +1,4 @@
+# Windows CI build configuration. Cargo runs through cmd.exe to avoid PowerShell stderr handling.
 version: 1.0.{build}
 image: Visual Studio 2022
 clone_depth: 1
