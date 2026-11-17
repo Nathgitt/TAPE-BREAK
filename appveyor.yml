@@ -24,7 +24,6 @@ install:
 
 build_script:
   - ps: |
-      $ErrorActionPreference = "Stop"
       $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
       cargo build --release --locked
       cargo test --release --locked
