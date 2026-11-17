@@ -29,13 +29,13 @@ leave lag and comet tails (see [Camera pickup tubes](#camera-pickup-tubes)).
 
 Left to right, top to bottom: source, pristine, good, worn, bad, ruined.
 
-## Windows installer
+## Portable Windows app
 
-The Windows workflow builds a self-contained installer. After a successful run, open the repository's **Actions** tab, select the latest **TAPE//BREAK Windows build**, and download the `TAPE-BREAK-Windows` artifact. Extract the ZIP and run `TAPE-BREAK-Setup.exe`. The installer adds an uninstall entry in Windows Settings.
+The Windows workflow builds a portable, self-contained ZIP. After a successful run, open the repository's **Actions** tab, select the latest **Release builds** run, and download the `vhs-phys-windows-x86_64` artifact. Extract it and double-click `vhs-phys.exe`. The ZIP includes the desktop interface, VHS engine, FFmpeg and FFprobe; no Rust, Python, or separate FFmpeg installation is required.
 
 ## Download
 
-For the redesigned Windows application, use the **Windows installer** instructions above. The upstream [vhs-phys releases](https://github.com/allthemalware/vhs-phys/releases) are the original project binaries, not the TAPE//BREAK desktop redesign.
+For the redesigned Windows application, use the **Portable Windows app** instructions above. The upstream [vhs-phys releases](https://github.com/allthemalware/vhs-phys/releases) are the original project binaries, not the TAPE//BREAK desktop redesign.
 
 This is the standalone prototype. The Rust core (`vhsphys-core`) is written so it
 can be wrapped as a plugin later (see `docs/PLUGIN.md`).
