@@ -77,13 +77,27 @@ else
 fi
 cp LICENSE "$package/LICENSE"
 # Bundle FFmpeg and FFprobe so the desktop app works on a clean Windows machine.
-for tool in ffmpeg ffprobe; do
-    source="$(command -v "$tool" || true)"
-    [[ -n "$source" && -f "$source" ]] || { echo "$tool not found on PATH" >&2; exit 1; }
-    suffix=""
-    [[ "$system" == MINGW* || "$system" == MSYS* || "$system" == CYGWIN* ]] && suffix=".exe"
-    cp -L "$source" "$package/$tool$suffix"
-done
+if [[ "$system" == MINGW* || "$system" == MSYS* || "$system" == CYGWIN* ]]; then
+    # Prefer the real Chocolatey package binaries, not its PATH shim launchers.
+    ffmpeg_dir="/c/ProgramData/chocolatey/lib/ffmpeg/tools/ffmpeg/bin"
+    if [[ -x "$ffmpeg_dir/ffmpeg.exe" && -x "$ffmpeg_dir/ffprobe.exe" ]]; then
+        cp -L "$ffmpeg_dir"/*.dll "$package/" 2>/dev/null || true
+        cp -L "$ffmpeg_dir/ffmpeg.exe" "$package/ffmpeg.exe"
+        cp -L "$ffmpeg_dir/ffprobe.exe" "$package/ffprobe.exe"
+    else
+        for tool in ffmpeg ffprobe; do
+            source="$(command -v "$tool" || true)"
+            [[ -n "$source" && -f "$source" ]] || { echo "$tool not found on PATH" >&2; exit 1; }
+            cp -L "$source" "$package/$tool.exe"
+        done
+    fi
+else
+    for tool in ffmpeg ffprobe; do
+        source="$(command -v "$tool" || true)"
+        [[ -n "$source" && -f "$source" ]] || { echo "$tool not found on PATH" >&2; exit 1; }
+        cp -L "$source" "$package/$tool"
+    done
+fi
 cat > "$package/README.txt" <<'EOF'
 TAPE//BREAK desktop application: vhs-phys.exe (Windows) or vhs-phys (Linux).
 Command line tool: vhsphys.exe (Windows) or vhsphys.
