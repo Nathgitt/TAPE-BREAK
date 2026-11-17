@@ -840,12 +840,18 @@ fn fit_dimensions(
     input_height: usize,
     raster_width: usize,
     raster_height: usize,
+    output_width: usize,
+    output_height: usize,
     sample_aspect: (u32, u32),
 ) -> (usize, usize) {
     let display_ratio = input_width as f64 / input_height.max(1) as f64;
     let raster_ratio = raster_width as f64 / raster_height.max(1) as f64;
     let sample_ratio = sample_aspect.0 as f64 / sample_aspect.1 as f64;
-    let content_ratio = display_ratio / sample_ratio;
+    // The engine raster is resized to the chosen digital capture raster at export.
+    // Compensate for that resize here so the displayed source aspect remains unchanged.
+    let content_ratio = display_ratio / sample_ratio
+        * raster_width as f64 / output_width.max(1) as f64
+        * output_height.max(1) as f64 / raster_height.max(1) as f64;
     let (width, height) = if content_ratio > raster_ratio {
         (raster_width, (raster_width as f64 / content_ratio).round() as usize)
     } else {
@@ -1047,7 +1053,7 @@ impl<'a> Pipe<'a> {
             dec.args(["-t", &frames_arg(n, self.source.fps)]);
         }
         let sample_aspect = sample_aspect_ratio(ow, oh);
-        let (fit_w, fit_h) = fit_dimensions(iw, ih, self.source.w, self.source.h, sample_aspect);
+        let (fit_w, fit_h) = fit_dimensions(iw, ih, self.source.w, self.source.h, ow, oh, sample_aspect);
         let pad_x = (self.source.w - fit_w) / 2;
         let pad_y = (self.source.h - fit_h) / 2;
         let input_filter = format!(
@@ -2032,9 +2038,9 @@ mod tests {
         assert_eq!(sample_aspect_ratio(720, 576), (16, 15));
         assert_eq!(sample_aspect_ratio(1920, 1080), (1, 1));
         assert_eq!(sample_aspect_ratio(1280, 720), (1, 1));
-        assert_eq!(fit_dimensions(1920, 1080, 754, 480, (8, 9)), (754, 376));
-        assert_eq!(fit_dimensions(1440, 1080, 754, 480, (8, 9)), (720, 480));
-        assert_eq!(fit_dimensions(1920, 1080, 740, 576, (16, 15)), (740, 444));
+        assert_eq!(fit_dimensions(1920, 1080, 754, 480, 720, 480, (8, 9)), (754, 360));
+        assert_eq!(fit_dimensions(1440, 1080, 754, 480, 720, 480, (8, 9)), (754, 480));
+        assert_eq!(fit_dimensions(1920, 1080, 740, 576, 720, 576, (16, 15)), (740, 432));
     }
 
 }
