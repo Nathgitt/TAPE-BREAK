@@ -2765,6 +2765,7 @@ class MainWindow(QMainWindow):
         if self._partial is not None:
             self._partial.unlink(missing_ok=True)
         self._clear_task()
+        self._auto_preview_timer.stop()
         self._set_status(message, detail)
 
     def _cancel(self) -> None:
