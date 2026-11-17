@@ -1018,9 +1018,9 @@ class AboutDialog(QDialog):
         tabs = QTabWidget(self)
         tabs.setObjectName("aboutTabs")
         tabs.setStyleSheet(
-            "QTabWidget::pane { border: 1px solid #1c9a45; background: #010804; } "
-            "QTabBar::tab { background: #081a0e; color: #1c9a45; padding: 7px 18px; font-weight: bold; border: 1px solid #0e4a22; margin-right: 2px; } "
-            "QTabBar::tab:selected { background: #0e4a22; color: #39ff6e; border-bottom: 2px solid #39ff6e; }"
+            "QTabWidget::pane { border: 1px solid #34363d; background: #14161b; } "
+            "QTabBar::tab { background: #20232a; color: #c8cbd2; padding: 7px 18px; font-weight: bold; border: 1px solid #34363d; margin-right: 2px; } "
+            "QTabBar::tab:selected { background: #2c3039; color: #ff6b35; border-bottom: 2px solid #ff6b35; }"
         )
 
         # A plain product information page; no phosphor/CRT styling in the editor UI.
