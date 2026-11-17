@@ -114,7 +114,7 @@ def test_standard_capture_rasters_and_sample_aspect(binary, ffmpeg, tmp_path):
         stream = subprocess.run(
             [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,sample_aspect_ratio,r_frame_rate",
+                "-show_entries", "stream=width,height,sample_aspect_ratio,display_aspect_ratio,r_frame_rate",
                 "-of", "json", str(output),
             ],
             capture_output=True, text=True, check=True,
@@ -123,4 +123,5 @@ def test_standard_capture_rasters_and_sample_aspect(binary, ffmpeg, tmp_path):
         expected_width, expected_height = map(int, size.split("x"))
         assert (info["width"], info["height"]) == (expected_width, expected_height)
         assert info["sample_aspect_ratio"] == sar
+        assert info["display_aspect_ratio"] == "4:3"
         assert info["r_frame_rate"] == rate
