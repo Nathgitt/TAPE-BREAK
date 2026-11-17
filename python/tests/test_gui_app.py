@@ -345,6 +345,7 @@ def test_standard_selects_the_matching_capture_raster(window):
     window.standard_combo.setCurrentIndex(window.standard_combo.findData("pal60"))
     assert window.size_combo.currentData() == (720, 480)
 
+
 def test_import_generates_a_debounced_preview_without_clicking_render(window, app, clip):
     window.open_input(str(clip))
     wait_for(app, lambda: window.processed_frames is not None, timeout=180.0)
