@@ -32,11 +32,23 @@ jobs:
         shell: pwsh
         run: cargo build --release --locked
 
+      - name: Test physical VHS engine
+        shell: pwsh
+        run: cargo test --release --locked
+
       - name: Install Python packaging dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install PySide6-Essentials PyInstaller
+          python -m pip install PySide6-Essentials PyInstaller pytest numpy
+
+      - name: Test desktop GUI and backend
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          VHSGUI_REQUIRE_BINARY: "1"
+          VHSPHYS_BIN: ${{ github.workspace }}\target\release\vhsphys.exe
+        run: python -m pytest python/tests/test_gui_backend.py python/tests/test_gui_standard.py python/tests/test_gui_app.py -q
 
       - name: Download FFmpeg
         shell: pwsh
