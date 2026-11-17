@@ -85,3 +85,42 @@ def test_show_prints_the_engine_s_parameters(binary):
     assert 'standard = "pal"' in pal.stdout
     ntsc = subprocess.run([str(binary), "show", "worn"], capture_output=True, text=True, timeout=60)
     assert 'standard = "ntsc"' in ntsc.stdout
+
+
+def test_standard_capture_rasters_and_sample_aspect(binary, ffmpeg, tmp_path):
+    source = tmp_path / "widescreen.mp4"
+    subprocess.run(
+        [
+            ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+            "testsrc2=size=320x180:rate=30000/1001:duration=1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", str(source),
+        ],
+        check=True,
+    )
+    for standard, size, sar, rate in (
+        ("ntsc", "720x480", "8:9", "30000/1001"),
+        ("pal", "720x576", "16:15", "25/1"),
+    ):
+        output = tmp_path / f"capture-{standard}.mp4"
+        result = subprocess.run(
+            [
+                str(binary), "run", str(source), str(output),
+                "--standard", standard, "--size", size, "--crf", "30",
+                "-t", "1", "--audio", "none",
+            ],
+            capture_output=True, text=True, timeout=300,
+        )
+        assert result.returncode == 0, result.stderr
+        stream = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,sample_aspect_ratio,r_frame_rate",
+                "-of", "json", str(output),
+            ],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        info = json.loads(stream)["streams"][0]
+        expected_width, expected_height = map(int, size.split("x"))
+        assert (info["width"], info["height"]) == (expected_width, expected_height)
+        assert info["sample_aspect_ratio"] == sar
+        assert info["r_frame_rate"] == rate
