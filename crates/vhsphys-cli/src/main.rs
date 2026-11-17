@@ -368,13 +368,34 @@ struct RunArgs {
 
 fn probe_size(ffprobe: &str, input: &Path) -> Result<(usize, usize)> {
     let out = Command::new(ffprobe)
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"])
+        .args([
+            "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height:stream_side_data=rotation:stream_tags=rotate",
+            "-of", "json",
+        ])
         .arg(input)
         .output()
         .context("running ffprobe")?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    let (w, h) = s.trim().split_once('x').context("could not read the video size")?;
-    Ok((w.parse()?, h.parse()?))
+    let document: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .context("reading ffprobe video size")?;
+    let stream = document["streams"]
+        .as_array()
+        .and_then(|streams| streams.first())
+        .context("could not read the video size")?;
+    let mut width = stream["width"].as_u64().context("could not read video width")? as usize;
+    let mut height = stream["height"].as_u64().context("could not read video height")? as usize;
+    let rotation = stream["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|side| side["rotation"].as_f64())
+        .or_else(|| stream["tags"]["rotate"].as_str().and_then(|value| value.parse::<f64>().ok()))
+        .unwrap_or(0.0)
+        .round() as i32;
+    if rotation.rem_euclid(180) != 0 {
+        std::mem::swap(&mut width, &mut height);
+    }
+    Ok((width, height))
 }
 
 fn read_frame(r: &mut impl Read, f: &mut Frame) -> Result<bool> {
