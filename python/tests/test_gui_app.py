@@ -324,15 +324,15 @@ def test_module_can_save_a_screenshot_of_the_window(binary, clip, tmp_path):
 
 
 def test_tracking_master_controls_the_physical_head_offset(window):
-    from PySide6.QtWidgets import QSlider
+    from PySide6.QtWidgets import QDial
 
-    slider = child(window, QSlider, "trackingMasterSlider")
+    dial = child(window, QDial, "trackingMasterDial")
     physical_setting = window._spins["tracking_error_um"]
-    slider.setValue(40)
+    dial.setValue(40)
     assert physical_setting.value() == pytest.approx(20.0)
-    slider.setValue(-80)
+    dial.setValue(-80)
     assert physical_setting.value() == pytest.approx(-40.0)
-    slider.setValue(80)
+    dial.setValue(80)
     assert physical_setting.value() == pytest.approx(40.0)
 
 
