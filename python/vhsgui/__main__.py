@@ -20,8 +20,8 @@ MISSING_FFPROBE = "ffprobe not found. It comes with ffmpeg: install it with your
 
 
 HELP_DESCRIPTION = """\
-TAPE//BREAK desktop front end for the vhs-phys physical VHS simulation engine. The window opens on the simplified panels
-(the signal-chain page); the Panels / Schematic buttons switch views at any time."""
+TAPE//BREAK desktop front end for the vhs-phys physical VHS simulation engine.
+The packaged Windows app opens in the simplified editing workspace."""
 HELP_EPILOG = """\
 examples:
   python -m vhsgui clip.mp4                 open a video on the schematic
