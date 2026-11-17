@@ -100,11 +100,14 @@ jobs:
       - name: Smoke test bundled engine
         shell: pwsh
         run: |
-          & "dist\TAPE-BREAK\vhsphys.exe" presets
+          $engine = Get-ChildItem "dist\TAPE-BREAK" -Recurse -Filter "vhsphys.exe" | Select-Object -First 1
+          $ffmpeg = Get-ChildItem "dist\TAPE-BREAK" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+          $ffprobe = Get-ChildItem "dist\TAPE-BREAK" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          & $engine.FullName presets
           if ($LASTEXITCODE -ne 0) { throw "Bundled VHS engine smoke test failed" }
-          & "dist\TAPE-BREAK\ffmpeg.exe" -version
+          & $ffmpeg.FullName -version
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg smoke test failed" }
-          & "dist\TAPE-BREAK\ffprobe.exe" -version
+          & $ffprobe.FullName -version
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFprobe smoke test failed" }
 
       - name: Install Inno Setup
