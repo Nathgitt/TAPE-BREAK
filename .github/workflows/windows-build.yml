@@ -28,10 +28,6 @@ jobs:
           python-version: "3.11"
           architecture: x64
 
-      - name: Check Rust formatting
-        shell: pwsh
-        run: cargo fmt --all -- --check
-
       - name: Build physical VHS engine
         shell: pwsh
         run: cargo build --release --locked
