@@ -1047,7 +1047,16 @@ impl<'a> Pipe<'a> {
             _ => {}
         }
         // stills stay RGB (no 4:2:0 chroma subsampling); video is encoded as yuv420p
-        enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,format={}", if is_image { "rgb24" } else { "yuv420p" })]);
+        // The standard digital capture rasters use non-square pixels to display as 4:3.
+        // Keep the raster at 720x480 (NTSC) or 720x576 (PAL) and tag the correct sample aspect.
+        let sample_aspect = if (ow, oh) == (720, 480) {
+            "8/9"
+        } else if (ow, oh) == (720, 576) {
+            "16/15"
+        } else {
+            "1/1"
+        };
+        enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,setsar={sample_aspect},format={}", if is_image { "rgb24" } else { "yuv420p" })]);
         if !is_image {
             enc.args(["-c:v", "libx264", "-crf", &a.crf.to_string(), "-preset", "medium"]);
         } else if !a.output.to_string_lossy().contains('%') {
