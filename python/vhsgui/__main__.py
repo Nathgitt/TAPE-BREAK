@@ -20,7 +20,7 @@ MISSING_FFPROBE = "ffprobe not found. It comes with ffmpeg: install it with your
 
 
 HELP_DESCRIPTION = """\
-Desktop front end for vhs-phys. The window opens on the phosphor schematic
+TAPE//BREAK desktop front end for the vhs-phys physical VHS simulation engine. The window opens on the simplified panels
 (the signal-chain page); the Panels / Schematic buttons switch views at any time."""
 HELP_EPILOG = """\
 examples:
@@ -36,7 +36,7 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     from vhsgui import backend
 
     parser = argparse.ArgumentParser(
-        prog="vhs-phys" if backend.bundle_dirs() else "python -m vhsgui",
+        prog="TAPE//BREAK" if backend.bundle_dirs() else "python -m vhsgui",
         description=HELP_DESCRIPTION,
         epilog=HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
