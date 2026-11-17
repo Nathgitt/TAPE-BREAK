@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDial,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -1410,23 +1411,25 @@ class MainWindow(QMainWindow):
                         widget.hide()
         hint = QLabel("Head alignment controls the moving noise band and crosstalk.")
         hint.setWordWrap(True)
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setObjectName("trackingMasterSlider")
-        slider.setRange(-80, 80)
-        slider.setValue(round(spin.value() * 2))
+        dial = QDial()
+        dial.setObjectName("trackingMasterDial")
+        dial.setRange(-80, 80)
+        dial.setNotchesVisible(True)
+        dial.setWrapping(False)
+        dial.setFixedSize(112, 112)
         value = QLabel()
         value.setObjectName("trackingMasterValue")
-        value.setAlignment(Qt.AlignmentFlag.AlignRight)
+        value.setAlignment(Qt.AlignmentFlag.AlignCenter)
         def sync_value(number: float) -> None:
             value.setText(f"{number:+.1f} µm")
-            slider.blockSignals(True)
-            slider.setValue(round(number * 2))
-            slider.blockSignals(False)
+            dial.blockSignals(True)
+            dial.setValue(round(number * 2))
+            dial.blockSignals(False)
         spin.valueChanged.connect(sync_value)
-        slider.valueChanged.connect(lambda number: spin.setValue(number / 2))
+        dial.valueChanged.connect(lambda number: spin.setValue(number / 2))
         sync_value(spin.value())
         layout.addWidget(hint)
-        layout.addWidget(slider)
+        layout.addWidget(dial, 0, Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(value)
         return box
 
