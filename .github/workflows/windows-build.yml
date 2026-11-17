@@ -70,9 +70,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFprobe smoke test failed" }
 
       - name: Install Inno Setup
-        uses: crazy-max/ghaction-chocolatey@v3
-        with:
-          args: install innosetup --no-progress
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
 
       - name: Build Windows installer
         shell: pwsh
