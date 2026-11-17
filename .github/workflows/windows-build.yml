@@ -74,6 +74,15 @@ jobs:
           if (-not (Test-Path "dist\TAPE-BREAK\ffmpeg.exe")) { throw "FFmpeg was not bundled" }
           if (-not (Test-Path "dist\TAPE-BREAK\ffprobe.exe")) { throw "FFprobe was not bundled" }
 
+      - name: Smoke test packaged desktop window
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          & "dist\TAPE-BREAK\TAPE-BREAK.exe" --screenshot "dist\TAPE-BREAK-smoke.png"
+          if ($LASTEXITCODE -ne 0) { throw "Packaged TAPE//BREAK window failed to launch" }
+          if (-not (Test-Path "dist\TAPE-BREAK-smoke.png")) { throw "Packaged window did not produce its smoke-test screenshot" }
+
       - name: Smoke test bundled engine
         shell: pwsh
         run: |
