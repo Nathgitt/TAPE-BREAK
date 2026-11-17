@@ -1561,7 +1561,7 @@ class MainWindow(QMainWindow):
         self.input_edit = QLineEdit()
         self.input_edit.setObjectName("inputEdit")
         self.input_edit.setReadOnly(True)
-        self.browse_input_button = QPushButton("Open...")
+        self.browse_input_button = QPushButton("Import video")
         self.browse_input_button.setObjectName("browseInputButton")
         self.browse_input_button.clicked.connect(self._browse_input)
         self.info_label = _wrapping_label("infoLabel", "No file chosen")
@@ -1958,7 +1958,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("Quality"), 2, 2)
         grid.addWidget(self.crf_spin, 2, 3)
 
-        self.render_button = QPushButton("Render")
+        self.render_button = QPushButton("Export video")
         self.render_button.setObjectName("renderButton")
         self.render_button.clicked.connect(self._start_render)
         self.cancel_button = QPushButton("Cancel")
