@@ -1053,12 +1053,16 @@ impl<'a> Pipe<'a> {
             dec.args(["-t", &frames_arg(n, self.source.fps)]);
         }
         let sample_aspect = sample_aspect_ratio(ow, oh);
-        let (fit_w, fit_h) = fit_dimensions(iw, ih, self.source.w, self.source.h, ow, oh, sample_aspect);
+        let (fit_w, fit_h) = fit_dimensions(
+            iw, ih, self.source.w, self.source.h, ow, oh, sample_aspect,
+        );
         let pad_x = (self.source.w - fit_w) / 2;
         let pad_y = (self.source.h - fit_h) / 2;
         let input_filter = format!(
             "fps={},scale={fit_w}:{fit_h}:flags=lanczos,pad={}:{}:{pad_x}:{pad_y}:color=black,format=rgb24",
-            self.source.rate(), self.source.w, self.source.h
+            self.source.rate(),
+            self.source.w,
+            self.source.h
         );
         dec.args(["-an", "-vf", &input_filter, "-f", "rawvideo", "pipe:1"]);
         let mut dec = dec.stdout(Stdio::piped()).spawn().context("starting ffmpeg (decoder)")?;
@@ -2032,15 +2036,25 @@ mod tests {
         }
         assert_eq!(parse_iris_stops(WIZARD_IRIS_STOPS), Some(2.0));
     }
+
     #[test]
     fn standard_capture_rasters_have_correct_sample_aspect_ratios() {
         assert_eq!(sample_aspect_ratio(720, 480), (8, 9));
         assert_eq!(sample_aspect_ratio(720, 576), (16, 15));
         assert_eq!(sample_aspect_ratio(1920, 1080), (1, 1));
         assert_eq!(sample_aspect_ratio(1280, 720), (1, 1));
-        assert_eq!(fit_dimensions(1920, 1080, 754, 480, 720, 480, (8, 9)), (754, 360));
-        assert_eq!(fit_dimensions(1440, 1080, 754, 480, 720, 480, (8, 9)), (754, 480));
-        assert_eq!(fit_dimensions(1920, 1080, 740, 576, 720, 576, (16, 15)), (740, 432));
+        assert_eq!(
+            fit_dimensions(1920, 1080, 754, 480, 720, 480, (8, 9)),
+            (754, 360)
+        );
+        assert_eq!(
+            fit_dimensions(1440, 1080, 754, 480, 720, 480, (8, 9)),
+            (754, 480)
+        );
+        assert_eq!(
+            fit_dimensions(1920, 1080, 740, 576, 720, 576, (16, 15)),
+            (740, 432)
+        );
     }
 
 }
