@@ -7,12 +7,12 @@ environment:
 
 install:
   - ps: |
-      $ErrorActionPreference = "Stop"
       if (-not (Get-Command rustc -ErrorAction SilentlyContinue)) {
         Invoke-WebRequest "https://win.rustup.rs/x86_64" -OutFile "$env:TEMP\\rustup-init.exe"
         & "$env:TEMP\\rustup-init.exe" -y --default-toolchain stable
         $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
       }
+      if (-not (Get-Command rustc -ErrorAction SilentlyContinue)) { throw "Rust installation did not put rustc on PATH." }
       rustc --version
       cargo --version
       if (-not (Test-Path $env:PYTHON)) {
