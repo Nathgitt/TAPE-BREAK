@@ -1176,6 +1176,10 @@ class MainWindow(QMainWindow):
         self._source_timer.setSingleShot(True)
         self._source_timer.setInterval(DEBOUNCE_MS)
         self._source_timer.timeout.connect(self._request_source)
+        self._auto_preview_timer = QTimer(self)
+        self._auto_preview_timer.setSingleShot(True)
+        self._auto_preview_timer.setInterval(700)
+        self._auto_preview_timer.timeout.connect(self._auto_preview)
         self._play_timer = QTimer(self)  # its interval is set where playback starts
         self._play_timer.timeout.connect(self._advance_frame)
 
@@ -2340,8 +2344,15 @@ class MainWindow(QMainWindow):
 
     def _set_stale(self, stale: bool) -> None:
         self._stale = stale
-        # Without a preview there is nothing the settings could have changed since.
         self.stale_label.setVisible(stale and self.processed_frames is not None)
+        if stale and self._info is not None and hasattr(self, "_auto_preview_timer"):
+            self._auto_preview_timer.start()
+
+    def _auto_preview(self) -> None:
+        # Wait until the user pauses, then render the latest physical simulation.
+        if self._info is None or not self._stale or self.busy:
+            return
+        self._start_preview()
 
     # ------------------------------------------------------------ look files
 
