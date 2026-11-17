@@ -6,6 +6,7 @@ This fork adds a simplified Windows desktop front end around the original **vhs-
 
 - Import a video, inspect the source, adjust the physical tape/deck parameters, preview, and export.
 - The prominent Tracking control maps directly to the engine's `tracking_error_um` parameter (−40 to +40 µm).
+- PAL exports use 720×576 at 25 fps; NTSC and PAL-60 exports use 720×480 at 30000/1001 fps. Source footage is fitted into the simulated active raster with black letterboxing where needed, then tagged with the standard's 4:3 sample aspect ratio.
 - Windows builds are produced by GitHub Actions. The installer bundles the desktop app, the Rust `vhsphys` executable, FFmpeg and FFprobe.
 - The Windows installer is not considered a release until the Actions build succeeds and the packaged application has been smoke-tested.
 
