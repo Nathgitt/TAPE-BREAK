@@ -112,7 +112,7 @@ DETACHED_PREVIEW_SIZE = (760, 520)  # default size of the detached preview windo
 ABOUT_DIALOG_SIZE = (980, 680)  # dimensions of the about dialog with interactive flow canvas
 ABOUT_TITLE = "About TAPE//BREAK"
 KOFI_URL = "https://ko-fi.com/allthemalware"
-GITHUB_URL = "https://github.com/allthemalware/vhs-phys"
+GITHUB_URL = "https://github.com/Nathgitt/TAPE-BREAK"
 PHOSPHOR_BG = "#010804"
 PHOSPHOR_FAINT = "#0e4a22"
 PHOSPHOR_DIM = "#1c9a45"
@@ -1023,50 +1023,43 @@ class AboutDialog(QDialog):
             "QTabBar::tab:selected { background: #0e4a22; color: #39ff6e; border-bottom: 2px solid #39ff6e; }"
         )
 
-        # Tab 1: Interactive Phosphor Flow Canvas
-        self.flow_view = PhosphorFlowView()
-        tabs.addTab(self.flow_view, "Physical Simulation Pipeline")
-
-        # Tab 2: Overview & Project Links
+        # A plain product information page; no phosphor/CRT styling in the editor UI.
         info_tab = QWidget()
         info_tab.setObjectName("infoTab")
         info_layout = QVBoxLayout(info_tab)
         info_layout.setContentsMargins(24, 20, 24, 20)
         info_layout.setSpacing(12)
 
-        header = QLabel("<h2>vhs-phys</h2>")
+        header = QLabel("<h2>TAPE//BREAK</h2>")
         header.setObjectName("aboutHeader")
-        header.setStyleSheet("color: #39ff6e;")
+        header.setStyleSheet("color: #ff6b35;")
         info_layout.addWidget(header)
 
         subtitle = QLabel("<b>A first-principles physical model of VHS recording, tape transport, and RF playback</b>")
         subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("color: #d8ffe3;")
+        subtitle.setStyleSheet("color: #e8e8e8;")
         info_layout.addWidget(subtitle)
 
         body_text = (
-            "<p style='color: #c0f4d0;'>A complete physical simulation of the helical-scan tape chain:</p>"
-            "<ul style='color: #a0e0b0; line-height: 1.5;'>"
-            "<li><b>RF recording:</b> Direct FM luminance synthesis, colour-under heterodyne downconversion, and sub-sample magnetic transition timing.</li>"
-            "<li><b>Tape &amp; head physics:</b> Spacing loss (Wallace law), self-demagnetisation, head pole-tip wear, azimuth crosstalk, and oxide dropouts.</li>"
-            "<li><b>Camera optics:</b> Vidicon, Plumbicon, Saticon, and Chalnicon pickup tube lag, target saturation, and highlight comet tails.</li>"
-            "<li><b>Standards:</b> Full raster processing for NTSC (525/29.97), PAL (625/25), and PAL-60.</li>"
-            "<li><b>Display:</b> CRT beam scanning, shadow mask, and phosphor persistence emulation.</li>"
+            "<p style='color: #c8cbd2;'>A physical VHS recording and playback simulator, not a stack of generic glitch filters:</p>"
+            "<ul style='color: #c8cbd2; line-height: 1.5;'>"
+            "<li><b>Recording:</b> FM luminance and colour-under signals written to a simulated tape.</li>"
+            "<li><b>Tape and heads:</b> Magnetic spacing loss, head wear, tracking error, crosstalk, dropouts and tape defects.</li>"
+            "<li><b>Playback deck:</b> Timebase instability, electronics ageing, noise, signal separation and audio handling.</li>"
+            "<li><b>Television standards:</b> NTSC, PAL and PAL-60, with standard capture-raster export.</li>"
             "</ul>"
+            "<p style='color: #9da3ad;'>The physical simulation engine is based on <b>vhs-phys</b> by allthemalware. "
+            "This fork retains the upstream PolyForm Noncommercial licence and copyright notice.</p>"
         )
         body = QLabel(body_text)
         body.setWordWrap(True)
+        body.setStyleSheet("background: #14161b;")
         info_layout.addWidget(body)
 
         info_layout.addStretch(1)
 
         links_box = QHBoxLayout()
-        kofi_btn = QPushButton("Support on Ko-fi")
-        kofi_btn.setObjectName("kofiButton")
-        kofi_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(KOFI_URL)))
-        links_box.addWidget(kofi_btn)
-
-        github_btn = QPushButton("GitHub Repository")
+        github_btn = QPushButton("TAPE//BREAK on GitHub")
         github_btn.setObjectName("githubButton")
         github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GITHUB_URL)))
         links_box.addWidget(github_btn)
@@ -1074,7 +1067,7 @@ class AboutDialog(QDialog):
         links_box.addStretch(1)
         info_layout.addLayout(links_box)
 
-        tabs.addTab(info_tab, "Project Overview & Links")
+        tabs.addTab(info_tab, "About TAPE//BREAK")
 
         layout.addWidget(tabs, 1)
 
