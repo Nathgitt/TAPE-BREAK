@@ -22,7 +22,7 @@ PrivilegesRequired=admin
 SetupLogging=yes
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
 Source: "..\..\dist\TAPE-BREAK\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
