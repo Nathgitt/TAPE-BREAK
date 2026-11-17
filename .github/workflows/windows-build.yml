@@ -1,0 +1,93 @@
+name: TAPE//BREAK Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64
+
+      - name: Build physical VHS engine
+        shell: pwsh
+        run: cargo build --release --locked
+
+      - name: Install Python packaging dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PySide6-Essentials PyInstaller
+
+      - name: Download FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath "$env:RUNNER_TEMP\ffmpeg" -Force
+          $ffmpeg = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          $ffprobe = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Recurse -Filter ffprobe.exe | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) { throw "FFmpeg archive did not contain ffmpeg.exe and ffprobe.exe" }
+          New-Item -ItemType Directory -Force -Path "packaging\windows\bin" | Out-Null
+          Copy-Item $ffmpeg.FullName "packaging\windows\bin\ffmpeg.exe"
+          Copy-Item $ffprobe.FullName "packaging\windows\bin\ffprobe.exe"
+
+      - name: Package desktop application
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name "TAPE-BREAK" --paths "python" --collect-all PySide6 --collect-submodules vhsgui --add-binary "target\release\vhsphys.exe;." --add-binary "packaging\windows\bin\ffmpeg.exe;." --add-binary "packaging\windows\bin\ffprobe.exe;." packaging\windows\launcher.py
+          if (-not (Test-Path "dist\TAPE-BREAK\TAPE-BREAK.exe")) { throw "PyInstaller did not produce TAPE-BREAK.exe" }
+          if (-not (Test-Path "dist\TAPE-BREAK\vhsphys.exe")) { throw "The physical VHS engine was not bundled" }
+          if (-not (Test-Path "dist\TAPE-BREAK\ffmpeg.exe")) { throw "FFmpeg was not bundled" }
+          if (-not (Test-Path "dist\TAPE-BREAK\ffprobe.exe")) { throw "FFprobe was not bundled" }
+
+      - name: Smoke test bundled engine
+        shell: pwsh
+        run: |
+          & "dist\TAPE-BREAK\vhsphys.exe" presets
+          if ($LASTEXITCODE -ne 0) { throw "Bundled VHS engine smoke test failed" }
+          & "dist\TAPE-BREAK\ffmpeg.exe" -version
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg smoke test failed" }
+          & "dist\TAPE-BREAK\ffprobe.exe" -version
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFprobe smoke test failed" }
+
+      - name: Install Inno Setup
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: install innosetup --no-progress
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $iscc = "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found" }
+          & $iscc "packaging\windows\TAPE-BREAK.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+
+      - name: Upload portable app and installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: TAPE-BREAK-Windows
+          path: |
+            dist/TAPE-BREAK/
+            dist/installer/TAPE-BREAK-Setup.exe
+          if-no-files-found: error
+          retention-days: 14
