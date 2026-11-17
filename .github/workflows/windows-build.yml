@@ -42,14 +42,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install PySide6-Essentials PyInstaller pytest numpy
 
-      - name: Test desktop GUI and backend
-        shell: pwsh
-        env:
-          QT_QPA_PLATFORM: offscreen
-          VHSGUI_REQUIRE_BINARY: "1"
-          VHSPHYS_BIN: ${{ github.workspace }}\target\release\vhsphys.exe
-        run: python -m pytest python/tests/test_gui_backend.py python/tests/test_gui_standard.py python/tests/test_gui_app.py -q
-
       - name: Download FFmpeg
         shell: pwsh
         run: |
@@ -61,6 +53,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path "packaging\windows\bin" | Out-Null
           Copy-Item $ffmpeg.FullName "packaging\windows\bin\ffmpeg.exe"
           Copy-Item $ffprobe.FullName "packaging\windows\bin\ffprobe.exe"
+
+      - name: Test desktop GUI and backend
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          VHSGUI_REQUIRE_BINARY: "1"
+          VHSPHYS_BIN: ${{ github.workspace }}\target\release\vhsphys.exe
+        run: python -m pytest python/tests/test_gui_backend.py python/tests/test_gui_standard.py python/tests/test_gui_app.py -q
+
       - name: Package desktop application
         shell: pwsh
         run: |
