@@ -3027,7 +3027,7 @@ class MainWindow(QMainWindow):
             self._closed = True
             if self._detached_window is not None:
                 self._detached_window.close()
-            for timer in (self._poll_timer, self._source_timer, self._play_timer):
+            for timer in (self._poll_timer, self._source_timer, self._auto_preview_timer, self._play_timer):
                 timer.stop()
             jobs = self._jobs()
             if self._source is not None:
