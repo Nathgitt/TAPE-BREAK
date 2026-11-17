@@ -337,6 +337,7 @@ def test_tracking_master_controls_the_physical_head_offset(window):
 
 
 def test_standard_selects_the_matching_capture_raster(window):
+    assert not window.size_combo.isEnabled()
     window.standard_combo.setCurrentIndex(window.standard_combo.findData("pal"))
     assert window.size_combo.currentData() == (720, 576)
     window.standard_combo.setCurrentIndex(window.standard_combo.findData("ntsc"))
