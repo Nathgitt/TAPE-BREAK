@@ -366,6 +366,10 @@ struct RunArgs {
     ffprobe: String,
 }
 
+fn swaps_display_dimensions(rotation: i32) -> bool {
+    matches!(rotation.rem_euclid(360), 90 | 270)
+}
+
 fn probe_size(ffprobe: &str, input: &Path) -> Result<(usize, usize)> {
     let out = Command::new(ffprobe)
         .args([
@@ -392,7 +396,7 @@ fn probe_size(ffprobe: &str, input: &Path) -> Result<(usize, usize)> {
         .or_else(|| stream["tags"]["rotate"].as_str().and_then(|value| value.parse::<f64>().ok()))
         .unwrap_or(0.0)
         .round() as i32;
-    if rotation.rem_euclid(180) != 0 {
+    if swaps_display_dimensions(rotation) {
         std::mem::swap(&mut width, &mut height);
     }
     Ok((width, height))
@@ -2079,3 +2083,13 @@ mod tests {
     }
 
 }
+    #[test]
+    fn portrait_rotation_swaps_the_probed_dimensions() {
+        for rotation in [90, 270, -90, -270] {
+            assert!(swaps_display_dimensions(rotation));
+        }
+        for rotation in [0, 180, -180, 360] {
+            assert!(!swaps_display_dimensions(rotation));
+        }
+    }
+
