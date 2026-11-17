@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
+    QPalette,
     QPainter,
     QPaintEvent,
     QPen,
@@ -1417,6 +1418,10 @@ class MainWindow(QMainWindow):
         dial.setNotchesVisible(True)
         dial.setWrapping(False)
         dial.setFixedSize(112, 112)
+        dial_palette = dial.palette()
+        dial_palette.setColor(QPalette.ColorRole.Highlight, QColor("#ff6b35"))
+        dial_palette.setColor(QPalette.ColorRole.Button, QColor("#252830"))
+        dial.setPalette(dial_palette)
         dial.setToolTip("Head offset from the tape track centre. The simulator accepts −40 to +40 µm.")
         value = QLabel()
         value.setObjectName("trackingMasterValue")
