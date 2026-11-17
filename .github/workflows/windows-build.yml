@@ -60,7 +60,9 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           VHSGUI_REQUIRE_BINARY: "1"
           VHSPHYS_BIN: ${{ github.workspace }}\target\release\vhsphys.exe
-        run: python -m pytest python/tests/test_gui_backend.py python/tests/test_gui_standard.py python/tests/test_gui_app.py -q
+        run: |
+          $env:PATH = "$PWD\packaging\windows\bin;$env:PATH"
+          python -m pytest python/tests/test_gui_backend.py python/tests/test_gui_standard.py python/tests/test_gui_app.py -q
 
       - name: Package desktop application
         shell: pwsh
