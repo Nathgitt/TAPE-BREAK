@@ -107,6 +107,7 @@ WINDOW_MIN_SIZE = (900, 600)
 LEFT_WIDTH = 440  # initial width of the controls column
 LEFT_MIN_WIDTH = 340  # the controls scroll below this width instead of squeezing further
 PREVIEW_MIN_SIZE = (320, 200)
+PREVIEW_CANVAS_SIZE = (532, 400)  # 4:3 square-pixel preview of the standard capture picture
 PREVIEW_BACKGROUND = "#141414"
 DETACHED_PREVIEW_SIZE = (760, 520)  # default size of the detached preview window
 ABOUT_DIALOG_SIZE = (980, 680)  # dimensions of the about dialog with interactive flow canvas
@@ -2565,7 +2566,10 @@ class MainWindow(QMainWindow):
         if info is None:
             return
         standard = self.look().standard
-        plan = backend.preview_plan(info, self._position_s(), self.length_spin.value(), standard=standard)
+        plan = replace(
+            backend.preview_plan(info, self._position_s(), self.length_spin.value(), standard=standard),
+            size=PREVIEW_CANVAS_SIZE,
+        )
         args = backend.decode_args(
             self._ffmpeg, info.path, plan.size, start=frame_time(plan.start_frame, standard), frames=1, standard=standard
         )
@@ -2793,7 +2797,10 @@ class MainWindow(QMainWindow):
         if info is None or self.busy or self._advanced_error is not None:
             return
         look = self.look()
-        plan = backend.preview_plan(info, self._position_s(), self.length_spin.value(), standard=look.standard)
+        plan = replace(
+            backend.preview_plan(info, self._position_s(), self.length_spin.value(), standard=look.standard),
+            size=PREVIEW_CANVAS_SIZE,
+        )
         preview_path = self._workdir / PREVIEW_FILE
         self._task = TASK_PREVIEW
         self._plan = plan
