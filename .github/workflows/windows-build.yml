@@ -46,6 +46,10 @@ jobs:
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256" -OutFile "$env:RUNNER_TEMP\ffmpeg.sha256"
+          $expectedHash = ((Get-Content "$env:RUNNER_TEMP\ffmpeg.sha256" -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actualHash = (Get-FileHash "$env:RUNNER_TEMP\ffmpeg.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expectedHash -ne $actualHash) { throw "FFmpeg archive SHA-256 verification failed" }
           Expand-Archive -Path "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath "$env:RUNNER_TEMP\ffmpeg" -Force
           $ffmpeg = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           $ffprobe = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg" -Recurse -Filter ffprobe.exe | Select-Object -First 1
@@ -73,6 +77,15 @@ jobs:
           if (-not (Test-Path "dist\TAPE-BREAK\vhsphys.exe")) { throw "The physical VHS engine was not bundled" }
           if (-not (Test-Path "dist\TAPE-BREAK\ffmpeg.exe")) { throw "FFmpeg was not bundled" }
           if (-not (Test-Path "dist\TAPE-BREAK\ffprobe.exe")) { throw "FFprobe was not bundled" }
+          Copy-Item "LICENSE" "dist\TAPE-BREAK\LICENSE-vhs-phys.txt"
+          Invoke-WebRequest -Uri "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "dist\TAPE-BREAK\GPL-3.0-FFmpeg.txt"
+          @"
+          FFmpeg Windows static essentials build from Gyan Doshi.
+          This FFmpeg executable is distributed as a separate program and is licensed under GPL-3.0-or-later.
+          GPL licence text: GPL-3.0-FFmpeg.txt
+          Build downloads and source information: https://www.gyan.dev/ffmpeg/builds/
+          FFmpeg source code: https://github.com/FFmpeg/FFmpeg
+          "@ | Set-Content -Encoding utf8 "dist\TAPE-BREAK\FFmpeg-SOURCE.txt"
 
       - name: Smoke test packaged desktop window
         shell: pwsh
