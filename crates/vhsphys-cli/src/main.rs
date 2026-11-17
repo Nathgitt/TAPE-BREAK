@@ -826,12 +826,33 @@ fn run(a: RunArgs) -> Result<()> {
 
 /// The size of the input and of the output (`--size`, or the input's).
 /// Pixel aspect ratio for standard digital capture rasters; other sizes stay square-pixel.
-fn sample_aspect_ratio(width: usize, height: usize) -> &'static str {
+fn sample_aspect_ratio(width: usize, height: usize) -> (u32, u32) {
     match (width, height) {
-        (720, 480) => "8/9",
-        (720, 576) => "16/15",
-        _ => "1/1",
+        (720, 480) => (8, 9),
+        (720, 576) => (16, 15),
+        _ => (1, 1),
     }
+}
+
+/// Fit square-pixel input inside the output's displayed aspect ratio without stretching.
+fn fit_dimensions(
+    input_width: usize,
+    input_height: usize,
+    raster_width: usize,
+    raster_height: usize,
+    sample_aspect: (u32, u32),
+) -> (usize, usize) {
+    let display_ratio = input_width as f64 / input_height.max(1) as f64;
+    let raster_ratio = raster_width as f64 / raster_height.max(1) as f64;
+    let sample_ratio = sample_aspect.0 as f64 / sample_aspect.1 as f64;
+    let content_ratio = display_ratio / sample_ratio;
+    let (width, height) = if content_ratio > raster_ratio {
+        (raster_width, (raster_width as f64 / content_ratio).round() as usize)
+    } else {
+        ((raster_height as f64 * content_ratio).round() as usize, raster_height)
+    };
+    // Keep dimensions even for the engine's packed RGB and the final 4:2:0 video encoder.
+    ((width.max(2) / 2) * 2, (height.max(2) / 2) * 2)
 }
 
 fn sizes(a: &RunArgs) -> Result<((usize, usize), (usize, usize))> {
@@ -1025,7 +1046,15 @@ impl<'a> Pipe<'a> {
         if let Some(n) = self.picture_frames {
             dec.args(["-t", &frames_arg(n, self.source.fps)]);
         }
-        dec.args(["-an", "-vf", &format!("fps={},scale={}:{}:flags=lanczos,format=rgb24", self.source.rate(), self.source.w, self.source.h), "-f", "rawvideo", "pipe:1"]);
+        let sample_aspect = sample_aspect_ratio(ow, oh);
+        let (fit_w, fit_h) = fit_dimensions(iw, ih, self.source.w, self.source.h, sample_aspect);
+        let pad_x = (self.source.w - fit_w) / 2;
+        let pad_y = (self.source.h - fit_h) / 2;
+        let input_filter = format!(
+            "fps={},scale={fit_w}:{fit_h}:flags=lanczos,pad={}:{}:{pad_x}:{pad_y}:color=black,format=rgb24",
+            self.source.rate(), self.source.w, self.source.h
+        );
+        dec.args(["-an", "-vf", &input_filter, "-f", "rawvideo", "pipe:1"]);
         let mut dec = dec.stdout(Stdio::piped()).spawn().context("starting ffmpeg (decoder)")?;
         let dec_out = dec.stdout.take().unwrap();
 
@@ -1059,7 +1088,7 @@ impl<'a> Pipe<'a> {
         // The standard digital capture rasters use non-square pixels to display as 4:3.
         // Keep the raster at 720x480 (NTSC) or 720x576 (PAL) and tag the correct sample aspect.
         let sample_aspect = sample_aspect_ratio(ow, oh);
-        enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,setsar={sample_aspect},format={}", if is_image { "rgb24" } else { "yuv420p" })]);
+        enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,setsar={}/{},format={}", sample_aspect.0, sample_aspect.1, if is_image { "rgb24" } else { "yuv420p" })]);
         if !is_image {
             enc.args(["-c:v", "libx264", "-crf", &a.crf.to_string(), "-preset", "medium"]);
         } else if !a.output.to_string_lossy().contains('%') {
@@ -1999,10 +2028,13 @@ mod tests {
     }
     #[test]
     fn standard_capture_rasters_have_correct_sample_aspect_ratios() {
-        assert_eq!(sample_aspect_ratio(720, 480), "8/9");
-        assert_eq!(sample_aspect_ratio(720, 576), "16/15");
-        assert_eq!(sample_aspect_ratio(1920, 1080), "1/1");
-        assert_eq!(sample_aspect_ratio(1280, 720), "1/1");
+        assert_eq!(sample_aspect_ratio(720, 480), (8, 9));
+        assert_eq!(sample_aspect_ratio(720, 576), (16, 15));
+        assert_eq!(sample_aspect_ratio(1920, 1080), (1, 1));
+        assert_eq!(sample_aspect_ratio(1280, 720), (1, 1));
+        assert_eq!(fit_dimensions(1920, 1080, 754, 480, (8, 9)), (754, 378));
+        assert_eq!(fit_dimensions(1440, 1080, 754, 480, (8, 9)), (720, 480));
+        assert_eq!(fit_dimensions(1920, 1080, 740, 576, (16, 15)), (740, 444));
     }
 
 }
