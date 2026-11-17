@@ -101,7 +101,7 @@ from vhsgui.model import (
 )
 from vhsgui.schematic.view import SchematicView
 
-WINDOW_TITLE = "vhs-phys"
+WINDOW_TITLE = "TAPE//BREAK"
 WINDOW_SIZE = (1180, 760)  # default size of the window
 WINDOW_MIN_SIZE = (900, 600)
 LEFT_WIDTH = 440  # initial width of the controls column
@@ -110,7 +110,7 @@ PREVIEW_MIN_SIZE = (320, 200)
 PREVIEW_BACKGROUND = "#141414"
 DETACHED_PREVIEW_SIZE = (760, 520)  # default size of the detached preview window
 ABOUT_DIALOG_SIZE = (980, 680)  # dimensions of the about dialog with interactive flow canvas
-ABOUT_TITLE = "About vhs-phys"
+ABOUT_TITLE = "About TAPE//BREAK"
 KOFI_URL = "https://ko-fi.com/allthemalware"
 GITHUB_URL = "https://github.com/allthemalware/vhs-phys"
 PHOSPHOR_BG = "#010804"
