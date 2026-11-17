@@ -1,4 +1,17 @@
-# vhs-phys
+# TAPE//BREAK (fork of vhs-phys)
+
+# TAPE//BREAK — Windows desktop build
+
+This fork adds a simplified Windows desktop front end around the original **vhs-phys physical VHS simulation engine**. The simulation core remains the upstream implementation; this fork changes the desktop presentation and packaging.
+
+- Import a video, inspect the source, adjust the physical tape/deck parameters, preview, and export.
+- The prominent Tracking control maps directly to the engine's `tracking_error_um` parameter (−40 to +40 µm).
+- Windows builds are produced by GitHub Actions. The installer bundles the desktop app, the Rust `vhsphys` executable, FFmpeg and FFprobe.
+- The Windows installer is not considered a release until the Actions build succeeds and the packaged application has been smoke-tested.
+
+**Licence:** the upstream project is licensed under PolyForm Noncommercial 1.0.0. This fork retains that licence and the upstream copyright notice. It is for non-commercial use only unless separate permission is obtained from the rights holder. See [LICENSE](LICENSE).
+
+---
 
 A VHS simulator that models the **physics** of the format instead of layering
 filters and noise: a video is recorded as an FM signal onto a simulated tape,
