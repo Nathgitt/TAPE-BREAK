@@ -1302,6 +1302,7 @@ class MainWindow(QMainWindow):
         self._input_group = self._build_input_group()
         look_group = self._build_look_group()
         condition_groups = self._build_condition_groups()
+        tracking_group = self._build_tracking_panel(condition_groups)
         advanced_group = self._build_advanced_group()
         self._output_group = self._build_output_group()
 
@@ -1309,6 +1310,7 @@ class MainWindow(QMainWindow):
         column = QVBoxLayout(controls)
         column.addWidget(self._input_group)
         column.addWidget(look_group)
+        column.addWidget(tracking_group)
         for group in condition_groups:
             column.addWidget(group)
         column.addWidget(advanced_group)
@@ -1373,6 +1375,65 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.outside, 1)
         root_layout.addWidget(self._schematic_bottom, 0)
         self.setCentralWidget(root)
+        self.setStyleSheet(self.styleSheet() + """
+            QMainWindow { background: #101114; }
+            QWidget { color: #e8e8e8; }
+            QGroupBox { border: 1px solid #34363d; border-radius: 8px; margin-top: 12px;
+                        padding: 10px 8px 8px 8px; font-weight: 600; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QPushButton { background: #252830; border: 1px solid #454955; border-radius: 6px;
+                          padding: 7px 11px; }
+            QPushButton:hover { background: #343945; }
+            QPushButton:disabled { color: #777; }
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit {
+                background: #191b20; border: 1px solid #393d46; border-radius: 5px; padding: 5px;
+            }
+            QSlider::groove:horizontal { height: 5px; background: #3b3e47; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #ff6b35; width: 15px; margin: -6px 0;
+                                         border-radius: 7px; }
+        """)
+
+    def _build_tracking_panel(self, condition_groups: list[QGroupBox]) -> QGroupBox:
+        """Prominent master control wired to the physical engine's tracking_error_um field."""
+        box = QGroupBox("TRACKING")
+        layout = QVBoxLayout(box)
+        spin = self._spins.get("tracking_error_um")
+        if spin is None:
+            return box
+        spin.hide()
+        for group in condition_groups:
+            grid = group.layout()
+            for row in range(grid.rowCount()):
+                for col in range(grid.columnCount()):
+                    item = grid.itemAtPosition(row, col)
+                    widget = item.widget() if item else None
+                    if widget is not None and widget.objectName() in {
+                        "slider_tracking_error_um", "field_tracking_error_um"
+                    }:
+                        widget.hide()
+                    if widget is not None and isinstance(widget, QLabel) and widget.text() == "Tracking error":
+                        widget.hide()
+        hint = QLabel("Head alignment controls the moving noise band and crosstalk.")
+        hint.setWordWrap(True)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setObjectName("trackingMasterSlider")
+        slider.setRange(-80, 80)
+        slider.setValue(round(spin.value() * 2))
+        value = QLabel()
+        value.setObjectName("trackingMasterValue")
+        value.setAlignment(Qt.AlignmentFlag.AlignRight)
+        def sync_value(number: float) -> None:
+            value.setText(f"{number:+.1f} µm")
+            slider.blockSignals(True)
+            slider.setValue(round(number * 2))
+            slider.blockSignals(False)
+        spin.valueChanged.connect(sync_value)
+        slider.valueChanged.connect(lambda number: spin.setValue(number / 2))
+        sync_value(spin.value())
+        layout.addWidget(hint)
+        layout.addWidget(slider)
+        layout.addWidget(value)
+        return box
 
     def _build_mode_bar(self) -> None:
         self._mode_bar = QWidget()
@@ -1396,6 +1457,8 @@ class MainWindow(QMainWindow):
         self.panels_button.setChecked(True)
         self.panels_button.clicked.connect(lambda: self.set_schematic_mode(False))
         self.schematic_button.clicked.connect(lambda: self.set_schematic_mode(True))
+        self.panels_button.setVisible(False)
+        self.schematic_button.setVisible(False)
         layout.addWidget(self.panels_button)
         layout.addWidget(self.schematic_button)
         self.camera_button = QPushButton("Camera")
@@ -1490,7 +1553,7 @@ class MainWindow(QMainWindow):
         )
 
     def _build_input_group(self) -> QGroupBox:
-        box = QGroupBox("Input")
+        box = QGroupBox("SOURCE VIDEO")
         grid = QGridLayout(box)
         self.input_edit = QLineEdit()
         self.input_edit.setObjectName("inputEdit")
@@ -1505,7 +1568,7 @@ class MainWindow(QMainWindow):
         return box
 
     def _build_look_group(self) -> QGroupBox:
-        box = QGroupBox("Look")
+        box = QGroupBox("TAPE CHARACTER")
         grid = QGridLayout(box)
         self.preset_combo = QComboBox()
         self.preset_combo.setObjectName("presetCombo")
@@ -1846,7 +1909,7 @@ class MainWindow(QMainWindow):
         return box
 
     def _build_output_group(self) -> QGroupBox:
-        box = QGroupBox("Output")
+        box = QGroupBox("EXPORT")
         grid = QGridLayout(box)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
