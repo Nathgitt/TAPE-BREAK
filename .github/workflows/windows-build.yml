@@ -61,7 +61,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path "packaging\windows\bin" | Out-Null
           Copy-Item $ffmpeg.FullName "packaging\windows\bin\ffmpeg.exe"
           Copy-Item $ffprobe.FullName "packaging\windows\bin\ffprobe.exe"
-
       - name: Package desktop application
         shell: pwsh
         run: |
