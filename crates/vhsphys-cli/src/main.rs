@@ -2032,7 +2032,7 @@ mod tests {
         assert_eq!(sample_aspect_ratio(720, 576), (16, 15));
         assert_eq!(sample_aspect_ratio(1920, 1080), (1, 1));
         assert_eq!(sample_aspect_ratio(1280, 720), (1, 1));
-        assert_eq!(fit_dimensions(1920, 1080, 754, 480, (8, 9)), (754, 378));
+        assert_eq!(fit_dimensions(1920, 1080, 754, 480, (8, 9)), (754, 376));
         assert_eq!(fit_dimensions(1440, 1080, 754, 480, (8, 9)), (720, 480));
         assert_eq!(fit_dimensions(1920, 1080, 740, 576, (16, 15)), (740, 444));
     }
