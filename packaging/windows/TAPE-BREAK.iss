@@ -9,7 +9,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\TAPE-BREAK
-DefaultGroupName={#MyAppName}
+DefaultGroupName=TAPE BREAK
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=..\..\dist\installer
 OutputBaseFilename=TAPE-BREAK-Setup
@@ -27,8 +27,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "..\..\dist\TAPE-BREAK\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\TAPE//BREAK"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\TAPE//BREAK"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\TAPE-BREAK"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\TAPE-BREAK"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch TAPE//BREAK"; Flags: postinstall nowait skipifsilent
