@@ -1947,7 +1947,8 @@ class MainWindow(QMainWindow):
         self.size_combo.setObjectName("sizeCombo")
         for text, size in SIZE_CHOICES:
             self.size_combo.addItem(text, size)
-        grid.addWidget(QLabel("Size"), 2, 0)
+        self.size_combo.setEnabled(False)  # derived from the selected television standard
+        grid.addWidget(QLabel("Capture raster"), 2, 0)
         grid.addWidget(self.size_combo, 2, 1)
 
         self.crf_spin = QSpinBox()
@@ -2498,7 +2499,6 @@ class MainWindow(QMainWindow):
             self.output_edit,
             self.start_spin,
             self.duration_spin,
-            self.size_combo,
             self.crf_spin,
             self.length_spin,
         ):
