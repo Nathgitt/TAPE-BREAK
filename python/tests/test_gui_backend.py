@@ -451,3 +451,20 @@ def test_a_look_file_is_also_a_valid_core_config(binary, clip, tmp_path):
 def test_bad_look_files_are_gui_errors(text):
     with pytest.raises(GuiError):
         backend.load_look(text)
+
+
+def test_widescreen_source_is_letterboxed_in_the_4_by_3_preview(ffmpeg, tmp_path):
+    source = tmp_path / "wide.mp4"
+    subprocess.run(
+        [
+            ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+            "testsrc2=size=320x180:rate=25:duration=1",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", str(source),
+        ],
+        check=True,
+    )
+    frames = _decode(ffmpeg, source, (532, 400), frames=1)
+    pixels = np.frombuffer(frames.frame(0), dtype=np.uint8).reshape(400, 532, 3)
+    assert np.max(pixels[:20]) == 0
+    assert np.max(pixels[200]) > 0
+    assert np.max(pixels[-20:]) == 0
