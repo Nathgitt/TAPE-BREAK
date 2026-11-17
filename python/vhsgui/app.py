@@ -200,6 +200,8 @@ FRAME_SUFFIX = ".png"
 FRAME_FORMAT = "PNG"
 FILTER_SUFFIXES = {"MP4 (*.mp4)": ".mp4", "Matroska (*.mkv)": ".mkv", "QuickTime (*.mov)": ".mov"}
 SIZE_CHOICES: tuple[tuple[str, tuple[int, int] | None], ...] = (
+    ("NTSC capture raster — 720 x 480", (720, 480)),
+    ("PAL capture raster — 720 x 576", (720, 576)),
     ("Same as input", None),
     ("1280 x 720", (1280, 720)),
     ("960 x 540", (960, 540)),
@@ -1617,7 +1619,7 @@ class MainWindow(QMainWindow):
         standard_label = QLabel("Standard")
         for widget in (standard_label, self.standard_combo):
             widget.setToolTip(STANDARD_HELP)
-        self.standard_combo.currentIndexChanged.connect(self._on_look_changed)
+        self.standard_combo.currentIndexChanged.connect(self._on_standard_changed)
         self.rf_rate_combo = QComboBox()
         self.rf_rate_combo.setObjectName("field_rf_rate")
         for text, value in zip(RF_RATE_LABELS, RF_RATES, strict=True):
@@ -2288,6 +2290,17 @@ class MainWindow(QMainWindow):
             return
         self._on_schematic_value_changed(control_id, self._schematic_baseline[control_id])
         self._sync_schematic()
+
+    def _on_standard_changed(self, *_args: object) -> None:
+        # PAL and NTSC use their standard digital capture rasters for export.
+        standard = self.standard_combo.currentData()
+        target = (720, 576) if standard == "pal" else (720, 480)
+        index = self.size_combo.findData(target)
+        if index >= 0:
+            self.size_combo.blockSignals(True)
+            self.size_combo.setCurrentIndex(index)
+            self.size_combo.blockSignals(False)
+        self._on_look_changed()
 
     def _on_look_changed(self, *_args: object) -> None:
         if not self._loading:
