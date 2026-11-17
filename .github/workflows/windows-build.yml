@@ -67,7 +67,7 @@ jobs:
         run: |
           $env:PATH = "$PWD\packaging\windows\bin;$env:PATH"
           python -m compileall -q python/vhsgui
-          python -m pytest python/tests/test_gui_backend.py python/tests/test_gui_standard.py python/tests/test_gui_app.py -q
+          python -m pytest python/tests/test_gui_backend.py python/tests/test_gui_standard.py python/tests/test_cli_standard.py python/tests/test_gui_app.py -q
 
       - name: Package desktop application
         shell: pwsh
