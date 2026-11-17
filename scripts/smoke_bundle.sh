@@ -29,6 +29,10 @@ case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) gui="$package/vhs-phys.exe" ;;
     *) gui="$package/vhs-phys" ;;
 esac
+export PATH="$package:$PATH"
+for tool in ffmpeg ffprobe; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "$tool step failed: bundled $tool missing" >&2; exit 1; }
+done
 cli="$package/vhsphys"
 [[ -f "$cli" || -f "$cli.exe" ]] || { echo "binary discovery step failed: bundled vhsphys missing" >&2; exit 1; }
 if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
