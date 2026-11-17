@@ -2353,8 +2353,11 @@ class MainWindow(QMainWindow):
     def _set_stale(self, stale: bool) -> None:
         self._stale = stale
         self.stale_label.setVisible(stale and self.processed_frames is not None)
-        if stale and self._info is not None and hasattr(self, "_auto_preview_timer"):
-            self._auto_preview_timer.start()
+        if hasattr(self, "_auto_preview_timer"):
+            if stale and self._info is not None:
+                self._auto_preview_timer.start()
+            else:
+                self._auto_preview_timer.stop()
 
     def _auto_preview(self) -> None:
         # Wait until the user pauses, then render the latest physical simulation.
