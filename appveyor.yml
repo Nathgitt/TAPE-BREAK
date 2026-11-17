@@ -29,14 +29,12 @@ install:
 build_script:
   - ps: |
       $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-      cmd.exe /d /c "cargo build --release --locked > cargo-build.log 2>&1"
+      cmd.exe /d /c "cargo build --release --locked 2>&1" | Tee-Object -FilePath cargo-build.log
       $cargoBuildExit = $LASTEXITCODE
-      Get-Content cargo-build.log
       if ($cargoBuildExit -ne 0) { throw "Rust release build failed with exit code $cargoBuildExit" }
 
-      cmd.exe /d /c "cargo test --release --locked > cargo-test.log 2>&1"
+      cmd.exe /d /c "cargo test --release --locked 2>&1" | Tee-Object -FilePath cargo-test.log
       $cargoTestExit = $LASTEXITCODE
-      Get-Content cargo-test.log
       if ($cargoTestExit -ne 0) { throw "Rust tests failed with exit code $cargoTestExit" }
 
       & $env:PYTHON -m pip install --upgrade pip
