@@ -123,6 +123,19 @@ jobs:
           & $iscc "packaging\windows\TAPE-BREAK.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 
+      - name: Smoke-test installer and uninstaller
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "TAPE-BREAK-install-test"
+          & "dist\installer\TAPE-BREAK-Setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "TAPE//BREAK installer failed" }
+          if (-not (Test-Path (Join-Path $installDir "TAPE-BREAK.exe"))) { throw "Installed application executable is missing" }
+          $installedEngine = Get-ChildItem $installDir -Recurse -Filter "vhsphys.exe" | Select-Object -First 1
+          if (-not $installedEngine) { throw "Installed physical VHS engine is missing" }
+          & (Join-Path $installDir "unins000.exe") /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          if ($LASTEXITCODE -ne 0) { throw "TAPE//BREAK uninstaller failed" }
+          if (Test-Path (Join-Path $installDir "TAPE-BREAK.exe")) { throw "Uninstaller left the application executable behind" }
+
       - name: Upload portable app and installer
         uses: actions/upload-artifact@v4
         with:
