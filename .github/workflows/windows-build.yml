@@ -74,9 +74,10 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name "TAPE-BREAK" --paths "python" --collect-all PySide6 --collect-all vhsgui --add-binary "target\release\vhsphys.exe;." --add-binary "packaging\windows\bin\ffmpeg.exe;." --add-binary "packaging\windows\bin\ffprobe.exe;." packaging\windows\launcher.py
           if (-not (Test-Path "dist\TAPE-BREAK\TAPE-BREAK.exe")) { throw "PyInstaller did not produce TAPE-BREAK.exe" }
-          if (-not (Test-Path "dist\TAPE-BREAK\vhsphys.exe")) { throw "The physical VHS engine was not bundled" }
-          if (-not (Test-Path "dist\TAPE-BREAK\ffmpeg.exe")) { throw "FFmpeg was not bundled" }
-          if (-not (Test-Path "dist\TAPE-BREAK\ffprobe.exe")) { throw "FFprobe was not bundled" }
+          foreach ($tool in @("vhsphys.exe", "ffmpeg.exe", "ffprobe.exe")) {
+            $found = Get-ChildItem "dist\TAPE-BREAK" -Recurse -Filter $tool | Select-Object -First 1
+            if (-not $found) { throw "$tool was not bundled" }
+          }
           Copy-Item "LICENSE" "dist\TAPE-BREAK\LICENSE-vhs-phys.txt"
           Invoke-WebRequest -Uri "https://www.gnu.org/licenses/gpl-3.0.txt" -OutFile "dist\TAPE-BREAK\GPL-3.0-FFmpeg.txt"
           @"
