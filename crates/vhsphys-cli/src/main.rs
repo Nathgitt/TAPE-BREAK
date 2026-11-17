@@ -1997,4 +1997,12 @@ mod tests {
         }
         assert_eq!(parse_iris_stops(WIZARD_IRIS_STOPS), Some(2.0));
     }
+    #[test]
+    fn standard_capture_rasters_have_correct_sample_aspect_ratios() {
+        assert_eq!(sample_aspect_ratio(720, 480), "8/9");
+        assert_eq!(sample_aspect_ratio(720, 576), "16/15");
+        assert_eq!(sample_aspect_ratio(1920, 1080), "1/1");
+        assert_eq!(sample_aspect_ratio(1280, 720), "1/1");
+    }
+
 }
