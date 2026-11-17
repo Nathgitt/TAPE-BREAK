@@ -2587,6 +2587,7 @@ class MainWindow(QMainWindow):
             # A preview that was started meanwhile owns the picture.
             if self.original_frames is None and self.processed_frames is None:
                 self.preview.set_image(QImage(raw, width, height, RGB_BYTES * width, QImage.Format.Format_RGB888).copy())
+                self._set_stale(True)
         elif not self.busy:
             self._set_status(_tail(state.log) if state.log.strip() else "There is no frame at this position.", state.log)
 
@@ -2750,6 +2751,8 @@ class MainWindow(QMainWindow):
         self._partial = None
         self._render_out = None
         self._update_controls()
+        if self._stale and self._info is not None:
+            self._auto_preview_timer.start()
 
     def _end_task(self, message: str, detail: str = "") -> None:
         """Stop whatever is left of the task, drop its partial file and show `message`."""
