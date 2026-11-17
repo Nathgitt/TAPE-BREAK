@@ -825,6 +825,15 @@ fn run(a: RunArgs) -> Result<()> {
 }
 
 /// The size of the input and of the output (`--size`, or the input's).
+/// Pixel aspect ratio for standard digital capture rasters; other sizes stay square-pixel.
+fn sample_aspect_ratio(width: usize, height: usize) -> &'static str {
+    match (width, height) {
+        (720, 480) => "8/9",
+        (720, 576) => "16/15",
+        _ => "1/1",
+    }
+}
+
 fn sizes(a: &RunArgs) -> Result<((usize, usize), (usize, usize))> {
     let input = probe_size(&a.ffprobe, &a.input)?;
     let output = match &a.size {
@@ -1049,13 +1058,7 @@ impl<'a> Pipe<'a> {
         // stills stay RGB (no 4:2:0 chroma subsampling); video is encoded as yuv420p
         // The standard digital capture rasters use non-square pixels to display as 4:3.
         // Keep the raster at 720x480 (NTSC) or 720x576 (PAL) and tag the correct sample aspect.
-        let sample_aspect = if (ow, oh) == (720, 480) {
-            "8/9"
-        } else if (ow, oh) == (720, 576) {
-            "16/15"
-        } else {
-            "1/1"
-        };
+        let sample_aspect = sample_aspect_ratio(ow, oh);
         enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,setsar={sample_aspect},format={}", if is_image { "rgb24" } else { "yuv420p" })]);
         if !is_image {
             enc.args(["-c:v", "libx264", "-crf", &a.crf.to_string(), "-preset", "medium"]);
