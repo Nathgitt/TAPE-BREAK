@@ -202,11 +202,6 @@ FILTER_SUFFIXES = {"MP4 (*.mp4)": ".mp4", "Matroska (*.mkv)": ".mkv", "QuickTime
 SIZE_CHOICES: tuple[tuple[str, tuple[int, int] | None], ...] = (
     ("NTSC capture raster — 720 x 480", (720, 480)),
     ("PAL capture raster — 720 x 576", (720, 576)),
-    ("Same as input", None),
-    ("1280 x 720", (1280, 720)),
-    ("960 x 540", (960, 540)),
-    ("854 x 480", (854, 480)),
-    ("640 x 480", (640, 480)),
 )
 
 MODE_ORIGINAL = "original"
