@@ -738,7 +738,13 @@ def decode_args(
     args = [ffmpeg, "-v", "error"]
     if start > 0:
         args += ["-ss", _micros(start)]
-    args += ["-i", str(path), "-an", "-vf", f"fps={num}/{den},scale={size[0]}:{size[1]}:flags=bicubic"]
+    width, height = size
+    video_filter = (
+        f"fps={num}/{den},"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bicubic,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+    )
+    args += ["-i", str(path), "-an", "-vf", video_filter]
     if frames is not None:
         args += ["-frames:v", str(frames)]
     args += ["-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
