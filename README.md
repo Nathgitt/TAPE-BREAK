@@ -35,7 +35,7 @@ The Windows workflow builds a self-contained installer. After a successful run, 
 
 ## Download
 
-Get the archive for your system from the [Releases page](https://github.com/allthemalware/vhs-phys/releases), unpack it, and run `vhs-phys` (or `VHS-Phys.app` on macOS). The command line tool `vhsphys` is in the same folder. Install ffmpeg, or place it in that folder. The macOS app is unsigned; right-click it and choose Open the first time. Windows may show a SmartScreen prompt.
+For the redesigned Windows application, use the **Windows installer** instructions above. The upstream [vhs-phys releases](https://github.com/allthemalware/vhs-phys/releases) are the original project binaries, not the TAPE//BREAK desktop redesign.
 
 This is the standalone prototype. The Rust core (`vhsphys-core`) is written so it
 can be wrapped as a plugin later (see `docs/PLUGIN.md`).
